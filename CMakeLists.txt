@@ -96,7 +96,8 @@ set(PARAKEET_SRC
     src/diarization.cpp
     src/diarization_encoder.cpp
     src/diarization_head.cpp
-    src/sas_merge.cpp)
+    src/sas_merge.cpp
+    src/diarization_streaming.cpp)
 
 if(PARAKEET_SHARED)
   add_library(parakeet SHARED ${PARAKEET_SRC})

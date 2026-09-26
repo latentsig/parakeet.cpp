@@ -165,4 +165,21 @@ void DiarizationHead::forward(const std::vector<float>& enc_out, int d_model, in
     (void)ok;
 }
 
+void DiarizationHead::forward_range(const std::vector<float>& enc_out, int d_model, int T_enc_total,
+                                      int start_enc, int count_enc,
+                                      std::vector<float>& probs, int& n_spk, int& T_out) const {
+    assert(d_model == d_model_);
+    assert(start_enc >= 0 && count_enc > 0 && start_enc + count_enc <= T_enc_total);
+
+    // Extract the sub-range [start_enc, start_enc+count_enc) from enc_out.
+    // enc_out is channels-first: enc_out[c*T_enc_total + t].
+    std::vector<float> sub((size_t)d_model * count_enc);
+    for (int c = 0; c < d_model; ++c)
+        for (int t = 0; t < count_enc; ++t)
+            sub[(size_t)c * count_enc + t] =
+                enc_out[(size_t)c * T_enc_total + (start_enc + t)];
+
+    forward(sub, d_model, count_enc, probs, n_spk, T_out);
+}
+
 } // namespace pk

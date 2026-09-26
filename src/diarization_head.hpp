@@ -30,6 +30,13 @@ public:
     void forward(const std::vector<float>& enc_out, int d_model, int T_enc,
                  std::vector<float>& probs, int& n_spk, int& T_out) const;
 
+    // Compute the per-frame probabilities for a sub-range of the encoder output.
+    // Same as forward() but operates on enc_out[start_enc .. start_enc+count_enc-1].
+    // Used by the streaming path to get probs for just the chunk portion.
+    void forward_range(const std::vector<float>& enc_out, int d_model, int T_enc_total,
+                       int start_enc, int count_enc,
+                       std::vector<float>& probs, int& n_spk, int& T_out) const;
+
 private:
     const ModelLoader& ml_;
     int d_model_;        // encoder d_model (512)

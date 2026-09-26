@@ -59,6 +59,10 @@ typedef struct parakeet_ctx parakeet_ctx;
 //      parakeet_capi_transcribe_and_diarize_json). Takes two contexts
 //     (an ASR ctx + a diarization ctx), runs both models on the same
 //     audio, and merges word timestamps with speaker segments.
+// v8: added streaming diarization entry points
+//     (parakeet_capi_diarize_stream_begin / _feed / _free) and streaming
+//     speaker-attributed ASR (parakeet_capi_sas_stream_begin / _feed / _free).
+//     Streaming diarization uses the AOSC mechanism (spkcache + FIFO).
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -416,6 +420,80 @@ char* parakeet_capi_transcribe_and_diarize_json(
 // The returned pointer is owned by the context and valid until the next call on
 // it (or until parakeet_capi_free). Returns "" if `ctx` is NULL.
 const char* parakeet_capi_last_error(parakeet_ctx* ctx);
+
+// ---------------------------------------------------------------------------
+// v8: Streaming diarization (AOSC + FIFO)
+//
+// Streaming diarization processes audio in chunks. The caller:
+//   1. parakeet_capi_diarize_stream_begin(ctx) → parakeet_diar_stream*
+//   2. parakeet_capi_diarize_stream_feed(stream, mel, n_mels, n_frames, is_last)
+//      → parakeet_diar_segment* (segments for this chunk)
+//   3. Repeat step 2 for each chunk
+//   4. parakeet_capi_diarize_stream_free(stream)
+//
+// The mel features must be pre-computed by the caller (128-dim, 16kHz).
+// Each chunk should be exactly `chunk_len` mel frames (available from
+// parakeet_capi_diar_stream_chunk_len()). The final chunk may be shorter.
+
+typedef struct parakeet_diar_segment {
+    int speaker;       // 0-indexed speaker ID
+    float start;        // wall-clock seconds from stream start
+    float end;
+} parakeet_diar_segment;
+
+typedef struct parakeet_diar_stream parakeet_diar_stream;
+
+// Begin a streaming diarization session. Returns NULL on error.
+parakeet_diar_stream* parakeet_capi_diarize_stream_begin(parakeet_ctx* diar_ctx);
+
+// Feed one chunk of mel features. Returns segments for this chunk
+// (caller must free the returned array with parakeet_capi_free_diar_segments).
+// `mel` is row-major [n_mels, n_frames]: mel[m*n_frames + t].
+// `is_last` marks the final chunk (no spkcache update after it).
+// `out_count` receives the number of returned segments.
+// Returns NULL if no segments were produced (out_count = 0).
+parakeet_diar_segment* parakeet_capi_diarize_stream_feed(
+    parakeet_diar_stream* stream,
+    const float* mel, int n_mels, int n_frames,
+    int is_last, int* out_count);
+
+// Get the expected chunk length in mel frames.
+int parakeet_capi_diar_stream_chunk_len(parakeet_diar_stream* stream);
+
+// Get the expected number of mel features.
+int parakeet_capi_diar_stream_n_mels(parakeet_diar_stream* stream);
+
+// Free segments returned by parakeet_capi_diarize_stream_feed.
+void parakeet_capi_free_diar_segments(parakeet_diar_segment* segs);
+
+// Free a streaming diarization session.
+void parakeet_capi_diarize_stream_free(parakeet_diar_stream* stream);
+
+// ---------------------------------------------------------------------------
+// v8: Streaming speaker-attributed ASR (Phase 3.4)
+//
+// Combines streaming diarization with chunked ASR. The caller feeds audio
+// chunks; internally, both ASR and diarization process the audio and the
+// results are merged using the same SAS merge logic as the offline path.
+
+typedef struct parakeet_sas_stream parakeet_sas_stream;
+
+// Begin a streaming SAS session. Returns NULL on error.
+parakeet_sas_stream* parakeet_capi_sas_stream_begin(
+    parakeet_ctx* asr_ctx, parakeet_ctx* diar_ctx);
+
+// Feed one chunk of PCM samples (mono float, 16 kHz).
+// Returns speaker-attributed utterances for this chunk.
+// Caller must free each result's .text with parakeet_capi_free_string,
+// then the array with parakeet_capi_free_sas_results.
+// Returns NULL if nothing was produced (out_count = 0).
+parakeet_sas_result* parakeet_capi_sas_stream_feed(
+    parakeet_sas_stream* stream,
+    const float* pcm, int n_samples,
+    int is_last, int* out_count);
+
+// Free a streaming SAS session.
+void parakeet_capi_sas_stream_free(parakeet_sas_stream* stream);
 
 #ifdef __cplusplus
 } // extern "C"

@@ -47,6 +47,9 @@ public:
     const ParakeetConfig& config() const { return loader_.config(); }
     const ModelLoader& loader() const { return loader_; }
 
+    // Access the mel frontend (for streaming diarization to compute mel features).
+    const MelFrontend& mel() const { return *mel_; }
+
 private:
     DiarizationModel() = default;
 

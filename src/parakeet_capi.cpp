@@ -2,6 +2,7 @@
 #include "parakeet.h"     // pk::Decoder
 #include "model.hpp"      // pk::Model
 #include "diarization.hpp" // pk::DiarizationModel
+#include "diarization_streaming.hpp" // pk::StreamingDiarization
 #include "streaming.hpp"  // pk::StreamingSession
 #include "mel.hpp"        // pk::MelFrontend
 #include "sas_merge.hpp"  // pk::merge_asr_diarization, pk::group_speaker_words
@@ -41,7 +42,7 @@
 // v7: speaker-attributed ASR (SAS) entry points — takes two contexts
 //     (ASR + diarization), runs both models, merges word timestamps with
 //     speaker segments.
-#define PARAKEET_CAPI_ABI_VERSION 7
+#define PARAKEET_CAPI_ABI_VERSION 8
 
 // The opaque context: a loaded model plus a buffer for the last error message.
 // Exactly one of `model` / `diar` is non-null: ASR models use `model`,
@@ -1104,4 +1105,204 @@ extern "C" char* parakeet_capi_transcribe_and_diarize_json(
     }
 
     return sas_results_to_json_full(utts, swords, n_speakers);
+}
+
+// ===========================================================================
+// v8: Streaming diarization C-API
+// ===========================================================================
+
+struct parakeet_diar_stream {
+    std::unique_ptr<pk::StreamingDiarization> diar;
+    parakeet_ctx* diar_ctx = nullptr;
+    std::string error;
+};
+
+extern "C" parakeet_diar_stream* parakeet_capi_diarize_stream_begin(
+        parakeet_ctx* diar_ctx) {
+    if (!diar_ctx || !diar_ctx->diar) {
+        return nullptr;
+    }
+    auto* stream = new (std::nothrow) parakeet_diar_stream();
+    if (!stream) return nullptr;
+    stream->diar_ctx = diar_ctx;
+    stream->diar = std::make_unique<pk::StreamingDiarization>(diar_ctx->diar->loader());
+    stream->diar->reset();
+    return stream;
+}
+
+extern "C" parakeet_diar_segment* parakeet_capi_diarize_stream_feed(
+        parakeet_diar_stream* stream,
+        const float* mel, int n_mels, int n_frames,
+        int is_last, int* out_count) {
+    if (!stream || !mel || n_mels <= 0 || n_frames <= 0) {
+        if (out_count) *out_count = 0;
+        return nullptr;
+    }
+    try {
+        std::vector<float> mel_vec(mel, mel + (size_t)n_mels * n_frames);
+        auto segs = stream->diar->feed_mel_chunk(mel_vec, n_mels, n_frames, is_last != 0);
+        if (segs.empty()) {
+            if (out_count) *out_count = 0;
+            return nullptr;
+        }
+        auto* out = (parakeet_diar_segment*)std::malloc(segs.size() * sizeof(parakeet_diar_segment));
+        if (!out) {
+            if (out_count) *out_count = 0;
+            return nullptr;
+        }
+        for (size_t i = 0; i < segs.size(); ++i) {
+            out[i].speaker = segs[i].speaker;
+            out[i].start = segs[i].start;
+            out[i].end = segs[i].end;
+        }
+        if (out_count) *out_count = (int)segs.size();
+        return out;
+    } catch (const std::exception& e) {
+        stream->error = e.what();
+        if (out_count) *out_count = 0;
+        return nullptr;
+    }
+}
+
+extern "C" int parakeet_capi_diar_stream_chunk_len(parakeet_diar_stream* stream) {
+    if (!stream || !stream->diar) return 0;
+    return stream->diar->chunk_len();
+}
+
+extern "C" int parakeet_capi_diar_stream_n_mels(parakeet_diar_stream* stream) {
+    if (!stream || !stream->diar) return 0;
+    return stream->diar->n_mels();
+}
+
+extern "C" void parakeet_capi_free_diar_segments(parakeet_diar_segment* segs) {
+    std::free(segs);
+}
+
+extern "C" void parakeet_capi_diarize_stream_free(parakeet_diar_stream* stream) {
+    delete stream;
+}
+
+// ===========================================================================
+// v8: Streaming speaker-attributed ASR (Phase 3.4)
+// ===========================================================================
+
+struct parakeet_sas_stream {
+    parakeet_ctx* asr_ctx = nullptr;
+    parakeet_diar_stream* diar_stream = nullptr;
+    std::vector<float> pcm_buffer;
+    int asr_chunk_samples = 0;
+    int total_samples = 0;
+    std::string error;
+};
+
+extern "C" parakeet_sas_stream* parakeet_capi_sas_stream_begin(
+        parakeet_ctx* asr_ctx, parakeet_ctx* diar_ctx) {
+    if (!asr_ctx || !asr_ctx->model || !diar_ctx || !diar_ctx->diar) {
+        return nullptr;
+    }
+    auto* stream = new (std::nothrow) parakeet_sas_stream();
+    if (!stream) return nullptr;
+    stream->asr_ctx = asr_ctx;
+    stream->diar_stream = parakeet_capi_diarize_stream_begin(diar_ctx);
+    if (!stream->diar_stream) {
+        delete stream;
+        return nullptr;
+    }
+    int chunk_mel = stream->diar_stream->diar->chunk_len();
+    stream->asr_chunk_samples = chunk_mel * 160;  // hop_length = 160
+    stream->total_samples = 0;
+    return stream;
+}
+
+extern "C" parakeet_sas_result* parakeet_capi_sas_stream_feed(
+        parakeet_sas_stream* stream,
+        const float* pcm, int n_samples,
+        int is_last, int* out_count) {
+    if (!stream || !pcm || n_samples <= 0) {
+        if (out_count) *out_count = 0;
+        return nullptr;
+    }
+    try {
+        stream->pcm_buffer.insert(stream->pcm_buffer.end(), pcm, pcm + n_samples);
+
+        std::vector<pk::Word> all_words;
+        std::vector<pk::StreamingSpeakerSegment> all_segs;
+
+        while ((int)stream->pcm_buffer.size() >= stream->asr_chunk_samples ||
+               (is_last && !stream->pcm_buffer.empty())) {
+            int chunk_samples = std::min(stream->asr_chunk_samples,
+                                         (int)stream->pcm_buffer.size());
+            bool chunk_is_last = is_last &&
+                (chunk_samples == (int)stream->pcm_buffer.size());
+
+            std::vector<float> chunk_pcm(stream->pcm_buffer.begin(),
+                                          stream->pcm_buffer.begin() + chunk_samples);
+
+            // 1. Run ASR on the chunk
+            pk::Transcription trans =
+                stream->asr_ctx->model->transcribe_with_timestamps(chunk_pcm, 16000);
+            float chunk_offset = (float)stream->total_samples / 16000.0f;
+            for (auto& w : trans.words) {
+                w.start += chunk_offset;
+                w.end += chunk_offset;
+                all_words.push_back(w);
+            }
+
+            // 2. Run diarization on the chunk
+            std::vector<float> mel;
+            int n_mels = 0, n_frames = 0;
+            stream->diar_stream->diar_ctx->diar->mel().compute(
+                chunk_pcm, mel, n_mels, n_frames);
+
+            auto segs = stream->diar_stream->diar->feed_mel_chunk(
+                mel, n_mels, n_frames, chunk_is_last);
+            for (auto& s : segs)
+                all_segs.push_back(s);
+
+            stream->pcm_buffer.erase(stream->pcm_buffer.begin(),
+                                      stream->pcm_buffer.begin() + chunk_samples);
+            stream->total_samples += chunk_samples;
+
+            if (chunk_is_last) break;
+        }
+
+        // 3. Merge ASR words with diarization segments
+        std::vector<pk::SpeakerSegment> diar_segs;
+        for (auto& s : all_segs)
+            diar_segs.push_back({s.speaker, s.start, s.end});
+
+        auto swords = pk::merge_asr_diarization(all_words, diar_segs);
+        auto utts = pk::group_speaker_words(swords, 0.5f);
+
+        if (utts.empty()) {
+            if (out_count) *out_count = 0;
+            return nullptr;
+        }
+
+        auto* results = (parakeet_sas_result*)std::calloc(utts.size(),
+                                                           sizeof(parakeet_sas_result));
+        if (!results) {
+            if (out_count) *out_count = 0;
+            return nullptr;
+        }
+        for (size_t i = 0; i < utts.size(); ++i) {
+            results[i].speaker = utts[i].speaker;
+            results[i].text = dup_to_c(utts[i].text);
+            results[i].start = utts[i].start;
+            results[i].end = utts[i].end;
+            results[i].conf = utts[i].conf;
+        }
+        if (out_count) *out_count = (int)utts.size();
+        return results;
+    } catch (const std::exception& e) {
+        stream->error = e.what();
+        if (out_count) *out_count = 0;
+        return nullptr;
+    }
+}
+
+extern "C" void parakeet_capi_sas_stream_free(parakeet_sas_stream* stream) {
+    if (!stream) return;
+    parakeet_capi_diarize_stream_free(stream->diar_stream);
+    delete stream;
 }

@@ -30,6 +30,28 @@ public:
     void forward(const std::vector<float>& mel, int n_mels, int T,
                  std::vector<float>& enc_out, int& d_model, int& T_enc) const;
 
+    // --- Streaming split: pre_encode + transformer_forward ---
+
+    // Pre-encoder: FeatureStacking + Linear(1024→512) + embed_norm.
+    // mel:  row-major [n_mels, T] — mel[m*T + t]
+    // emb:  row-major [d_model, T_enc] — emb[c*T_enc + t] (channels-first)
+    // T_enc = T_padded / subsampling_factor
+    void pre_encode(const std::vector<float>& mel, int n_mels, int T,
+                    std::vector<float>& emb, int& d_model, int& T_enc) const;
+
+    // Transformer blocks + final_norm (the second half of the encoder).
+    // emb:    row-major [d_model, T_enc] — emb[c*T_enc + t] (channels-first)
+    // enc_out: row-major [d_model, T_enc] — enc_out[c*T_enc + t]
+    void transformer_forward(const std::vector<float>& emb, int d_model, int T_enc,
+                             std::vector<float>& enc_out) const;
+
+    int subsampling() const { return subsampling_factor_; }
+    int n_mels() const { return n_mels_; }
+    int d_model() const { return d_model_; }
+    int n_layers() const { return n_layers_; }
+    int n_heads() const { return n_heads_; }
+    int head_dim() const { return head_dim_; }
+
 private:
     const ModelLoader& ml_;
     int d_model_;        // encoder d_model (512)

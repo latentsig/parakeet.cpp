@@ -82,6 +82,20 @@ struct ParakeetConfig {
         float frame_resolution_sec=0.01f; // output frame duration
         float onset_threshold=0.5f;  // hysteresis onset
         float offset_threshold=0.5f; // hysteresis offset
+        // --- AOSC streaming config (Phase 2) ---
+        bool streaming_capable=false;
+        int32_t chunk_len=0;           // mel frames per chunk (264)
+        int32_t spkcache_len=0;         // target spkcache size in mel frames (264)
+        int32_t fifo_len=0;             // FIFO buffer length (0 for Nemotron-3)
+        int32_t spkcache_update_period=0; // frames before spkcache update
+        int32_t spkcache_sil_frames_per_spk=3; // silence placeholders per speaker
+        float sil_threshold=0.2f;      // silence detection threshold
+        float pred_score_threshold=0.25f; // log-score clamp floor
+        float scores_boost_latest=0.05f; // boost for latest frames
+        float strong_boost_rate=0.75f;  // strong top-K fraction
+        float weak_boost_rate=1.5f;     // weak top-K fraction
+        float min_pos_scores_rate=0.5f; // min positive scores fraction
+        bool use_learnable_sil_emb=false; // silence embedding is a model param
     } diarization;
     // Diarization encoder config (Nemotron-3-Diarization uses a TransformerEncoder
     // with RoPE, not a FastConformer). These are read from parakeet.encoder.* KVs
