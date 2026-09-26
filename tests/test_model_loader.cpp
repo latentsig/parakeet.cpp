@@ -18,8 +18,11 @@ int main() {
         const pk::ParakeetConfig& c = ml.config();
         if (c.arch.empty())   { std::fprintf(stderr, "empty arch\n"); return 1; }
         if (c.d_model == 0 || c.n_layers == 0 || c.n_heads == 0) { std::fprintf(stderr, "bad encoder dims\n"); return 1; }
-        if (c.vocab_size == 0) { std::fprintf(stderr, "bad vocab\n"); return 1; }
-        if (c.blank_id != c.vocab_size) { std::fprintf(stderr, "blank!=vocab\n"); return 1; }
+        // Diarization models have no vocab (no text output); skip vocab checks.
+        if (c.arch != "diarization") {
+            if (c.vocab_size == 0) { std::fprintf(stderr, "bad vocab\n"); return 1; }
+            if (c.blank_id != c.vocab_size) { std::fprintf(stderr, "blank!=vocab\n"); return 1; }
+        }
         // mel filterbank tensor must be present
         if (ml.tensor("preprocessor.featurizer.fb") == nullptr) { std::fprintf(stderr, "no fb\n"); return 1; }
         // first conformer layer norm must be present (verbatim name)

@@ -71,6 +71,26 @@ struct ParakeetConfig {
     // vocab
     uint32_t vocab_size=0, blank_id=0;
     std::vector<std::string> tokenizer_pieces;
+    // diarization (SortformerEncLabelModel). present=false for ASR models.
+    // The diarization head sits after the transformer encoder: encoder_proj
+    // → subpixel_upsample → speaker sigmoid head. See docs/diarization-plan.md.
+    struct DiarizationCfg {
+        bool present=false;
+        uint32_t n_speakers=0;       // max speakers (8 for Nemotron-3-Diarization)
+        uint32_t tf_d_model=0;       // sortformer hidden dim (192)
+        uint32_t upsample_factor=0; // = subsampling_factor (8 → 10ms frames)
+        float frame_resolution_sec=0.01f; // output frame duration
+        float onset_threshold=0.5f;  // hysteresis onset
+        float offset_threshold=0.5f; // hysteresis offset
+    } diarization;
+    // Diarization encoder config (Nemotron-3-Diarization uses a TransformerEncoder
+    // with RoPE, not a FastConformer). These are read from parakeet.encoder.* KVs
+    // but only meaningful when arch == "diarization".
+    std::string self_attention_model; // "rope" for Nemotron-3-Diarization
+    bool qkv_bias=false;              // QKV projection bias (false)
+    bool pre_block_norm=true;        // embed_norm before blocks (true)
+    float rope_base=10000.0f;        // RoPE theta
+    float rotary_fraction=1.0f;      // fraction of head_dim rotated
 };
 class ModelLoader {
 public:

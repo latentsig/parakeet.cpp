@@ -41,6 +41,85 @@ except ImportError as e:  # pragma: no cover - env guard
     print("PARAKEET_CONVERT_DEPS_MISSING", file=sys.stderr)
     sys.exit(2)
 
+# SortformerEncLabelModel import is optional — the installed NeMo may be too old
+# to support self_attention_model='rope'. The converter detects diarization from
+# the .nemo tar's model_config.yaml and loads state_dict directly, bypassing the
+# model class entirely.
+SortformerEncLabelModel = None
+
+import io
+import tarfile
+
+try:
+    import torch
+except ImportError as e:  # pragma: no cover - env guard
+    print(f"converter: missing dependency 'torch': {e}", file=sys.stderr)
+    print("PARAKEET_CONVERT_DEPS_MISSING", file=sys.stderr)
+    sys.exit(2)
+
+try:
+    import yaml
+except ImportError as e:  # pragma: no cover - env guard
+    print(f"converter: missing dependency 'pyyaml': {e}", file=sys.stderr)
+    print("PARAKEET_CONVERT_DEPS_MISSING", file=sys.stderr)
+    sys.exit(2)
+
+
+def _load_diarization_from_tar(nemo_path):
+    """Load state_dict + config from a .nemo (POSIX tar) for diarization models.
+
+    The .nemo tar contains model_config.yaml + model_weights.ckpt. We load
+    the state_dict directly with torch.load(weights_only=True) and parse the
+    YAML config, bypassing SortformerEncLabelModel.restore_from() which
+    fails on NeMo versions that don't support self_attention_model='rope'.
+    """
+    with tarfile.open(nemo_path, "r") as tar:
+        # Find model_weights.ckpt and model_config.yaml
+        weight_names = [m.name for m in tar.getmembers() if "weights" in m.name]
+        config_names = [m.name for m in tar.getmembers() if "config" in m.name and m.name.endswith((".yaml", ".yml"))]
+        if not weight_names or not config_names:
+            raise ValueError(f"could not find weights/config in {nemo_path}")
+        # Extract weights
+        w_member = tar.extractfile(weight_names[0])
+        buf = io.BytesIO(w_member.read())
+        state_dict = torch.load(buf, map_location="cpu", weights_only=True)
+        # Extract config
+        c_member = tar.extractfile(config_names[0])
+        cfg = yaml.safe_load(c_member)
+    return state_dict, cfg
+
+
+def _is_diarization_nemo(nemo_path):
+    """Peek at a .nemo tar to check if it's a diarization model."""
+    try:
+        with tarfile.open(nemo_path, "r") as tar:
+            config_names = [m.name for m in tar.getmembers()
+                           if "config" in m.name and m.name.endswith((".yaml", ".yml"))]
+            if not config_names:
+                return False
+            c_member = tar.extractfile(config_names[0])
+            cfg = yaml.safe_load(c_member)
+        # Diarization models have sortformer_modules or model.sortformer_modules
+        return "sortformer_modules" in cfg or (
+            "model" in cfg and "sortformer_modules" in cfg.get("model", {})
+        )
+    except Exception:
+        return False
+
+
+def _get_cfg_value(cfg, dotted_key, default=None):
+    """Get a value from a nested dict using dotted notation (a.b.c)."""
+    keys = dotted_key.split(".")
+    v = cfg
+    for k in keys:
+        if isinstance(v, dict):
+            v = v.get(k, default)
+        else:
+            return default
+        if v is None:
+            return default
+    return v
+
 
 def _get(cfg, key, default=None):
     """Read ``key`` from an OmegaConf node or plain object, tolerating both."""
@@ -51,9 +130,16 @@ def _get(cfg, key, default=None):
 
 
 def detect_arch(m):
-    """Map a NeMo model to one of ctc/rnnt/tdt/hybrid_rnnt_ctc/hybrid_tdt_ctc."""
+    """Map a NeMo model to one of ctc/rnnt/tdt/hybrid_rnnt_ctc/hybrid_tdt_ctc/diarization."""
+    # Diarization model (SortformerEncLabelModel): has sortformer_modules, no
+    # tokenizer/vocab, no joint/CTC decoder — output is speaker sigmoid logits.
+    if SortformerEncLabelModel is not None and isinstance(m, SortformerEncLabelModel):
+        return "diarization"
+    # Fallback: detect by state_dict keys (works even if the import above failed)
+    sd = m.state_dict()
+    if any(k.startswith("sortformer_modules.") for k in sd) and not hasattr(m, "tokenizer"):
+        return "diarization"
     cfg = m.cfg
-    # An aux_ctc *config* block is necessary but not sufficient for a hybrid
     # model: prompt-conditioned RNNT checkpoints (nemotron) carry an unconfigured
     # aux_ctc stub (num_classes=-1, empty vocabulary) but NO ctc decoder and zero
     # ctc_decoder.* weights -- NeMo initializes them RNNT-only. Require an actual
@@ -119,6 +205,30 @@ _QUANTIZABLE_PATTERNS = [
     # stays F32 -- it is intentionally NOT in this allowlist.
     r"^joint\.enc\.weight$",
     r"^joint\.pred\.weight$",
+    # Diarization speaker head linear weights (sortformer_modules). The
+    # encoder_proj (512->192), first_hidden_to_hidden (192->192), and
+    # single_hidden_to_spks (192->8) are all pure ggml_mul_mat inputs.
+    r"^sortformer_modules\.encoder_proj\.weight$",
+    r"^sortformer_modules\.first_hidden_to_hidden\.weight$",
+    r"^sortformer_modules\.single_hidden_to_spks\.weight$",
+    # Diarization transformer encoder linear weights (pre-LN RoPE Transformer).
+    # Fused QKV (w_qkv), attention output projection (out_proj), and FFN
+    # up/down linears (ffn.net.0, ffn.net.3) are all pure ggml_mul_mat inputs.
+    # FeatureStacking projection (encoder.pre_encode.proj) is also pure linear.
+    r"^encoder\.layers\.\d+\.attn\.w_qkv\.weight$",
+    r"^encoder\.layers\.\d+\.attn\.out_proj\.weight$",
+    r"^encoder\.layers\.\d+\.ffn\.net\.\d+\.weight$",
+    r"^encoder\.pre_encode\.proj\.weight$",
+]
+
+# Weight names that are safe to skip (unused at inference) for diarization models.
+DIAIRIZATION_SKIP = [
+    r"^encoder\.pos_enc\.",            # RoPE, no positional embedding table
+    r"^hidden_to_spks",                 # frozen/unused head variant
+    r"^spec_augmentation",              # training-time augmentation
+    r"^loss",                           # training loss modules
+    r"^sortformer_modules\.hidden_to_spks",  # unused 384->8 head
+    r"^sortformer_modules\.transformer_encoder",  # None for this model
 ]
 _QUANTIZABLE_RE = [re.compile(p) for p in _QUANTIZABLE_PATTERNS]
 
@@ -160,14 +270,148 @@ def main():
     args = ap.parse_args()
 
     is_local = pathlib.Path(args.model).exists()
-    try:
-        if is_local:
-            m = ASRModel.restore_from(args.model, map_location="cpu")
-        else:
-            m = ASRModel.from_pretrained(args.model, map_location="cpu")
-    except Exception as e:  # pragma: no cover - network/cache guard
-        print(f"PARAKEET_MODEL_UNAVAILABLE: {e}", file=sys.stderr)
-        sys.exit(2)
+
+    # ------------------------------------------------------------------
+    # Diarization path: load state_dict + config directly from the .nemo
+    # tar, bypassing SortformerEncLabelModel.restore_from() (which fails on
+    # NeMo versions that don't support self_attention_model='rope').
+    # ------------------------------------------------------------------
+    is_diar = is_local and args.model.endswith(".nemo") and _is_diarization_nemo(args.model)
+
+    if is_diar:
+        sd, model_cfg = _load_diarization_from_tar(args.model)
+        arch = "diarization"
+
+        w = gguf.GGUFWriter(args.output, "parakeet")
+        w.add_string("general.name", args.model)
+        w.add_string("parakeet.arch", arch)
+
+        enc_cfg = model_cfg.get("encoder", {})
+        sf_cfg = model_cfg.get("sortformer_modules", {})
+        pre_cfg = model_cfg.get("preprocessor", {})
+
+        # Encoder KVs
+        d_model = int(_get_cfg_value(enc_cfg, "d_model", 512))
+        n_layers = int(_get_cfg_value(enc_cfg, "n_layers", 31))
+        n_heads = int(_get_cfg_value(enc_cfg, "n_heads", 8))
+        ff_exp = float(_get_cfg_value(enc_cfg, "ff_expansion", 4.0))
+        ff_dim = int(d_model * ff_exp)
+        sub_factor = int(_get_cfg_value(enc_cfg, "subsampling_factor", 8))
+
+        w.add_uint32("parakeet.encoder.feat_in", int(_get_cfg_value(enc_cfg, "feat_in", 128)))
+        w.add_uint32("parakeet.encoder.d_model", d_model)
+        w.add_uint32("parakeet.encoder.n_layers", n_layers)
+        w.add_uint32("parakeet.encoder.n_heads", n_heads)
+        w.add_uint32("parakeet.encoder.ff_dim", ff_dim)
+        w.add_uint32("parakeet.encoder.conv_kernel", 0)  # N/A for transformer
+        w.add_string("parakeet.encoder.conv_norm_type", "layer_norm")
+        w.add_uint32("parakeet.encoder.subsampling_factor", sub_factor)
+        w.add_uint32("parakeet.encoder.subsampling_conv_channels", 0)
+        w.add_bool("parakeet.encoder.xscaling",
+                    bool(_get_cfg_value(enc_cfg, "xscaling", False)))
+        w.add_uint32("parakeet.encoder.pos_emb_max_len",
+                     int(_get_cfg_value(enc_cfg, "pos_emb_max_len", 5000)))
+        w.add_bool("parakeet.encoder.use_bias",
+                    bool(_get_cfg_value(enc_cfg, "use_bias", False)))
+
+        # Transformer-specific KVs (RoPE attention)
+        w.add_string("parakeet.encoder.self_attention_model",
+                     str(_get_cfg_value(enc_cfg, "self_attention_model", "rope")))
+        w.add_bool("parakeet.encoder.qkv_bias",
+                    bool(_get_cfg_value(enc_cfg, "qkv_bias", False)))
+        w.add_bool("parakeet.encoder.pre_block_norm",
+                    bool(_get_cfg_value(enc_cfg, "pre_block_norm", True)))
+        w.add_float32("parakeet.encoder.rope_base",
+                      float(_get_cfg_value(enc_cfg, "rope_base", 10000.0)))
+        w.add_float32("parakeet.encoder.rotary_fraction", 1.0)
+
+        # Preprocessor KVs (from flat config — no featurizer object)
+        sr = int(_get_cfg_value(pre_cfg, "sample_rate", 16000))
+        n_mels = int(_get_cfg_value(pre_cfg, "features", 128))
+        n_fft = int(_get_cfg_value(pre_cfg, "n_fft", 512))
+        win_size = float(_get_cfg_value(pre_cfg, "window_size", 0.025))
+        win_stride = float(_get_cfg_value(pre_cfg, "window_stride", 0.01))
+        win_length = int(round(win_size * sr))
+        hop_length = int(round(win_stride * sr))
+
+        w.add_uint32("parakeet.preprocessor.sample_rate", sr)
+        w.add_uint32("parakeet.preprocessor.n_mels", n_mels)
+        w.add_uint32("parakeet.preprocessor.n_fft", n_fft)
+        w.add_uint32("parakeet.preprocessor.win_length", win_length)
+        w.add_uint32("parakeet.preprocessor.hop_length", hop_length)
+        w.add_float32("parakeet.preprocessor.preemph",
+                      float(_get_cfg_value(pre_cfg, "preemph", 0.97)))
+        w.add_float32("parakeet.preprocessor.mag_power", 2.0)
+        w.add_string("parakeet.preprocessor.normalize",
+                     str(_get_cfg_value(pre_cfg, "normalize", "NA")))
+        w.add_float32("parakeet.preprocessor.log_zero_guard", 2 ** -24)
+
+        # Diarization head KVs
+        tf_d_model = int(_get_cfg_value(sf_cfg, "tf_d_model", 192))
+        n_spk = int(_get_cfg_value(sf_cfg, "num_spks", 8))
+        upsample = sub_factor  # high_resolution → 10ms output
+
+        w.add_uint32("parakeet.diar.n_speakers", n_spk)
+        w.add_uint32("parakeet.diar.tf_d_model", tf_d_model)
+        w.add_uint32("parakeet.diar.upsample_factor", upsample)
+        w.add_float32("parakeet.diar.frame_resolution_sec", 0.01)
+        w.add_float32("parakeet.diar.onset_threshold", 0.5)
+        w.add_float32("parakeet.diar.offset_threshold", 0.5)
+
+        # Write tensors from state_dict
+        written = 0
+        quantized = 0
+        skip_patterns = [re.compile(p) for p in DIAIRIZATION_SKIP]
+        for name, t in sd.items():
+            if any(p.search(name) for p in skip_patterns):
+                continue
+            if not hasattr(t, "detach"):
+                continue
+            arr = t.detach().cpu().float().numpy()
+            if arr.ndim == 0:
+                continue
+            arr = np.ascontiguousarray(arr, dtype=np.float32)
+            ggml_ne = list(arr.shape[::-1])
+            qtype = should_quantize(name, ggml_ne, args.dtype)
+            if qtype is None:
+                w.add_tensor(name, arr)
+            else:
+                raw = gguf.quantize(arr, qtype)
+                w.add_tensor(name, raw, raw_shape=raw.shape, raw_dtype=qtype)
+                quantized += 1
+            written += 1
+
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+        print(
+            f"wrote {args.output}: arch={arch} tensors={written} "
+            f"dtype={args.dtype} quantized={quantized}"
+        )
+        return
+
+    # ------------------------------------------------------------------
+    # ASR path: load via NeMo model class (as before)
+    # ------------------------------------------------------------------
+    m = None
+    if SortformerEncLabelModel is not None:
+        try:
+            if is_local:
+                m = SortformerEncLabelModel.restore_from(args.model, map_location="cpu")
+            else:
+                m = SortformerEncLabelModel.from_pretrained(args.model, map_location="cpu")
+        except Exception:
+            m = None  # not a diarization model, fall through to ASRModel
+    if m is None:
+        try:
+            if is_local:
+                m = ASRModel.restore_from(args.model, map_location="cpu")
+            else:
+                m = ASRModel.from_pretrained(args.model, map_location="cpu")
+        except Exception as e:  # pragma: no cover - network/cache guard
+            print(f"PARAKEET_MODEL_UNAVAILABLE: {e}", file=sys.stderr)
+            sys.exit(2)
     m.eval()
 
     arch = detect_arch(m)
@@ -294,12 +538,34 @@ def main():
     w.add_float32("parakeet.preprocessor.log_zero_guard",
                   float(lzg) if isinstance(lzg, (int, float)) else 2 ** -24)
 
-    # vocab / tokenizer
-    vocab = int(m.tokenizer.vocab_size)
-    w.add_uint32("parakeet.vocab_size", vocab)
-    w.add_uint32("parakeet.blank_id", vocab)  # blank always == vocab_size
-    pieces = [m.tokenizer.ids_to_tokens([i])[0] for i in range(vocab)]
-    w.add_array("parakeet.tokenizer.pieces", [str(p) for p in pieces])
+    # vocab / tokenizer (ASR models only — diarization has no tokenizer)
+    vocab = 0
+    if arch != "diarization":
+        vocab = int(m.tokenizer.vocab_size)
+        w.add_uint32("parakeet.vocab_size", vocab)
+        w.add_uint32("parakeet.blank_id", vocab)  # blank always == vocab_size
+        pieces = [m.tokenizer.ids_to_tokens([i])[0] for i in range(vocab)]
+        w.add_array("parakeet.tokenizer.pieces", [str(p) for p in pieces])
+
+    # diarization config (SortformerEncLabelModel)
+    if arch == "diarization":
+        sf = m.sortformer_modules
+        # Speaker head dimensions
+        tf_d_model = int(sf.tf_d_model) if hasattr(sf, "tf_d_model") else 192
+        n_spk = int(sf.n_speakers) if hasattr(sf, "n_speakers") else 8
+        # Upsample factor = subsampling_factor (high_resolution=True → 10ms frames)
+        upsample = int(_get(enc, "subsampling_factor", 8))
+        # Thresholds from cfg or NeMo defaults
+        diar_cfg = _get(cfg, "diarizer", {}) or {}
+        cfg_clustering = _get(diar_cfg, "clustering", {}) or {}
+        onset = float(_get(diar_cfg, "onset", 0.5))
+        offset = float(_get(diar_cfg, "offset", 0.5))
+        w.add_uint32("parakeet.diar.n_speakers", n_spk)
+        w.add_uint32("parakeet.diar.tf_d_model", tf_d_model)
+        w.add_uint32("parakeet.diar.upsample_factor", upsample)
+        w.add_float32("parakeet.diar.frame_resolution_sec", 0.01)
+        w.add_float32("parakeet.diar.onset_threshold", onset)
+        w.add_float32("parakeet.diar.offset_threshold", offset)
 
     # transducer config
     if arch in ("rnnt", "tdt", "hybrid_rnnt_ctc", "hybrid_tdt_ctc"):
@@ -333,7 +599,15 @@ def main():
     written = 0
     quantized = 0
     keep_buffers = {"preprocessor.featurizer.fb", "preprocessor.featurizer.window"}
+    # Frozen/unused weights to skip (diarization: hidden_to_spks is a frozen
+    # placeholder that is never called in offline inference).
+    skip_names = set()
+    if arch == "diarization":
+        skip_names.add("sortformer_modules.hidden_to_spks.weight")
+        skip_names.add("sortformer_modules.hidden_to_spks.bias")
     for name, t in sd.items():
+        if name in skip_names:
+            continue
         if name.startswith("preprocessor.") and name not in keep_buffers:
             continue  # skip preprocessor internals except fb/window
         if not hasattr(t, "detach"):
@@ -364,7 +638,6 @@ def main():
         f"wrote {args.output}: arch={arch} vocab={vocab} tensors={written} "
         f"dtype={args.dtype} quantized={quantized}"
     )
-
 
 if __name__ == "__main__":
     main()

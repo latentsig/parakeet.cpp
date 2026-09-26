@@ -45,6 +45,11 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     if (!m->loader_.load(gguf_path)) {
         return nullptr;
     }
+    // Model is the ASR entry point — reject diarization models so the C-API
+    // can fall through to DiarizationModel::load.
+    if (m->loader_.config().arch == "diarization") {
+        return nullptr;
+    }
     // Give the weights a CPU backend buffer ONCE so graphs reference them
     // directly as leaves (zero per-call copy). Done at load (vs. lazily on first
     // clone_weight) so the cost is paid up front, not per utterance.

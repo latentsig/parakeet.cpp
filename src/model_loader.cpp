@@ -154,6 +154,13 @@ bool ModelLoader::load(const std::string& path){
     // encoder.use_bias: false for nemotron (the attention/FFN linear projections
     // carry no bias tensor). Defaults true so existing models are unaffected.
     cfg_.use_bias = kv_bool(gguf_, "parakeet.encoder.use_bias", true);
+    // Transformer encoder config (diarization models with RoPE attention).
+    // Absent for ASR (FastConformer) models → safe defaults.
+    cfg_.self_attention_model = kv_str(gguf_, "parakeet.encoder.self_attention_model", "");
+    cfg_.qkv_bias = kv_bool(gguf_, "parakeet.encoder.qkv_bias", false);
+    cfg_.pre_block_norm = kv_bool(gguf_, "parakeet.encoder.pre_block_norm", true);
+    cfg_.rope_base = kv_f32(gguf_, "parakeet.encoder.rope_base", 10000.0f);
+    cfg_.rotary_fraction = kv_f32(gguf_, "parakeet.encoder.rotary_fraction", 1.0f);
     // Prompt conditioning (multilingual nemotron). Orthogonal capability flag;
     // absent -> present=false and the engine skips the prompt stage entirely.
     cfg_.prompt.present = kv_bool(gguf_, "parakeet.prompt.present", false);
@@ -190,6 +197,17 @@ bool ModelLoader::load(const std::string& path){
     cfg_.max_symbols = kv_u32(gguf_, "parakeet.decoding.max_symbols", 10);
     cfg_.vocab_size  = kv_u32(gguf_, "parakeet.vocab_size");
     cfg_.blank_id    = kv_u32(gguf_, "parakeet.blank_id");
+    // diarization config (absent for ASR models → present=false)
+    if (gguf_find_key(gguf_, "parakeet.diar.n_speakers") >= 0) {
+        auto& d = cfg_.diarization;
+        d.present = true;
+        d.n_speakers = kv_u32(gguf_, "parakeet.diar.n_speakers");
+        d.tf_d_model = kv_u32(gguf_, "parakeet.diar.tf_d_model");
+        d.upsample_factor = kv_u32(gguf_, "parakeet.diar.upsample_factor");
+        d.frame_resolution_sec = kv_f32(gguf_, "parakeet.diar.frame_resolution_sec", 0.01f);
+        d.onset_threshold = kv_f32(gguf_, "parakeet.diar.onset_threshold", 0.5f);
+        d.offset_threshold = kv_f32(gguf_, "parakeet.diar.offset_threshold", 0.5f);
+    }
     // durations array (stored as INT32 by the converter)
     { int64_t id = gguf_find_key(gguf_, "parakeet.tdt.durations");
       if(id>=0 && gguf_get_arr_type(gguf_,id)==GGUF_TYPE_INT32){
@@ -207,7 +225,7 @@ bool ModelLoader::load(const std::string& path){
     const int64_t nt = gguf_get_n_tensors(gguf_);
     for(int64_t i=0;i<nt;++i){ const char* nm = gguf_get_tensor_name(gguf_,i);
         ggml_tensor* t = ggml_get_tensor(ctx_, nm); if(t) tensors_[nm]=t; }
-    return cfg_.d_model>0 && cfg_.vocab_size>0;
+    return cfg_.d_model>0 && (cfg_.vocab_size>0 || cfg_.arch=="diarization");
 }
 ggml_tensor* ModelLoader::tensor(const std::string& n) const {
     auto it = tensors_.find(n); return it==tensors_.end()? nullptr : it->second;
