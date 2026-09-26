@@ -47,6 +47,18 @@ typedef struct parakeet_ctx parakeet_ctx;
 //     KenLM) that need the raw distribution rather than this library's own
 //     greedy/beam decode. Freed with the new parakeet_capi_free_logits. The
 //     original entry points are unchanged.
+// v6.1: added offline speaker diarization entry points
+//     (parakeet_capi_diarize_path / parakeet_capi_diarize_pcm) for
+//     nvidia/Nemotron-3-Diarization and compatible Sortformer models. A
+//     parakeet_ctx now holds EITHER an ASR model (pk::Model) OR a diarization
+//     model (pk::DiarizationModel); the diarize functions dispatch on which
+//     is loaded. parakeet_capi_load auto-detects the arch. No existing ASR
+//     signatures changed.
+// v7: added speaker-attributed ASR (SAS) entry points
+//     (parakeet_capi_transcribe_and_diarize /
+//      parakeet_capi_transcribe_and_diarize_json). Takes two contexts
+//     (an ASR ctx + a diarization ctx), runs both models on the same
+//     audio, and merges word timestamps with speaker segments.
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -322,9 +334,83 @@ char* parakeet_capi_stream_finalize_json(parakeet_stream* s);
 // Free a streaming session. Safe on NULL.
 void parakeet_capi_stream_free(parakeet_stream* s);
 
+// ---------------------------------------------------------------------------
+// Offline speaker diarization (nvidia/Nemotron-3-Diarization and compatible
+// Sortformer models). A parakeet_ctx loaded from a diarization GGUF holds a
+// pk::DiarizationModel instead of an ASR pk::Model. The diarize functions
+// below are the only valid entry points for such a context (the transcribe
+// functions return NULL); conversely, diarize functions on an ASR context
+// return NULL. parakeet_capi_load auto-detects the arch.
+// ---------------------------------------------------------------------------
+
+// Diarize a WAV file. Returns a malloc'd UTF-8 JSON document (free with
+// parakeet_capi_free_string) of the shape:
+//   {"speakers":8,
+//    "segments":[{"speaker":0,"start":0.10,"end":1.30}, ...]}
+// where "speakers" is the model's max-speaker capacity, "speaker" is a 0-based
+// speaker index, and "start"/"end" are seconds (2 decimals, matching NeMo's
+// round(ts, 2)). Segments are sorted by start time then speaker. On error
+// returns NULL and sets the context's last error.
+char* parakeet_capi_diarize_path(parakeet_ctx* ctx, const char* wav_path);
+
+// Diarize in-memory mono float PCM (`samples`, length `n_samples`). If
+// `sample_rate != 16000` the audio is linearly resampled to 16 kHz first.
+// Returns the same JSON shape as parakeet_capi_diarize_path. Free with
+// parakeet_capi_free_string; NULL on error.
+char* parakeet_capi_diarize_pcm(parakeet_ctx* ctx, const float* samples,
+                                int n_samples, int sample_rate);
+
 // Free a string previously returned by parakeet_capi_transcribe_* /
+// parakeet_capi_diarize_* / parakeet_capi_transcribe_and_diarize_* /
 // parakeet_capi_stream_*. Safe on NULL.
 void parakeet_capi_free_string(char* s);
+
+// ---------------------------------------------------------------------------
+// Speaker-attributed ASR (SAS): run both ASR and diarization on the same
+// audio, then merge word timestamps with speaker segments ("who said what").
+//
+// Takes two separately-loaded contexts: `asr_ctx` (an ASR model) and
+// `diar_ctx` (a diarization model). Both must have been loaded successfully
+// via parakeet_capi_load. The audio is fed to each model independently, so
+// mel is computed twice (once per model). Phase 3.3 (mel sharing) will
+// optimize this when the two models' mel configs match.
+// ---------------------------------------------------------------------------
+
+// Speaker-attributed result: one utterance = one speaker + text + time span.
+typedef struct parakeet_sas_result {
+    int   speaker;   // 0-based speaker index, -1 = no speaker found
+    char* text;      // utterance text (space-joined words)
+    float start;     // utterance start (seconds)
+    float end;       // utterance end (seconds)
+    float conf;      // min word confidence
+} parakeet_sas_result;
+
+// Run ASR + diarization and merge. Returns a malloc'd array of
+// parakeet_sas_result (free with parakeet_capi_free_sas_results).
+// *n_results receives the count. Returns NULL on error.
+parakeet_sas_result* parakeet_capi_transcribe_and_diarize(
+    parakeet_ctx* asr_ctx,
+    parakeet_ctx* diar_ctx,
+    const float* samples, int n_samples, int sample_rate,
+    int* n_results);
+
+// Free a result array from parakeet_capi_transcribe_and_diarize. Safe on NULL.
+void parakeet_capi_free_sas_results(parakeet_sas_result* results);
+
+// JSON variant with full per-word + per-utterance detail. Returns a malloc'd
+// UTF-8 JSON document (free with parakeet_capi_free_string) of the shape:
+//   {"speakers":8,
+//    "utterances":[
+//      {"speaker":0,"text":"hello world","start":0.12,"end":0.85,"conf":0.95},
+//      ...],
+//    "words":[
+//      {"speaker":0,"text":"hello","start":0.12,"end":0.45,"conf":0.97},
+//      ...]}
+// Returns NULL on error.
+char* parakeet_capi_transcribe_and_diarize_json(
+    parakeet_ctx* asr_ctx,
+    parakeet_ctx* diar_ctx,
+    const float* samples, int n_samples, int sample_rate);
 
 // Human-readable description of the last error on `ctx`, or "" if none.
 // The returned pointer is owned by the context and valid until the next call on

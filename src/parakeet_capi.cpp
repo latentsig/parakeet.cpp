@@ -1,8 +1,10 @@
 #include "parakeet_capi.h"
 #include "parakeet.h"     // pk::Decoder
 #include "model.hpp"      // pk::Model
+#include "diarization.hpp" // pk::DiarizationModel
 #include "streaming.hpp"  // pk::StreamingSession
 #include "mel.hpp"        // pk::MelFrontend
+#include "sas_merge.hpp"  // pk::merge_asr_diarization, pk::group_speaker_words
 
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
@@ -35,11 +37,18 @@
 // v6: transcribe_pcm_logits, exposing the CTC head's log-prob matrix (row-major
 //     [T, vocab+1], already log-softmaxed) instead of decoded text, freed with
 //     the new free_logits. Original entry points unchanged.
-#define PARAKEET_CAPI_ABI_VERSION 6
+// v6.1: offline speaker diarization entry points (diarize_path / diarize_pcm).
+// v7: speaker-attributed ASR (SAS) entry points — takes two contexts
+//     (ASR + diarization), runs both models, merges word timestamps with
+//     speaker segments.
+#define PARAKEET_CAPI_ABI_VERSION 7
 
 // The opaque context: a loaded model plus a buffer for the last error message.
+// Exactly one of `model` / `diar` is non-null: ASR models use `model`,
+// diarization models (Sortformer) use `diar`.
 struct parakeet_ctx {
     std::unique_ptr<pk::Model> model;
+    std::unique_ptr<pk::DiarizationModel> diar;
     std::string last_error;
 };
 
@@ -130,12 +139,28 @@ extern "C" int parakeet_capi_abi_version(void) {
 extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
     if (!gguf_path) return nullptr;
     try {
-        std::unique_ptr<pk::Model> model = pk::Model::load(gguf_path);
-        if (!model) return nullptr;  // load failure (bad/missing GGUF)
         auto* ctx = new (std::nothrow) parakeet_ctx();
         if (!ctx) return nullptr;
-        ctx->model = std::move(model);
-        return ctx;
+
+        // Try ASR first. Model::load returns nullptr if the GGUF is not a
+        // valid ASR model (bad/missing file, or arch=="diarization" which
+        // Model::load rejects). Then try diarization.
+        std::unique_ptr<pk::Model> model = pk::Model::load(gguf_path);
+        if (model) {
+            ctx->model = std::move(model);
+            return ctx;
+        }
+
+        // Not an ASR model — try diarization.
+        std::unique_ptr<pk::DiarizationModel> diar = pk::DiarizationModel::load(gguf_path);
+        if (diar) {
+            ctx->diar = std::move(diar);
+            return ctx;
+        }
+
+        // Neither — load failed entirely.
+        delete ctx;
+        return nullptr;
     } catch (...) {
         // Never let an exception cross the boundary.
         return nullptr;
@@ -150,7 +175,12 @@ extern "C" char* parakeet_capi_transcribe_path_lang(parakeet_ctx* ctx,
                                                     const char* wav_path, int decoder,
                                                     const char* target_lang) {
     if (!ctx) return nullptr;
-    if (!ctx->model) { ctx->last_error = "context has no loaded model"; return nullptr; }
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
     if (!wav_path)   { ctx->last_error = "wav_path is NULL"; return nullptr; }
     // NULL / "" -> model default language (ignored by non-prompt models).
     const std::string lang = target_lang ? target_lang : "";
@@ -180,7 +210,12 @@ extern "C" char* parakeet_capi_transcribe_pcm_lang(parakeet_ctx* ctx,
                                                    int sample_rate, int decoder,
                                                    const char* target_lang) {
     if (!ctx) return nullptr;
-    if (!ctx->model) { ctx->last_error = "context has no loaded model"; return nullptr; }
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
     if (!samples || n_samples < 0) { ctx->last_error = "invalid samples buffer"; return nullptr; }
     // NULL / "" -> model default language (ignored by non-prompt models).
     const std::string lang = target_lang ? target_lang : "";
@@ -257,7 +292,12 @@ extern "C" int parakeet_capi_transcribe_pcm_batch_lang(parakeet_ctx* ctx,
                                                        const char* target_lang,
                                                        char** out) {
     if (!ctx) return 1;
-    if (!ctx->model) { ctx->last_error = "context has no loaded model"; return 1; }
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return 1;
+    }
     if (!samples || !n_samples || !out || n_clips < 0) {
         ctx->last_error = "invalid batch arguments";
         return 1;
@@ -314,7 +354,12 @@ extern "C" char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx,
                                                     const char* wav_path,
                                                     int decoder) {
     if (!ctx) return nullptr;
-    if (!ctx->model) { ctx->last_error = "context has no loaded model"; return nullptr; }
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
     if (!wav_path)   { ctx->last_error = "wav_path is NULL"; return nullptr; }
     try {
         pk::Transcription tr =
@@ -341,7 +386,12 @@ extern "C" char* parakeet_capi_transcribe_pcm_batch_json_lang(parakeet_ctx* ctx,
         const float* samples_concat, const int* n_samples, int n_clips,
         int sample_rate, int decoder, const char* target_lang) {
     if (!ctx) return nullptr;
-    if (!ctx->model) { ctx->last_error = "context has no loaded model"; return nullptr; }
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
     if (!samples_concat || !n_samples || n_clips < 0) {
         ctx->last_error = "invalid batch arguments"; return nullptr;
     }
@@ -546,7 +596,12 @@ std::string feed_available(parakeet_stream* s, bool flush, int& eou_flag,
 extern "C" parakeet_stream* parakeet_capi_stream_begin_lang(parakeet_ctx* ctx,
                                                            const char* target_lang) {
     if (!ctx) return nullptr;
-    if (!ctx->model) { ctx->last_error = "context has no loaded model"; return nullptr; }
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
     if (!ctx->model->config().streaming.present) {
         ctx->last_error = "model is not a cache-aware streaming model";
         return nullptr;
@@ -802,7 +857,251 @@ extern "C" void parakeet_capi_free_string(char* s) {
     std::free(s);
 }
 
+// ---------------------------------------------------------------------------
+// Offline speaker diarization
+// ---------------------------------------------------------------------------
+
+// Serialize a DiarizationResult to the JSON shape documented in the header.
+static char* diar_result_to_json(const pk::DiarizationResult& r) {
+    // {"speakers":N,"segments":[{"speaker":S,"start":X.XX,"end":Y.YY}, ...]}
+    std::string json;
+    json.reserve(128 + r.segments.size() * 40);
+    json += "{\"speakers\":";
+    json += std::to_string(r.n_speakers);
+    json += ",\"segments\":[";
+    for (size_t i = 0; i < r.segments.size(); ++i) {
+        if (i) json += ',';
+        char buf[80];
+        std::snprintf(buf, sizeof(buf),
+            "{\"speaker\":%d,\"start\":%.2f,\"end\":%.2f}",
+            r.segments[i].speaker, r.segments[i].start, r.segments[i].end);
+        json += buf;
+    }
+    json += "]}";
+    return dup_to_c(json);
+}
+
+extern "C" char* parakeet_capi_diarize_path(parakeet_ctx* ctx,
+                                            const char* wav_path) {
+    if (!ctx) return nullptr;
+    if (!ctx->diar) {
+        ctx->last_error = "context has no loaded diarization model";
+        return nullptr;
+    }
+    if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
+    try {
+        pk::DiarizationResult r = ctx->diar->diarize_path(wav_path);
+        ctx->last_error.clear();
+        return diar_result_to_json(r);
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+extern "C" char* parakeet_capi_diarize_pcm(parakeet_ctx* ctx,
+                                           const float* samples, int n_samples,
+                                           int sample_rate) {
+    if (!ctx) return nullptr;
+    if (!ctx->diar) {
+        ctx->last_error = "context has no loaded diarization model";
+        return nullptr;
+    }
+    if (!samples || n_samples < 0) {
+        ctx->last_error = "invalid samples buffer";
+        return nullptr;
+    }
+    try {
+        std::vector<float> pcm(samples, samples + n_samples);
+        pk::DiarizationResult r = ctx->diar->diarize_pcm(pcm, sample_rate);
+        ctx->last_error.clear();
+        return diar_result_to_json(r);
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
 extern "C" const char* parakeet_capi_last_error(parakeet_ctx* ctx) {
     if (!ctx) return "";
     return ctx->last_error.c_str();
+}
+
+// ---------------------------------------------------------------------------
+// Speaker-attributed ASR (SAS)
+// ---------------------------------------------------------------------------
+
+static char* sas_results_to_json(const std::vector<pk::SpeakerUtterance>& utts,
+                                  int n_speakers) {
+    // Build JSON: {"speakers":N, "utterances":[...], "words":[...]}
+    // For the non-words variant, just utterances.
+    std::string s;
+    s.reserve(4096);
+    s += "{\"speakers\":";
+    s += std::to_string(n_speakers);
+    s += ",\"utterances\":[";
+    for (size_t i = 0; i < utts.size(); ++i) {
+        if (i) s += ',';
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "{\"speaker\":%d,\"text\":\"%s\",\"start\":%.2f,\"end\":%.2f,\"conf\":%.3f}",
+                 utts[i].speaker,
+                 utts[i].text.c_str(),
+                 utts[i].start,
+                 utts[i].end,
+                 utts[i].conf);
+        s += buf;
+    }
+    s += "]}";
+    return dup_to_c(s);
+}
+
+static char* sas_results_to_json_full(const std::vector<pk::SpeakerUtterance>& utts,
+                                       const std::vector<pk::SpeakerWord>& swords,
+                                       int n_speakers) {
+    std::string s;
+    s.reserve(8192);
+    s += "{\"speakers\":";
+    s += std::to_string(n_speakers);
+    s += ",\"utterances\":[";
+    for (size_t i = 0; i < utts.size(); ++i) {
+        if (i) s += ',';
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "{\"speaker\":%d,\"text\":\"%s\",\"start\":%.2f,\"end\":%.2f,\"conf\":%.3f}",
+                 utts[i].speaker,
+                 utts[i].text.c_str(),
+                 utts[i].start,
+                 utts[i].end,
+                 utts[i].conf);
+        s += buf;
+    }
+    s += "],\"words\":[";
+    for (size_t i = 0; i < swords.size(); ++i) {
+        if (i) s += ',';
+        char buf[512];
+        snprintf(buf, sizeof(buf),
+                 "{\"speaker\":%d,\"text\":\"%s\",\"start\":%.3f,\"end\":%.3f,\"conf\":%.3f}",
+                 swords[i].speaker,
+                 swords[i].text.c_str(),
+                 swords[i].start,
+                 swords[i].end,
+                 swords[i].conf);
+        s += buf;
+    }
+    s += "]}";
+    return dup_to_c(s);
+}
+
+// Internal: run ASR + diarization on the same audio, merge, return both
+// utterances and per-word results.
+static bool run_sas(parakeet_ctx* asr_ctx,
+                    parakeet_ctx* diar_ctx,
+                    const float* samples, int n_samples, int sample_rate,
+                    std::vector<pk::SpeakerWord>& swords,
+                    std::vector<pk::SpeakerUtterance>& utts,
+                    int& n_speakers) {
+    if (!asr_ctx || !asr_ctx->model) {
+        if (asr_ctx) asr_ctx->last_error = "asr_ctx does not hold an ASR model";
+        return false;
+    }
+    if (!diar_ctx || !diar_ctx->diar) {
+        if (diar_ctx) diar_ctx->last_error = "diar_ctx does not hold a diarization model";
+        return false;
+    }
+
+    // Run ASR (with timestamps so we get per-word [text, start, end, conf])
+    pk::Transcription tr;
+    try {
+        std::vector<float> pcm(samples, samples + n_samples);
+        tr = asr_ctx->model->transcribe_with_timestamps(pcm, sample_rate);
+    } catch (const std::exception& e) {
+        asr_ctx->last_error = std::string("ASR failed: ") + e.what();
+        return false;
+    }
+
+    // Run diarization
+    pk::DiarizationResult dr;
+    try {
+        std::vector<float> pcm(samples, samples + n_samples);
+        dr = diar_ctx->diar->diarize_pcm(pcm, sample_rate);
+    } catch (const std::exception& e) {
+        diar_ctx->last_error = std::string("diarization failed: ") + e.what();
+        return false;
+    }
+
+    n_speakers = dr.n_speakers;
+
+    // Merge: assign speaker to each word
+    swords = pk::merge_asr_diarization(tr.words, dr.segments);
+
+    // Group into utterances
+    utts = pk::group_speaker_words(swords);
+
+    return true;
+}
+
+extern "C" parakeet_sas_result* parakeet_capi_transcribe_and_diarize(
+    parakeet_ctx* asr_ctx,
+    parakeet_ctx* diar_ctx,
+    const float* samples, int n_samples, int sample_rate,
+    int* n_results) {
+    if (n_results) *n_results = 0;
+    if (!asr_ctx || !diar_ctx) return nullptr;
+
+    std::vector<pk::SpeakerWord> swords;
+    std::vector<pk::SpeakerUtterance> utts;
+    int n_speakers = 0;
+
+    if (!run_sas(asr_ctx, diar_ctx, samples, n_samples, sample_rate,
+                 swords, utts, n_speakers)) {
+        return nullptr;
+    }
+
+    // Allocate result array
+    parakeet_sas_result* results = (parakeet_sas_result*)
+        std::malloc(sizeof(parakeet_sas_result) * utts.size());
+    if (!results) return nullptr;
+
+    for (size_t i = 0; i < utts.size(); ++i) {
+        results[i].speaker = utts[i].speaker;
+        results[i].text    = dup_to_c(utts[i].text);
+        results[i].start   = utts[i].start;
+        results[i].end     = utts[i].end;
+        results[i].conf    = utts[i].conf;
+    }
+
+    if (n_results) *n_results = (int)utts.size();
+    return results;
+}
+
+extern "C" void parakeet_capi_free_sas_results(parakeet_sas_result* results) {
+    // We cannot free the .text strings because the caller doesn't pass the
+    // count to this function. The caller must free each .text with
+    // parakeet_capi_free_string and then call this function to free the array.
+    if (results) std::free(results);
+}
+
+extern "C" char* parakeet_capi_transcribe_and_diarize_json(
+    parakeet_ctx* asr_ctx,
+    parakeet_ctx* diar_ctx,
+    const float* samples, int n_samples, int sample_rate) {
+    if (!asr_ctx || !diar_ctx) return nullptr;
+
+    std::vector<pk::SpeakerWord> swords;
+    std::vector<pk::SpeakerUtterance> utts;
+    int n_speakers = 0;
+
+    if (!run_sas(asr_ctx, diar_ctx, samples, n_samples, sample_rate,
+                 swords, utts, n_speakers)) {
+        return nullptr;
+    }
+
+    return sas_results_to_json_full(utts, swords, n_speakers);
 }
