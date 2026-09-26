@@ -92,7 +92,11 @@ set(PARAKEET_SRC
     src/transducer_batch.cpp
     src/tokenizer.cpp
     src/search.cpp
-    src/transcription.cpp)
+    src/transcription.cpp
+    src/diarization.cpp
+    src/diarization_encoder.cpp
+    src/diarization_head.cpp
+    src/sas_merge.cpp)
 
 if(PARAKEET_SHARED)
   add_library(parakeet SHARED ${PARAKEET_SRC})
