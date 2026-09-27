@@ -353,6 +353,10 @@ def main():
         w.add_float32("parakeet.diar.onset_threshold", 0.5)
         w.add_float32("parakeet.diar.offset_threshold", 0.5)
 
+        # NeMo diarize() runs streaming inference when streaming_mode is set.
+        w.add_bool("parakeet.diar.streaming_mode",
+                   bool(_get_cfg_value(model_cfg, "streaming_mode", False)))
+
         # Streaming speaker-cache config (SortformerModules), in encoder frames.
         # Defaults are the SortformerModules constructor defaults.
         def sf(key, default):

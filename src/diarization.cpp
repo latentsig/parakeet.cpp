@@ -1,4 +1,5 @@
 #include "diarization.hpp"
+#include "diarization_streaming.hpp"
 
 #include "audio_io.hpp"
 #include "backend.hpp"
@@ -118,21 +119,61 @@ void DiarizationModel::speaker_probs(const std::vector<float>& samples,
 }
 
 DiarizationResult DiarizationModel::run(const std::vector<float>& samples) {
-    const ParakeetConfig& cfg = loader_.config();
+    // NeMo's diarize() follows the checkpoint's streaming_mode (true for
+    // Nemotron-3-Diarization). The streaming path is also the one that holds
+    // up on long audio: offline attends over the whole clip, far beyond the
+    // training sessions (and quadratic in length).
+    return loader_.config().diarization.streaming_mode ? run_streaming(samples)
+                                                       : run_offline(samples);
+}
 
+DiarizationResult DiarizationModel::run_offline(const std::vector<float>& samples) const {
     std::vector<float> probs;
-    int n_spk = 0, T_out = 0;
-    speaker_probs(samples, probs, n_spk, T_out);
-
-    // 4. Post-process -> speaker segments
+    int n_spk = 0, T = 0;
+    speaker_probs(samples, probs, n_spk, T);
     DiarizationResult result;
-    result.segments = postprocess(
-        probs, n_spk, T_out,
-        cfg.diarization.frame_resolution_sec,
-        cfg.diarization.onset_threshold,
-        cfg.diarization.offset_threshold);
-    result.n_speakers = n_spk;
+    result.segments = segments_from_probs(probs, n_spk, T);
+    result.n_speakers = (int)loader_.config().diarization.n_speakers;
     return result;
+}
+
+DiarizationResult DiarizationModel::run_streaming(const std::vector<float>& samples) const {
+    const ParakeetConfig& cfg = loader_.config();
+    DiarizationResult result;
+    result.n_speakers = (int)cfg.diarization.n_speakers;
+
+    // Whole-clip log-mel, not peak-normalized in streaming mode, trimmed to
+    // floor(S / hop) frames like NeMo.
+    std::vector<float> feats;
+    int n_mels = 0, T = 0;
+    mel_->compute(samples, feats, n_mels, T);
+    if (cfg.hop_length > 0) T = std::min(T, (int)(samples.size() / cfg.hop_length));
+    if (T <= 0) return result;
+    const int T_full = (int)(feats.size() / n_mels);
+
+    StreamingDiarization sd(loader_);
+    const int cm = sd.chunk_mel_frames();
+    std::vector<float> chunk;
+    for (int lo = 0; lo < T; lo += cm) {
+        const int n = std::min(cm, T - lo);
+        chunk.resize((size_t)n_mels * n);
+        for (int m = 0; m < n_mels; ++m)
+            std::copy_n(feats.begin() + (size_t)m * T_full + lo, n, chunk.begin() + (size_t)m * n);
+        for (const auto& g : sd.feed_mel_chunk(chunk, n_mels, n, lo + n >= T))
+            result.segments.push_back({g.speaker, g.start, g.end});
+    }
+    std::sort(result.segments.begin(), result.segments.end(),
+              [](const SpeakerSegment& a, const SpeakerSegment& b) {
+                  return a.start != b.start ? a.start < b.start : a.speaker < b.speaker;
+              });
+    return result;
+}
+
+std::vector<SpeakerSegment> DiarizationModel::segments_from_probs(
+        const std::vector<float>& probs, int n_spk, int T) const {
+    const auto& d = loader_.config().diarization;
+    return postprocess(probs, n_spk, T, d.frame_resolution_sec, d.onset_threshold,
+                       d.offset_threshold);
 }
 
 std::vector<SpeakerSegment> DiarizationModel::postprocess(

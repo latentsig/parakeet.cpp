@@ -210,6 +210,7 @@ bool ModelLoader::load(const std::string& path){
         // Streaming (speaker cache) config, in ENCODER frames as in NeMo
         // SortformerModules. Defaults are the Nemotron-3-Diarization values,
         // for GGUFs converted before these keys were written.
+        d.streaming_mode         = kv_bool(gguf_, "parakeet.diar.streaming_mode", true);
         d.chunk_len              = (int32_t)kv_u32(gguf_, "parakeet.diar.chunk_len", 264);
         d.spkcache_len           = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_len", 264);
         d.fifo_len               = (int32_t)kv_u32(gguf_, "parakeet.diar.fifo_len", 0);

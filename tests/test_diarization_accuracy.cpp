@@ -4,8 +4,10 @@
 // (scripts/gen_diar_baseline.py) and checks it against NeMo's own output:
 //
 //   1. offline speaker probabilities: same shape, max/mean abs diff in bounds
-//   2. offline segments: same count, same speakers, boundaries within 20 ms
-//   3. frame-level speaker activity agreement (10 ms grid) >= 99.5%
+//   2. offline segments: same count, same speakers, boundaries within 20 ms,
+//      and frame-level speaker activity agreement (10 ms grid) >= 99.5%
+//   3. the same for diarize_pcm, which follows the model's streaming_mode
+//      like NeMo's diarize() (streaming for Nemotron-3-Diarization)
 //
 // The default fixture is tests/fixtures/two_speakers.wav (LibriSpeech 1272 and
 // 2086 alternating, A-B-A-B), where NeMo finds 5 segments across 2 speakers.
@@ -49,6 +51,47 @@ std::vector<char> to_grid(const std::vector<Seg>& segs, int n_spk, int T) {
         for (int t = a; t < b; ++t) g[(size_t)s.spk * T + t] = 1;
     }
     return g;
+}
+
+int check_segments(const char* label, const std::vector<pk::SpeakerSegment>& got,
+                   const std::vector<Seg>& ref, int n_spk, int T) {
+    int fails = 0;
+    std::vector<Seg> ours;
+    for (const auto& g : got) ours.push_back({g.speaker, g.start, g.end});
+    auto same = [](const Seg& a, const Seg& b) {
+        return a.spk == b.spk && std::fabs(a.start - b.start) <= 0.02f &&
+               std::fabs(a.end - b.end) <= 0.02f;
+    };
+    std::printf("[%s] segments: ours %zu, NeMo %zu\n", label, ours.size(), ref.size());
+    for (size_t i = 0; i < std::max(ours.size(), ref.size()); ++i) {
+        const bool ho = i < ours.size(), hr = i < ref.size();
+        std::printf("  %s spk%d %6.2f-%6.2f   NeMo spk%d %6.2f-%6.2f\n",
+                    ho && hr && same(ours[i], ref[i]) ? "ok  " : "DIFF",
+                    ho ? ours[i].spk : -1, ho ? ours[i].start : 0.f, ho ? ours[i].end : 0.f,
+                    hr ? ref[i].spk : -1, hr ? ref[i].start : 0.f, hr ? ref[i].end : 0.f);
+        if (!(ho && hr && same(ours[i], ref[i]))) ++fails;
+    }
+
+    // Frame-level agreement over frames where either side has speech.
+    const std::vector<char> go = to_grid(ours, n_spk, T), gr = to_grid(ref, n_spk, T);
+    int active = 0, agree = 0;
+    for (int t = 0; t < T; ++t) {
+        bool any = false, eq = true;
+        for (int s = 0; s < n_spk; ++s) {
+            const char a = go[(size_t)s * T + t], b = gr[(size_t)s * T + t];
+            any = any || a || b;
+            eq = eq && a == b;
+        }
+        if (any) { ++active; agree += eq ? 1 : 0; }
+    }
+    const double agreement = active ? (double)agree / active : 1.0;
+    std::printf("[%s] frame agreement: %.2f%% of %d active frames\n", label, 100.0 * agreement, active);
+    if (agreement < 0.995) {
+        std::fprintf(stderr, "[%s] FAIL: frame agreement below 99.5%%\n", label);
+        ++fails;
+    }
+    if (fails) std::fprintf(stderr, "[%s] FAIL: segments differ from NeMo\n", label);
+    return fails ? 1 : 0;
 }
 
 }  // namespace
@@ -99,53 +142,16 @@ int main() {
         ++fails;
     }
 
-    // 2. Segments.
-    const std::vector<Seg> ref = to_segs(ref_segs_flat);
-    pk::DiarizationResult r = m->diarize_pcm(audio, 16000);
-    std::vector<Seg> ours;
-    for (const auto& s : r.segments) ours.push_back({s.speaker, s.start, s.end});
-    std::printf("segments: ours %zu, NeMo %zu\n", ours.size(), ref.size());
-    for (size_t i = 0; i < std::max(ours.size(), ref.size()); ++i) {
-        const bool has_o = i < ours.size(), has_r = i < ref.size();
-        std::printf("  %s spk%d %6.2f-%6.2f   NeMo spk%d %6.2f-%6.2f\n",
-                    (has_o && has_r && ours[i].spk == ref[i].spk &&
-                     std::fabs(ours[i].start - ref[i].start) <= 0.02f &&
-                     std::fabs(ours[i].end - ref[i].end) <= 0.02f) ? "ok  " : "DIFF",
-                    has_o ? ours[i].spk : -1, has_o ? ours[i].start : 0.f, has_o ? ours[i].end : 0.f,
-                    has_r ? ref[i].spk : -1, has_r ? ref[i].start : 0.f, has_r ? ref[i].end : 0.f);
-    }
-    if (ours.size() != ref.size()) {
-        std::fprintf(stderr, "FAIL: segment count differs\n");
-        ++fails;
-    } else {
-        for (size_t i = 0; i < ref.size(); ++i) {
-            if (ours[i].spk != ref[i].spk ||
-                std::fabs(ours[i].start - ref[i].start) > 0.02f ||
-                std::fabs(ours[i].end - ref[i].end) > 0.02f) {
-                std::fprintf(stderr, "FAIL: segment %zu differs\n", i);
-                ++fails;
-            }
-        }
-    }
+    // 2. Offline segments.
+    fails += check_segments("offline", m->segments_from_probs(probs, n_spk, T),
+                            to_segs(ref_segs_flat), n_spk, T);
 
-    // 3. Frame-level agreement over frames where either side has speech.
-    const std::vector<char> go = to_grid(ours, n_spk, T), gr = to_grid(ref, n_spk, T);
-    int active = 0, agree = 0;
-    for (int t = 0; t < T; ++t) {
-        bool any = false, same = true;
-        for (int s = 0; s < n_spk; ++s) {
-            const char a = go[(size_t)s * T + t], b = gr[(size_t)s * T + t];
-            any = any || a || b;
-            same = same && a == b;
-        }
-        if (any) { ++active; agree += same ? 1 : 0; }
-    }
-    const double agreement = active ? (double)agree / active : 1.0;
-    std::printf("frame agreement: %.2f%% of %d active frames\n", 100.0 * agreement, active);
-    if (agreement < 0.995) {
-        std::fprintf(stderr, "FAIL: frame agreement below 99.5%%\n");
-        ++fails;
-    }
+    // 3. Default diarize_pcm (the model's streaming_mode, as NeMo diarize()).
+    const bool streaming = m->config().diarization.streaming_mode;
+    std::vector<float> ref_default = ref_segs_flat;
+    if (streaming && !pktest::load_baseline(base, "stream_segs", ref_default, shape)) return 1;
+    fails += check_segments(streaming ? "diarize_pcm (streaming)" : "diarize_pcm (offline)",
+                            m->diarize_pcm(audio, 16000).segments, to_segs(ref_default), n_spk, T);
 
     std::printf(fails ? "test_diarization_accuracy: FAIL\n" : "test_diarization_accuracy: PASS\n");
     return fails ? 1 : 0;

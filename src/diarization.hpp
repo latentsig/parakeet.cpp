@@ -50,6 +50,16 @@ public:
     void speaker_probs(const std::vector<float>& pcm16k, std::vector<float>& probs,
                        int& n_spk, int& T) const;
 
+    // Offline segments for probabilities from speaker_probs (hysteresis at the
+    // model's onset/offset, 10 ms frames, rounded to 10 ms).
+    std::vector<SpeakerSegment> segments_from_probs(const std::vector<float>& probs,
+                                                    int n_spk, int T) const;
+
+    // The two pipelines diarize_* chooses between (config().diarization.
+    // streaming_mode, as NeMo's diarize() does). Input is 16 kHz PCM.
+    DiarizationResult run_offline(const std::vector<float>& pcm16k) const;
+    DiarizationResult run_streaming(const std::vector<float>& pcm16k) const;
+
     const ParakeetConfig& config() const { return loader_.config(); }
     const ModelLoader& loader() const { return loader_; }
 
@@ -59,8 +69,7 @@ public:
 private:
     DiarizationModel() = default;
 
-    // Internal: run the full pipeline (mel → encoder → head → postprocess)
-    // on already-16kHz PCM.
+    // Dispatch to run_offline / run_streaming on already-16 kHz PCM.
     DiarizationResult run(const std::vector<float>& samples);
 
     // Post-process per-frame speaker probabilities into speaker segments.

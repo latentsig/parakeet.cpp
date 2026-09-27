@@ -82,6 +82,7 @@ struct ParakeetConfig {
         float frame_resolution_sec=0.01f; // output frame duration
         float onset_threshold=0.5f;  // hysteresis onset
         float offset_threshold=0.5f; // hysteresis offset
+        bool streaming_mode=true;       // NeMo diarize() default: streaming
         // --- streaming (speaker cache) config, in ENCODER frames (80 ms) ---
         int32_t chunk_len=264;          // encoder frames per chunk
         int32_t spkcache_len=264;       // speaker cache size
