@@ -7,7 +7,8 @@ namespace pk {
 
 std::vector<SpeakerWord> merge_asr_diarization(
     const std::vector<Word>& words,
-    const std::vector<SpeakerSegment>& segs)
+    const std::vector<SpeakerSegment>& segs,
+    float max_snap_sec)
 {
     std::vector<SpeakerWord> result;
     result.reserve(words.size());
@@ -35,6 +36,18 @@ std::vector<SpeakerWord> merge_asr_diarization(
             if (overlap > best_overlap) {
                 best_overlap = overlap;
                 best_speaker = seg.speaker;
+            }
+        }
+
+        if (best_speaker < 0) {
+            // No overlap: snap to the nearest segment within max_snap_sec.
+            float best_dist = max_snap_sec;
+            for (const auto& seg : sorted_segs) {
+                const float dist = seg.end <= w.start ? w.start - seg.end : seg.start - w.end;
+                if (dist <= best_dist) {
+                    best_dist = dist;
+                    best_speaker = seg.speaker;
+                }
             }
         }
 

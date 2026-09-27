@@ -32,15 +32,13 @@ struct SpeakerUtterance {
 //
 // For each word, the dominant active speaker is the one whose diarization
 // segment overlaps the word's [start, end] interval by the largest amount.
-// Words with no overlapping segment get speaker = -1.
-//
-// `word_frame_sec` and `diar_frame_sec` are the ASR and diarization encoder
-// frame strides (seconds per encoder frame). They are not used for the merge
-// itself (timestamps are already in seconds) but are exposed in the signature
-// for future streaming use where frame-level alignment is needed.
+// A word that overlaps no segment (ASR and diarization boundaries can disagree
+// by a frame or two) takes the nearest segment's speaker when that segment is
+// within `max_snap_sec`; otherwise speaker = -1.
 std::vector<SpeakerWord> merge_asr_diarization(
     const std::vector<Word>& words,
-    const std::vector<SpeakerSegment>& segs);
+    const std::vector<SpeakerSegment>& segs,
+    float max_snap_sec = 0.5f);
 
 // Group speaker-attributed words into utterances.
 // Consecutive words with the same speaker and gap <= max_gap_sec are joined.

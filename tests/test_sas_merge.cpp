@@ -90,6 +90,26 @@ static void test_no_speaker() {
     CHECK(swords[0].speaker == -1);
 }
 
+// ── Test 3b: no overlap, but a segment within the snap distance ─────────
+// ASR and diarization boundaries can disagree slightly: a word that just
+// misses a segment takes the nearest segment's speaker.
+static void test_snap_to_nearest() {
+    std::vector<Word> words = {
+        {"well", 19.92f, 20.00f, 0.7f},   // 0.10 s before spk 1 starts
+        {"far", 25.00f, 25.20f, 0.7f},    // 1.4 s after spk 1 ends
+    };
+    std::vector<SpeakerSegment> segs = {
+        {0, 14.78f, 18.75f},              // 1.17 s away from "well"
+        {1, 20.10f, 23.60f},
+    };
+    auto swords = merge_asr_diarization(words, segs);
+    CHECK(swords[0].speaker == 1);
+    CHECK(swords[1].speaker == -1);
+    // Snapping can be disabled.
+    swords = merge_asr_diarization(words, segs, 0.0f);
+    CHECK(swords[0].speaker == -1);
+}
+
 // ── Test 4: utterance grouping — same speaker, small gap ──────────────────
 static void test_grouping_same_speaker() {
     std::vector<SpeakerWord> swords = {
@@ -210,6 +230,7 @@ int main() {
     test_basic_assignment();
     test_dominant_speaker();
     test_no_speaker();
+    test_snap_to_nearest();
     test_grouping_same_speaker();
     test_grouping_speaker_change();
     test_grouping_large_gap();
