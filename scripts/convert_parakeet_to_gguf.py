@@ -567,6 +567,34 @@ def main():
         w.add_float32("parakeet.diar.onset_threshold", onset)
         w.add_float32("parakeet.diar.offset_threshold", offset)
 
+        # AOSC streaming config (Phase 2)
+        # Nemotron-3-Diarization defaults from NeMo config
+        streaming_cfg = _get(cfg, "streaming", {}) or {}
+        chunk_len = int(_get(streaming_cfg, "chunk_len", 264))
+        spkcache_len = int(_get(streaming_cfg, "spkcache_len", chunk_len))
+        fifo_len = int(_get(streaming_cfg, "fifo_len", 0))
+        spkcache_update = int(_get(streaming_cfg, "spkcache_update_period", chunk_len))
+        sil_per_spk = int(_get(streaming_cfg, "spkcache_sil_frames_per_spk", 3))
+        sil_thresh = float(_get(streaming_cfg, "sil_threshold", 0.2))
+        pred_score_thresh = float(_get(streaming_cfg, "pred_score_threshold", 0.25))
+        scores_boost = float(_get(streaming_cfg, "scores_boost_latest", 0.05))
+        strong_boost = float(_get(streaming_cfg, "strong_boost_rate", 0.75))
+        weak_boost = float(_get(streaming_cfg, "weak_boost_rate", 1.5))
+        min_pos = float(_get(streaming_cfg, "min_pos_scores_rate", 0.5))
+        learnable_sil = bool(_get(streaming_cfg, "use_learnable_sil_emb", True))
+        w.add_uint32("parakeet.diar.chunk_len", chunk_len)
+        w.add_uint32("parakeet.diar.spkcache_len", spkcache_len)
+        w.add_uint32("parakeet.diar.fifo_len", fifo_len)
+        w.add_uint32("parakeet.diar.spkcache_update_period", spkcache_update)
+        w.add_uint32("parakeet.diar.spkcache_sil_frames_per_spk", sil_per_spk)
+        w.add_float32("parakeet.diar.sil_threshold", sil_thresh)
+        w.add_float32("parakeet.diar.pred_score_threshold", pred_score_thresh)
+        w.add_float32("parakeet.diar.scores_boost_latest", scores_boost)
+        w.add_float32("parakeet.diar.strong_boost_rate", strong_boost)
+        w.add_float32("parakeet.diar.weak_boost_rate", weak_boost)
+        w.add_float32("parakeet.diar.min_pos_scores_rate", min_pos)
+        w.add_bool("parakeet.diar.use_learnable_sil_emb", learnable_sil)
+
     # transducer config
     if arch in ("rnnt", "tdt", "hybrid_rnnt_ctc", "hybrid_tdt_ctc"):
         prednet = _get(cfg.decoder, "prednet", {}) or {}
