@@ -2,161 +2,97 @@
 #include "model_loader.hpp"
 #include "diarization_encoder.hpp"
 #include "diarization_head.hpp"
-#include "mel.hpp"
-#include <memory>
-#include <string>
 #include <vector>
-#include <cstdint>
 
 namespace pk {
 
-// A speaker segment emitted during streaming. Timestamps are wall-clock seconds
-// from the start of the stream.
+// A finished speaker segment on the stream's timeline (seconds from stream start).
 struct StreamingSpeakerSegment {
     int speaker;
     float start;
     float end;
 };
 
-// Streaming diarization state for the Nemotron-3-Diarization Sortformer.
+// StreamingDiarization — NeMo Sortformer cache-aware streaming ("AOSC"),
+// synchronous mode (SortformerEncLabelModel.forward_streaming_step +
+// SortformerModules.streaming_update), for nvidia/Nemotron-3-Diarization.
 //
-// The AOSC ("Attention-Only Streaming with Compression") mechanism:
+// Each chunk of mel frames is pre-encoded (FeatureStacking + projection +
+// embed_norm) and the transformer + speaker head run over
+// [speaker cache | FIFO | chunk]. The chunk's slice of the high-resolution
+// output is the result for that chunk; the downsampled predictions drive the
+// FIFO -> speaker-cache update and the score-based cache compression that
+// keeps the speaker identities stable across chunks.
 //
-//  1. Audio is processed in chunks of `chunk_len` mel frames (264).
-//  2. Each chunk is concatenated with the speaker cache: [spkcache | chunk].
-//     The full bidirectional encoder runs over this concatenated sequence.
-//  3. The encoder output for the chunk portion (last chunk_enc_len frames)
-//     is passed through the diarization head to get per-frame speaker probs.
-//  4. The probs for the spkcache portion are stored for compression scoring.
-//  5. After processing, the chunk embeddings are appended to a FIFO buffer.
-//     When the FIFO overflows (exceeds fifo_len), the oldest frames are popped
-//     and appended to the spkcache.
-//  6. When the spkcache exceeds spkcache_len, AOSC compression is triggered:
-//     frames are scored per-speaker (log-odds), top-K are selected globally,
-//     and the spkcache is rebuilt to spkcache_len frames.
+// chunk_len / spkcache_len / fifo_len / spkcache_update_period come from the
+// GGUF and are in ENCODER frames (80 ms), as in NeMo. With the Nemotron-3
+// config a chunk is 264 encoder frames = 2112 mel frames = 21.12 s.
 //
-// For Nemotron-3-Diarization:
-//   fifo_len=0, spkcache_len=264, chunk_len=264
-//   subsampling_factor=8, upsample_factor=8
-//   use_learnable_sil_emb=true
-//
-// With fifo_len=0, every chunk immediately overflows the FIFO, so every chunk's
-// embeddings are appended to the spkcache and compression runs after every chunk.
-//
-// The streaming path reuses the SAME encoder and head as the offline path —
-// only the chunking and spkcache management differ.
+// The mel must be the un-normalized log-mel of the stream (NeMo does not
+// peak-normalize in streaming mode), e.g. from pk::StreamingMel.
 class StreamingDiarization {
 public:
     explicit StreamingDiarization(const ModelLoader& ml);
-    ~StreamingDiarization();
 
-    // Reset the stream state (clear spkcache, frame counter).
     void reset();
 
-    // Feed one chunk of mel features [n_mels, n_frames] (row-major:
-    // mel[m*n_frames + t]). The caller must provide exactly `chunk_len` frames
-    // (or fewer for the final chunk). Returns the speaker segments for this
-    // chunk (with wall-clock timestamps).
-    //
-    // is_last marks the final chunk — the spkcache is not updated after it.
+    // Feed the next chunk: row-major [n_mels, n_frames] (mel[m*n_frames + t]),
+    // 0 < n_frames <= chunk_mel_frames(). Only the final chunk may be short.
+    // Returns the speaker segments that ENDED in this chunk; with is_last,
+    // every still-open segment is closed at the end of the stream.
     std::vector<StreamingSpeakerSegment> feed_mel_chunk(
-        const std::vector<float>& mel_chunk, int n_mels, int n_frames,
-        bool is_last = false);
+        const std::vector<float>& mel, int n_mels, int n_frames, bool is_last);
 
-    // Chunk parameters (from GGUF config).
-    int chunk_len() const { return chunk_len_; }
-    int spkcache_len() const { return spkcache_len_; }
-    int fifo_len() const { return fifo_len_; }
+    // Speaker probabilities of the last fed chunk, speaker-major
+    // [n_speakers, last_chunk_frames()] (one frame per mel frame, 10 ms).
+    const std::vector<float>& last_chunk_probs() const { return last_probs_; }
+    int last_chunk_frames() const { return last_frames_; }
+
+    // Segments that are still active at the current end of the stream, with
+    // `end` set to the stream time consumed so far.
+    std::vector<StreamingSpeakerSegment> open_segments() const;
+
+    int chunk_mel_frames() const { return chunk_len_ * subsampling_; }
     int n_mels() const { return n_mels_; }
     int n_speakers() const { return n_spk_; }
-
-    // The frame-to-second conversion: each output frame is hop_length/sample_rate
-    // seconds = 160/16000 = 0.01s.
     float frame_sec() const { return frame_sec_; }
+    // Mel frames consumed so far.
+    long long frames_done() const { return frames_done_; }
 
 private:
+    void streaming_update(const std::vector<float>& chunk_emb, int chunk_frames,
+                          const std::vector<float>& preds, int spkcache_frames,
+                          int fifo_frames);
+    void compress_spkcache();
+    void track_segments(const std::vector<float>& probs, int n_frames, bool is_last,
+                        std::vector<StreamingSpeakerSegment>& out);
+
     const ModelLoader& ml_;
     DiarizationEncoder encoder_;
     DiarizationHead head_;
 
-    int d_model_;            // encoder d_model (512)
-    int tf_d_model_;         // sortformer tf_d_model (192)
-    int n_spk_;              // number of speakers (8)
-    int n_layers_;           // transformer blocks (31)
-    int n_heads_;            // attention heads (8)
-    int head_dim_;           // d_model / n_heads (64)
-    int ff_dim_;             // feed-forward dim (2048)
-    int subsampling_factor_; // 8
-    int upsample_factor_;    // 8
-    int n_mels_;             // 128
-    int chunk_len_;          // 264 mel frames
-    int spkcache_len_;       // 264 mel frames
-    int fifo_len_;           // 0 for Nemotron-3
-    float frame_sec_;        // 0.01s per output frame
-    float onset_threshold_;
-    float offset_threshold_;
+    int d_model_, n_spk_, subsampling_, upsample_, n_mels_;
+    int chunk_len_, spkcache_len_, fifo_len_, update_period_, sil_frames_per_spk_;
+    float frame_sec_, onset_, offset_;
+    float sil_threshold_, pred_score_threshold_, scores_boost_latest_;
+    float strong_boost_rate_, weak_boost_rate_, min_pos_scores_rate_;
+    bool use_learnable_sil_emb_ = false;
+    std::vector<float> learnable_sil_emb_;   // [d_model]
 
-    // --- AOSC streaming config ---
-    int spkcache_sil_frames_per_spk_; // 3
-    float sil_threshold_;              // 0.2
-    float pred_score_threshold_;       // 0.25
-    float scores_boost_latest_;       // 0.05
-    float strong_boost_rate_;         // 0.75
-    float weak_boost_rate_;           // 1.5
-    float min_pos_scores_rate_;       // 0.5
-    int max_index_;                   // 99999 (placeholder for disabled slots)
+    // Streaming state. Embeddings are time-major [frames, d_model];
+    // predictions are [frames, n_spk] at encoder resolution.
+    std::vector<float> spkcache_, spkcache_preds_;
+    std::vector<float> fifo_, fifo_preds_;
+    bool spkcache_compressed_ = false;
+    std::vector<float> mean_sil_emb_;        // [d_model]
+    long long n_sil_frames_ = 0;
 
-    // --- Spkcache state ---
-    // Encoder embeddings [d_model, spkcache_enc_len] (channels-first: emb[c*len + t])
-    std::vector<float> spkcache_embs_;
-    std::vector<float> spkcache_preds_;  // [n_spk, spkcache_enc_len]
-    int spkcache_enc_len_ = 0;
-    bool spkcache_preds_valid_ = false;
-
-    // --- FIFO state ---
-    // With fifo_len=0, this overflows every chunk.
-    std::vector<float> fifo_embs_;    // [d_model, fifo_enc_len]
-    std::vector<float> fifo_preds_;   // [n_spk, fifo_enc_len]
-    int fifo_enc_len_ = 0;
-
-    // --- Silence profile ---
-    std::vector<float> mean_sil_emb_;  // [d_model]
-    int n_sil_frames_ = 0;
-
-    // --- The learned silence embedding (model parameter) ---
-    bool has_silence_emb_ = false;
-    std::vector<float> silence_emb_;  // [d_model]
-
-    // Running count of total mel frames consumed (for wall-clock timestamps).
-    int total_mel_frames_ = 0;
-
-    // --- Internal helpers ---
-
-    // AOSC: boost top-K scores per speaker
-    void boost_topk_scores(float* scores, int n_frames, int n_spk,
-                           int k_per_spk, float scale_factor, float offset) const;
-
-    // AOSC: compress spkcache from current length to spkcache_len_ frames.
-    void compress_spkcache();
-
-    // Update running silence profile from popped embeddings.
-    void update_silence_profile(const float* pop_embs, const float* pop_preds,
-                                 int pop_len);
-
-    // Update stream state after processing one chunk (FIFO → spkcache → compress).
-    // chunk_preenc: pre-encoded embeddings for the chunk [d_model, chunk_enc_len]
-    // chunk_preds: per-speaker probs for the chunk [n_spk, chunk_out_len]
-    // full_pred_out: full prediction output for [spkcache | chunk] [n_spk, total_out_len]
-    //                (used to extract spkcache predictions for scoring)
-    void stream_state_update(
-        const std::vector<float>& chunk_preenc, int chunk_enc_len,
-        const std::vector<float>& chunk_preds, int chunk_out_len,
-        const std::vector<float>& full_pred_out, int full_out_len);
-
-    // Post-process per-frame speaker probabilities into segments for this chunk.
-    std::vector<StreamingSpeakerSegment> postprocess_chunk(
-        const std::vector<float>& probs, int n_spk, int T_out,
-        float time_offset) const;
+    // Output state.
+    long long frames_done_ = 0;              // mel frames consumed
+    std::vector<float> last_probs_;
+    int last_frames_ = 0;
+    std::vector<char> active_;               // per speaker
+    std::vector<long long> start_frame_;     // per speaker, when active
 };
 
 } // namespace pk

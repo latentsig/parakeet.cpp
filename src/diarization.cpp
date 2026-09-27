@@ -95,14 +95,14 @@ void DiarizationModel::speaker_probs(const std::vector<float>& samples,
     }
     if (T_mel == 0) return;
 
-    // 2. Diarization encoder -> enc_out [d_model, T_enc] (channels-first)
+    // 2. Diarization encoder -> enc_out [T_enc, d_model] (time-major)
     std::vector<float> enc_out;
-    int d_model = 0, T_enc = 0;
-    encoder_->forward(feats, n_mels, T_mel, enc_out, d_model, T_enc);
+    int T_enc = 0;
+    encoder_->forward(feats, n_mels, T_mel, enc_out, T_enc);
 
     // 3. Diarization head -> probs [n_spk, T_out] (post-sigmoid)
     int T_out = 0;
-    head_->forward(enc_out, d_model, T_enc, probs, n_spk, T_out);
+    head_->forward(enc_out, T_enc, probs, n_spk, T_out);
 
     // High-resolution output has one frame per mel frame; drop the frames the
     // FeatureStacking pad added past T_mel (NeMo slices preds to the mel length).

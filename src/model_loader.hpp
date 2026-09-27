@@ -82,13 +82,12 @@ struct ParakeetConfig {
         float frame_resolution_sec=0.01f; // output frame duration
         float onset_threshold=0.5f;  // hysteresis onset
         float offset_threshold=0.5f; // hysteresis offset
-        // --- AOSC streaming config (Phase 2) ---
-        bool streaming_capable=false;
-        int32_t chunk_len=0;           // mel frames per chunk (264)
-        int32_t spkcache_len=0;         // target spkcache size in mel frames (264)
-        int32_t fifo_len=0;             // FIFO buffer length (0 for Nemotron-3)
-        int32_t spkcache_update_period=0; // frames before spkcache update
-        int32_t spkcache_sil_frames_per_spk=3; // silence placeholders per speaker
+        // --- streaming (speaker cache) config, in ENCODER frames (80 ms) ---
+        int32_t chunk_len=264;          // encoder frames per chunk
+        int32_t spkcache_len=264;       // speaker cache size
+        int32_t fifo_len=0;             // FIFO size (0 for Nemotron-3)
+        int32_t spkcache_update_period=264; // frames popped FIFO -> cache per update
+        int32_t spkcache_sil_frames_per_spk=1; // reserved silence slots per speaker
         float sil_threshold=0.2f;      // silence detection threshold
         float pred_score_threshold=0.25f; // log-score clamp floor
         float scores_boost_latest=0.05f; // boost for latest frames

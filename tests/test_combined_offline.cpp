@@ -1,20 +1,24 @@
-// End-to-end test for Phase 3: speaker-attributed ASR (SAS).
+// Speaker-attributed ASR (SAS) and streaming diarization through the C-API.
 //
-// Loads an ASR model and a diarization model, runs both on the same audio file
-// via parakeet_capi_transcribe_and_diarize_json, and validates:
-//  - the JSON has "speakers", "utterances", and "words" arrays
-//  - every word has a valid speaker (-1 or 0..n_speakers-1)
-//  - utterances have text, start, end, speaker fields
-//  - the JSON is parseable
+// Runs on tests/fixtures/two_speakers.wav (LibriSpeech speakers 1272 and 2086
+// alternating A-B-A-B) and checks:
+//  1. transcribe_and_diarize_json: valid document, every word attributed to a
+//     speaker, speaker turns follow A-B-A-B
+//  2. transcribe_and_diarize (struct): same utterances as the JSON variant
+//  3. diarize_stream_*: fed live in 0.5 s pieces, the segments match the
+//     offline diarize_pcm segments (speaker, boundaries within 0.1 s)
+//  4. sas_stream_*: fed live in 0.5 s pieces, same turn pattern and about the
+//     same words as the offline SAS
 //
-// Env:
-//   PARAKEET_TEST_GGUF        ASR model (skip 77 if unset)
-//   PARAKEET_TEST_DIAR_GGUF   diarization model (skip 77 if unset)
-//   PARAKEET_TEST_COMBINED_WAV  audio file (default: tests/fixtures/speech.wav)
+// Env: PARAKEET_TEST_GGUF (ASR model) + PARAKEET_TEST_DIAR_GGUF; skips (77)
+// when either is unset. WORKING_DIRECTORY is the repo root.
 
 #include "parakeet_capi.h"
 #include "audio_io.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -127,201 +131,201 @@ bool parse_word_speakers(const std::string& s, std::vector<int>& speakers) {
     return sc.eat(']');
 }
 
+// Collapse consecutive repeats: [0,0,1,0,0,1] -> [0,1,0,1].
+std::vector<int> turns(const std::vector<int>& spk) {
+    std::vector<int> t;
+    for (int s : spk) if (t.empty() || t.back() != s) t.push_back(s);
+    return t;
+}
+
+std::string show(const std::vector<int>& v) {
+    std::string s;
+    for (int x : v) s += (s.empty() ? "" : ",") + std::to_string(x);
+    return "[" + s + "]";
+}
+
+int word_count(const char* text) {
+    int n = 0;
+    bool in = false;
+    for (const char* p = text; *p; ++p) {
+        const bool sp = *p == ' ';
+        if (!sp && !in) ++n;
+        in = !sp;
+    }
+    return n;
+}
+
+// Offline diarize_pcm segments as (speaker, start, end) triples.
+bool parse_segments(const std::string& doc, std::vector<std::array<double, 3>>& out) {
+    Scan sc(doc);
+    if (!sc.seek_key("segments") || !sc.eat('[')) return false;
+    if (sc.eat(']')) return true;
+    do {
+        std::array<double, 3> seg{};
+        if (!sc.eat('{')) return false;
+        for (int k = 0; k < 3; ++k) {
+            std::string key;
+            if (!sc.str(key) || !sc.eat(':') || !sc.num(seg[k])) return false;
+            if (k < 2 && !sc.eat(',')) return false;
+        }
+        if (!sc.eat('}')) return false;
+        out.push_back(seg);
+    } while (sc.eat(','));
+    return sc.eat(']');
+}
+
 } // namespace
 
+#define CHECK(cond, ...)                                              \
+    do {                                                              \
+        if (!(cond)) {                                                \
+            std::fprintf(stderr, "FAIL: " __VA_ARGS__);               \
+            std::fprintf(stderr, "\n");                               \
+            ok = false;                                               \
+        }                                                             \
+    } while (0)
+
 int main() {
-    // ABI version sanity.
-    int abi = parakeet_capi_abi_version();
-    if (abi < 7) {
-        std::fprintf(stderr, "test_combined_offline: abi version %d < 7 (need SAS)\n", abi);
-        return 1;
-    }
-
     const char* asr_gguf = std::getenv("PARAKEET_TEST_GGUF");
-    if (!asr_gguf) {
-        std::fprintf(stderr, "test_combined_offline: PARAKEET_TEST_GGUF not set; skip\n");
-        return 77;
-    }
     const char* diar_gguf = std::getenv("PARAKEET_TEST_DIAR_GGUF");
-    if (!diar_gguf) {
-        std::fprintf(stderr, "test_combined_offline: PARAKEET_TEST_DIAR_GGUF not set; skip\n");
+    if (!asr_gguf || !diar_gguf) {
+        std::fprintf(stderr, "test_combined_offline: PARAKEET_TEST_GGUF and/or "
+                             "PARAKEET_TEST_DIAR_GGUF not set; skip\n");
         return 77;
     }
-
-    const char* wav = std::getenv("PARAKEET_TEST_COMBINED_WAV");
-    if (!wav) wav = "tests/fixtures/speech.wav";
-
-    // Load both models.
-    parakeet_ctx* asr_ctx = parakeet_capi_load(asr_gguf);
-    if (!asr_ctx) {
-        std::fprintf(stderr, "test_combined_offline: ASR load failed: %s\n",
-                     asr_ctx ? parakeet_capi_last_error(asr_ctx) : "(null)");
+    if (parakeet_capi_abi_version() < 7) {
+        std::fprintf(stderr, "test_combined_offline: ABI < 7\n");
         return 1;
     }
-    parakeet_ctx* diar_ctx = parakeet_capi_load(diar_gguf);
-    if (!diar_ctx) {
-        std::fprintf(stderr, "test_combined_offline: diar load failed: %s\n",
-                     diar_ctx ? parakeet_capi_last_error(diar_ctx) : "(null)");
-        parakeet_capi_free(asr_ctx);
+    parakeet_ctx* asr = parakeet_capi_load(asr_gguf);
+    parakeet_ctx* diar = parakeet_capi_load(diar_gguf);
+    if (!asr || !diar) {
+        std::fprintf(stderr, "test_combined_offline: load failed\n");
+        parakeet_capi_free(asr);
+        parakeet_capi_free(diar);
         return 1;
     }
-
-    // Load audio from file — we need raw PCM, so we use the diarize_path JSON
-    // variant as a smoke test... no, we need PCM for transcribe_and_diarize.
-    // Load the WAV using the ASR model's path transcribe (which loads the wav)
-    // — actually, we need to load the WAV ourselves.
-    // The C-API has no "load WAV to PCM" function, so we use a simple approach:
-    // call parakeet_capi_transcribe_and_diarize_json with a file path... no.
-    // Actually, the SAS API takes PCM samples. We need to read the WAV file
-    // ourselves. Let's use the existing test audio loading approach.
-
-    // Read WAV using the shared audio_io loader.
     pk::Audio audio;
-    if (!pk::load_audio_16k_mono(wav, audio) || audio.samples.empty()) {
-        std::fprintf(stderr, "test_combined_offline: cannot read %s\n", wav);
-        parakeet_capi_free(asr_ctx);
-        parakeet_capi_free(diar_ctx);
-        return 77;
-    }
-
-    std::vector<float>& pcm = audio.samples;
-    int sr = 16000;
-
-    std::fprintf(stderr, "test_combined_offline: loaded %s (%d samples, %d Hz)\n",
-                 wav, (int)pcm.size(), sr);
-
-    // --- Test 1: JSON variant ---
-    char* json = parakeet_capi_transcribe_and_diarize_json(
-        asr_ctx, diar_ctx, pcm.data(), (int)pcm.size(), sr);
-    if (!json) {
-        std::fprintf(stderr, "test_combined_offline: transcribe_and_diarize_json NULL: %s\n",
-                     parakeet_capi_last_error(asr_ctx));
-        parakeet_capi_free(asr_ctx);
-        parakeet_capi_free(diar_ctx);
+    if (!pk::load_audio_16k_mono("tests/fixtures/two_speakers.wav", audio)) {
+        std::fprintf(stderr, "test_combined_offline: cannot read the fixture\n");
         return 1;
     }
-
-    const std::string doc(json);
-    parakeet_capi_free_string(json);
-
-    std::fprintf(stderr, "test_combined_offline: json head = %.200s ...\n", doc.c_str());
-
+    const std::vector<float>& pcm = audio.samples;
+    const int n = (int)pcm.size();
+    const std::vector<int> expected_turns = {0, 1, 0, 1};
     bool ok = true;
 
-    // Validate JSON structure: must have speakers, utterances, words.
-    if (!has_array(doc, "utterances")) {
-        std::fprintf(stderr, "test_combined_offline: missing \"utterances\" array\n");
-        ok = false;
-    }
-    if (!has_array(doc, "words")) {
-        std::fprintf(stderr, "test_combined_offline: missing \"words\" array\n");
-        ok = false;
-    }
+    // Wrong-model guards.
+    CHECK(parakeet_capi_diarize_pcm(asr, pcm.data(), n, 16000) == nullptr,
+          "diarize_pcm accepted an ASR context");
+    CHECK(parakeet_capi_transcribe_pcm(diar, pcm.data(), n, 16000, 0) == nullptr,
+          "transcribe_pcm accepted a diarization context");
 
-    // Check "speakers" field exists and is positive.
+    // 1. JSON variant.
+    int n_words_offline = 0, n_utts_json = -1;
     {
-        Scan sc(doc);
-        if (!sc.seek_key("speakers")) {
-            std::fprintf(stderr, "test_combined_offline: missing \"speakers\" field\n");
-            ok = false;
-        } else {
-            double spk;
-            if (!sc.num(spk) || spk <= 0) {
-                std::fprintf(stderr, "test_combined_offline: invalid speakers value\n");
-                ok = false;
-            } else {
-                std::fprintf(stderr, "test_combined_offline: speakers = %.0f\n", spk);
-            }
+        char* json = parakeet_capi_transcribe_and_diarize_json(asr, diar, pcm.data(), n, 16000);
+        CHECK(json != nullptr, "transcribe_and_diarize_json: %s", parakeet_capi_last_error(asr));
+        if (json) {
+            const std::string doc(json);
+            parakeet_capi_free_string(json);
+            std::vector<int> spk;
+            CHECK(parse_word_speakers(doc, spk), "cannot parse the words array");
+            n_words_offline = (int)spk.size();
+            n_utts_json = count_array_elements(doc, "utterances");
+            int unassigned = 0;
+            for (int s : spk) unassigned += s < 0;
+            std::printf("offline SAS: %d words, %d utterances, turns %s, %d unassigned\n",
+                        n_words_offline, n_utts_json, show(turns(spk)).c_str(), unassigned);
+            CHECK(n_words_offline > 40, "too few words (%d)", n_words_offline);
+            CHECK(unassigned == 0, "%d words without a speaker", unassigned);
+            CHECK(turns(spk) == expected_turns, "turns %s, expected [0,1,0,1]",
+                  show(turns(spk)).c_str());
         }
     }
 
-    // Parse word speakers and validate range.
+    // 2. Struct variant.
     {
-        std::vector<int> speakers;
-        if (!parse_word_speakers(doc, speakers)) {
-            std::fprintf(stderr, "test_combined_offline: failed to parse word speakers\n");
-            ok = false;
-        } else {
-            std::fprintf(stderr, "test_combined_offline: %zu words parsed\n",
-                         speakers.size());
-            // Check that all speaker indices are valid (-1 or 0..7)
-            for (size_t i = 0; i < speakers.size(); ++i) {
-                if (speakers[i] < -1 || speakers[i] > 7) {
-                    std::fprintf(stderr,
-                        "test_combined_offline: word[%zu] speaker=%d out of range\n",
-                        i, speakers[i]);
-                    ok = false;
-                    break;
-                }
-            }
+        parakeet_sas_result* r = nullptr;
+        int nr = 0;
+        const int rc = parakeet_capi_transcribe_and_diarize(asr, diar, pcm.data(), n, 16000, &r, &nr);
+        CHECK(rc == 0, "transcribe_and_diarize: %s", parakeet_capi_last_error(asr));
+        CHECK(nr == n_utts_json, "struct count %d != JSON count %d", nr, n_utts_json);
+        for (int i = 0; i < nr; ++i)
+            CHECK(r[i].text && r[i].start <= r[i].end && r[i].speaker >= 0,
+                  "bad result %d", i);
+        parakeet_capi_free_sas_results(r, nr);
+    }
+
+    // 3. Streaming diarization vs offline diarization.
+    {
+        char* json = parakeet_capi_diarize_pcm(diar, pcm.data(), n, 16000);
+        std::vector<std::array<double, 3>> offline;
+        CHECK(json && parse_segments(json, offline), "diarize_pcm");
+        parakeet_capi_free_string(json);
+
+        parakeet_diar_stream* ds = parakeet_capi_diarize_stream_begin(diar);
+        CHECK(ds != nullptr, "diarize_stream_begin: %s", parakeet_capi_last_error(diar));
+        std::vector<parakeet_diar_segment> streamed;
+        for (int lo = 0; ds && lo < n; lo += 8000) {
+            const int len = std::min(8000, n - lo);
+            parakeet_diar_segment* segs = nullptr;
+            int ns = 0;
+            const int rc = parakeet_capi_diarize_stream_feed(ds, pcm.data() + lo, len,
+                                                             lo + len >= n, &segs, &ns);
+            CHECK(rc == 0, "diarize_stream_feed: %s", parakeet_capi_last_error(diar));
+            streamed.insert(streamed.end(), segs, segs + ns);
+            parakeet_capi_free_diar_segments(segs);
+        }
+        parakeet_capi_diarize_stream_free(ds);
+        std::sort(streamed.begin(), streamed.end(), [](const auto& a, const auto& b) {
+            return a.start != b.start ? a.start < b.start : a.speaker < b.speaker;
+        });
+        std::printf("streaming diarization: %zu segments (offline %zu)\n",
+                    streamed.size(), offline.size());
+        CHECK(streamed.size() == offline.size(), "segment count differs");
+        for (size_t i = 0; i < std::min(streamed.size(), offline.size()); ++i) {
+            std::printf("  spk%d %6.2f-%6.2f   offline spk%d %6.2f-%6.2f\n",
+                        streamed[i].speaker, streamed[i].start, streamed[i].end,
+                        (int)offline[i][0], offline[i][1], offline[i][2]);
+            CHECK(streamed[i].speaker == (int)offline[i][0] &&
+                  std::fabs(streamed[i].start - offline[i][1]) <= 0.1 &&
+                  std::fabs(streamed[i].end - offline[i][2]) <= 0.1,
+                  "segment %zu differs", i);
         }
     }
 
-    // Count utterances and words.
-    int n_utts = count_array_elements(doc, "utterances");
-    int n_words = count_array_elements(doc, "words");
-    std::fprintf(stderr, "test_combined_offline: %d utterances, %d words\n",
-                 n_utts, n_words);
-
-    if (n_utts < 0 || n_words < 0) {
-        std::fprintf(stderr, "test_combined_offline: failed to count arrays\n");
-        ok = false;
-    }
-    if (n_words == 0) {
-        std::fprintf(stderr, "test_combined_offline: no words transcribed\n");
-        ok = false;
-    }
-
-    // --- Test 2: struct variant ---
-    int n_results = 0;
-    parakeet_sas_result* results = parakeet_capi_transcribe_and_diarize(
-        asr_ctx, diar_ctx, pcm.data(), (int)pcm.size(), sr, &n_results);
-    if (!results) {
-        std::fprintf(stderr, "test_combined_offline: transcribe_and_diarize NULL: %s\n",
-                     parakeet_capi_last_error(asr_ctx));
-        ok = false;
-    } else {
-        std::fprintf(stderr, "test_combined_offline: struct variant returned %d results\n",
-                     n_results);
-        if (n_results != n_utts) {
-            std::fprintf(stderr,
-                "test_combined_offline: struct count %d != JSON count %d\n",
-                n_results, n_utts);
-            ok = false;
-        }
-        // Validate each result: speaker in range, text non-null, start < end.
-        for (int i = 0; i < n_results && i < 20; ++i) {
-            if (results[i].speaker < -1 || results[i].speaker > 7) {
-                std::fprintf(stderr,
-                    "test_combined_offline: result[%d] speaker=%d out of range\n",
-                    i, results[i].speaker);
-                ok = false;
+    // 4. Streaming SAS.
+    {
+        parakeet_sas_stream* ss = parakeet_capi_sas_stream_begin(asr, diar);
+        CHECK(ss != nullptr, "sas_stream_begin");
+        std::vector<int> spk;
+        int words = 0;
+        std::string text;
+        for (int lo = 0; ss && lo < n; lo += 8000) {
+            const int len = std::min(8000, n - lo);
+            parakeet_sas_result* r = nullptr;
+            int nr = 0;
+            const int rc = parakeet_capi_sas_stream_feed(ss, pcm.data() + lo, len,
+                                                         lo + len >= n, &r, &nr);
+            CHECK(rc == 0, "sas_stream_feed: %s", parakeet_capi_last_error(asr));
+            for (int i = 0; i < nr; ++i) {
+                spk.push_back(r[i].speaker);
+                words += word_count(r[i].text);
+                text += std::string(text.empty() ? "" : " ") + r[i].text;
             }
-            if (!results[i].text) {
-                std::fprintf(stderr,
-                    "test_combined_offline: result[%d] text is null\n", i);
-                ok = false;
-            }
-            if (results[i].end < results[i].start) {
-                std::fprintf(stderr,
-                    "test_combined_offline: result[%d] end < start\n", i);
-                ok = false;
-            }
+            parakeet_capi_free_sas_results(r, nr);
         }
-        // Free text strings and the array.
-        for (int i = 0; i < n_results; ++i) {
-            if (results[i].text) parakeet_capi_free_string(results[i].text);
-        }
-        parakeet_capi_free_sas_results(results);
+        parakeet_capi_sas_stream_free(ss);
+        std::printf("streaming SAS: %d words, turns %s\n  %s\n", words,
+                    show(turns(spk)).c_str(), text.c_str());
+        CHECK(turns(spk) == expected_turns, "streaming turns %s", show(turns(spk)).c_str());
+        CHECK(std::abs(words - n_words_offline) <= 3, "streaming words %d vs offline %d",
+              words, n_words_offline);
     }
 
-    parakeet_capi_free(asr_ctx);
-    parakeet_capi_free(diar_ctx);
-
-    if (!ok) {
-        std::fprintf(stderr, "test_combined_offline: FAIL\n");
-        return 1;
-    }
-    std::fprintf(stderr, "test_combined_offline: PASS\n");
-    return 0;
+    parakeet_capi_free(asr);
+    parakeet_capi_free(diar);
+    std::printf(ok ? "test_combined_offline: PASS\n" : "test_combined_offline: FAIL\n");
+    return ok ? 0 : 1;
 }

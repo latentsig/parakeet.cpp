@@ -207,39 +207,22 @@ bool ModelLoader::load(const std::string& path){
         d.frame_resolution_sec = kv_f32(gguf_, "parakeet.diar.frame_resolution_sec", 0.01f);
         d.onset_threshold = kv_f32(gguf_, "parakeet.diar.onset_threshold", 0.5f);
         d.offset_threshold = kv_f32(gguf_, "parakeet.diar.offset_threshold", 0.5f);
-        // AOSC streaming config (Phase 2)
-        // If streaming KVs are absent, use Nemotron-3-Diarization defaults
-        // so the streaming C-API works out of the box.
-        if (gguf_find_key(gguf_, "parakeet.diar.chunk_len") >= 0) {
-            d.streaming_capable = true;
-            d.chunk_len          = (int32_t)kv_u32(gguf_, "parakeet.diar.chunk_len");
-            d.spkcache_len       = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_len");
-            d.fifo_len           = (int32_t)kv_u32(gguf_, "parakeet.diar.fifo_len", 0);
-            d.spkcache_update_period = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_update_period", (uint32_t)d.chunk_len);
-            d.spkcache_sil_frames_per_spk = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_sil_frames_per_spk", 3);
-            d.sil_threshold      = kv_f32(gguf_, "parakeet.diar.sil_threshold", 0.2f);
-            d.pred_score_threshold = kv_f32(gguf_, "parakeet.diar.pred_score_threshold", 0.25f);
-            d.scores_boost_latest  = kv_f32(gguf_, "parakeet.diar.scores_boost_latest", 0.05f);
-            d.strong_boost_rate   = kv_f32(gguf_, "parakeet.diar.strong_boost_rate", 0.75f);
-            d.weak_boost_rate     = kv_f32(gguf_, "parakeet.diar.weak_boost_rate", 1.5f);
-            d.min_pos_scores_rate = kv_f32(gguf_, "parakeet.diar.min_pos_scores_rate", 0.5f);
-            d.use_learnable_sil_emb = kv_bool(gguf_, "parakeet.diar.use_learnable_sil_emb", false);
-        } else {
-            // Nemotron-3-Diarization defaults
-            d.streaming_capable = true;
-            d.chunk_len = 264;
-            d.spkcache_len = 264;
-            d.fifo_len = 0;
-            d.spkcache_update_period = 264;
-            d.spkcache_sil_frames_per_spk = 3;
-            d.sil_threshold = 0.2f;
-            d.pred_score_threshold = 0.25f;
-            d.scores_boost_latest = 0.05f;
-            d.strong_boost_rate = 0.75f;
-            d.weak_boost_rate = 1.5f;
-            d.min_pos_scores_rate = 0.5f;
-            d.use_learnable_sil_emb = (gguf_find_key(gguf_, "sortformer_modules.learnable_sil_emb") >= 0);
-        }
+        // Streaming (speaker cache) config, in ENCODER frames as in NeMo
+        // SortformerModules. Defaults are the Nemotron-3-Diarization values,
+        // for GGUFs converted before these keys were written.
+        d.chunk_len              = (int32_t)kv_u32(gguf_, "parakeet.diar.chunk_len", 264);
+        d.spkcache_len           = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_len", 264);
+        d.fifo_len               = (int32_t)kv_u32(gguf_, "parakeet.diar.fifo_len", 0);
+        d.spkcache_update_period = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_update_period", 264);
+        d.spkcache_sil_frames_per_spk = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_sil_frames_per_spk", 1);
+        d.sil_threshold          = kv_f32(gguf_, "parakeet.diar.sil_threshold", 0.2f);
+        d.pred_score_threshold   = kv_f32(gguf_, "parakeet.diar.pred_score_threshold", 0.25f);
+        d.scores_boost_latest    = kv_f32(gguf_, "parakeet.diar.scores_boost_latest", 0.05f);
+        d.strong_boost_rate      = kv_f32(gguf_, "parakeet.diar.strong_boost_rate", 0.75f);
+        d.weak_boost_rate        = kv_f32(gguf_, "parakeet.diar.weak_boost_rate", 1.5f);
+        d.min_pos_scores_rate    = kv_f32(gguf_, "parakeet.diar.min_pos_scores_rate", 0.5f);
+        d.use_learnable_sil_emb  = kv_bool(gguf_, "parakeet.diar.use_learnable_sil_emb",
+            gguf_find_tensor(gguf_, "sortformer_modules.learnable_sil_emb") >= 0);
     }
     // durations array (stored as INT32 by the converter)
     { int64_t id = gguf_find_key(gguf_, "parakeet.tdt.durations");

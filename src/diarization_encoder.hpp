@@ -10,62 +10,59 @@ namespace pk {
 // DiarizationEncoder — pre-LN RoPE Transformer encoder for Nemotron-3-Diarization.
 //
 // This is NOT the FastConformer encoder used by ASR. Nemotron-3-Diarization uses
-// a TransformerEncoder (not ConformerEncoder) with:
-//   - FeatureStacking subsampling (8× stack → Linear, no bias)
-//   - Pre-block LayerNorm (embed_norm)
-//   - N × TransformerBlock (pre-norm): x = x + attn(norm1(x)); x = x + ffn(norm2(x))
-//   - MultiHeadAttention: fused QKV (no bias) → RoPE → flash_attn → out_proj (bias)
-//   - FeedForward: Linear → GELU → Linear (both with bias)
-//   - Post-block LayerNorm (final_norm)
-//   - RoPE: GPT-NeoX convention (GGML_ROPE_TYPE_NEOX), theta=10000, rotary_fraction=1.0
+// a NeMo TransformerEncoder with:
+//   - FeatureStacking subsampling (8x stack of mel frames -> Linear, no bias)
+//   - embed_norm LayerNorm (pre_block_norm)
+//   - N x TransformerBlock (pre-norm): x = x + attn(norm1(x)); x = x + ffn(norm2(x))
+//   - attention: fused QKV (optional bias) -> RoPE (GPT-NeoX) -> softmax attention
+//     -> out_proj (bias)
+//   - FeedForward: Linear -> GELU -> Linear (both with bias)
+//   - final_norm LayerNorm
 //
-// Input:  mel features [n_mels, T] (row-major: mel[m*T + t])
-// Output: enc_out [d_model, T_enc] (row-major: enc_out[c*T_enc + t], channels-first)
+// All sequences are TIME-MAJOR row-major [T, d_model] (x[t*d_model + c]), which
+// is ggml's natural ne=[d_model, T] layout, so no transposes are needed between
+// stages. The mel input keeps the frontend's [n_mels, T] layout.
 class DiarizationEncoder {
 public:
     explicit DiarizationEncoder(const ModelLoader& ml);
 
-    // mel:  row-major [n_mels, T] — mel[m*T + t]
-    // enc_out: row-major [d_model, T_enc] — enc_out[c*T_enc + t] (channels-first)
+    // Full encoder: mel [n_mels, T] (mel[m*T + t]) -> enc_out [T_enc, d_model].
+    // T_enc = ceil(T / subsampling).
     void forward(const std::vector<float>& mel, int n_mels, int T,
-                 std::vector<float>& enc_out, int& d_model, int& T_enc) const;
+                 std::vector<float>& enc_out, int& T_enc) const;
 
-    // --- Streaming split: pre_encode + transformer_forward ---
-
-    // Pre-encoder: FeatureStacking + Linear(1024→512) + embed_norm.
-    // mel:  row-major [n_mels, T] — mel[m*T + t]
-    // emb:  row-major [d_model, T_enc] — emb[c*T_enc + t] (channels-first)
-    // T_enc = T_padded / subsampling_factor
+    // Streaming split. pre_encode = FeatureStacking + projection (no
+    // embed_norm), i.e. what NeMo stores in the speaker cache / FIFO.
+    //   mel [n_mels, T] -> emb [T_enc, d_model]
     void pre_encode(const std::vector<float>& mel, int n_mels, int T,
-                    std::vector<float>& emb, int& d_model, int& T_enc) const;
+                    std::vector<float>& emb, int& T_enc) const;
 
-    // Transformer blocks + final_norm (the second half of the encoder).
-    // emb:    row-major [d_model, T_enc] — emb[c*T_enc + t] (channels-first)
-    // enc_out: row-major [d_model, T_enc] — enc_out[c*T_enc + t]
-    void transformer_forward(const std::vector<float>& emb, int d_model, int T_enc,
+    // embed_norm + transformer blocks + final_norm over pre-encoded embeddings
+    // (NeMo frontend_encoder with bypass_pre_encode=True).
+    //   emb [T_enc, d_model] -> enc_out [T_enc, d_model]
+    void transformer_forward(const std::vector<float>& emb, int T_enc,
                              std::vector<float>& enc_out) const;
 
     int subsampling() const { return subsampling_factor_; }
     int n_mels() const { return n_mels_; }
     int d_model() const { return d_model_; }
-    int n_layers() const { return n_layers_; }
-    int n_heads() const { return n_heads_; }
-    int head_dim() const { return head_dim_; }
 
 private:
+    // Graph builders shared by the entry points above.
+    ggml_tensor* build_pre_encode(ggml_context* ctx, ggml_tensor* mel, int T_padded) const;
+    ggml_tensor* build_blocks(ggml_context* ctx, ggml_tensor* x, ggml_tensor* pos) const;
+
     const ModelLoader& ml_;
-    int d_model_;        // encoder d_model (512)
-    int n_layers_;       // number of transformer blocks (31)
-    int n_heads_;        // attention heads (8)
-    int head_dim_;       // d_model / n_heads (64)
-    int ff_dim_;         // feed-forward inner dim (2048)
-    int subsampling_factor_; // FeatureStacking factor (8)
-    int n_mels_;         // mel features (128)
-    bool qkv_bias_;      // QKV projection bias (false)
-    bool pre_block_norm_; // apply embed_norm before blocks (true)
-    float rope_base_;    // RoPE theta (10000.0)
-    float rotary_fraction_; // fraction of head_dim rotated (1.0)
-    float ln_eps_;       // LayerNorm epsilon (1e-5)
+    int d_model_;
+    int n_layers_;
+    int n_heads_;
+    int head_dim_;
+    int subsampling_factor_;
+    int n_mels_;
+    bool pre_block_norm_;
+    float rope_base_;
+    int n_rot_;          // rotated dims per head (head_dim * rotary_fraction)
+    float ln_eps_;
 };
 
 } // namespace pk

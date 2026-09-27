@@ -41,12 +41,6 @@ except ImportError as e:  # pragma: no cover - env guard
     print("PARAKEET_CONVERT_DEPS_MISSING", file=sys.stderr)
     sys.exit(2)
 
-# SortformerEncLabelModel import is optional — the installed NeMo may be too old
-# to support self_attention_model='rope'. The converter detects diarization from
-# the .nemo tar's model_config.yaml and loads state_dict directly, bypassing the
-# model class entirely.
-SortformerEncLabelModel = None
-
 import io
 import tarfile
 
@@ -130,15 +124,7 @@ def _get(cfg, key, default=None):
 
 
 def detect_arch(m):
-    """Map a NeMo model to one of ctc/rnnt/tdt/hybrid_rnnt_ctc/hybrid_tdt_ctc/diarization."""
-    # Diarization model (SortformerEncLabelModel): has sortformer_modules, no
-    # tokenizer/vocab, no joint/CTC decoder — output is speaker sigmoid logits.
-    if SortformerEncLabelModel is not None and isinstance(m, SortformerEncLabelModel):
-        return "diarization"
-    # Fallback: detect by state_dict keys (works even if the import above failed)
-    sd = m.state_dict()
-    if any(k.startswith("sortformer_modules.") for k in sd) and not hasattr(m, "tokenizer"):
-        return "diarization"
+    """Map a NeMo ASR model to one of ctc/rnnt/tdt/hybrid_rnnt_ctc/hybrid_tdt_ctc."""
     cfg = m.cfg
     # model: prompt-conditioned RNNT checkpoints (nemotron) carry an unconfigured
     # aux_ctc stub (num_classes=-1, empty vocabulary) but NO ctc decoder and zero
@@ -276,10 +262,19 @@ def main():
     # tar, bypassing SortformerEncLabelModel.restore_from() (which fails on
     # NeMo versions that don't support self_attention_model='rope').
     # ------------------------------------------------------------------
-    is_diar = is_local and args.model.endswith(".nemo") and _is_diarization_nemo(args.model)
+    nemo_path = args.model if is_local and args.model.endswith(".nemo") else None
+    if nemo_path is None and not is_local and "/" in args.model:
+        # HF id: diarization repos ship <name>.nemo; ASR ids fall through to
+        # ASRModel.from_pretrained below when this is absent.
+        try:
+            from huggingface_hub import hf_hub_download
+            nemo_path = hf_hub_download(args.model, args.model.split("/")[-1] + ".nemo")
+        except Exception:
+            nemo_path = None
+    is_diar = nemo_path is not None and _is_diarization_nemo(nemo_path)
 
     if is_diar:
-        sd, model_cfg = _load_diarization_from_tar(args.model)
+        sd, model_cfg = _load_diarization_from_tar(nemo_path)
         arch = "diarization"
 
         w = gguf.GGUFWriter(args.output, "parakeet")
@@ -358,6 +353,29 @@ def main():
         w.add_float32("parakeet.diar.onset_threshold", 0.5)
         w.add_float32("parakeet.diar.offset_threshold", 0.5)
 
+        # Streaming speaker-cache config (SortformerModules), in encoder frames.
+        # Defaults are the SortformerModules constructor defaults.
+        def sf(key, default):
+            return _get_cfg_value(sf_cfg, key, default)
+        w.add_uint32("parakeet.diar.chunk_len", int(sf("chunk_len", 188)))
+        w.add_uint32("parakeet.diar.spkcache_len", int(sf("spkcache_len", 188)))
+        w.add_uint32("parakeet.diar.fifo_len", int(sf("fifo_len", 0)))
+        w.add_uint32("parakeet.diar.spkcache_update_period",
+                     int(sf("spkcache_update_period", 188)))
+        w.add_uint32("parakeet.diar.spkcache_sil_frames_per_spk",
+                     int(sf("spkcache_sil_frames_per_spk", 3)))
+        w.add_float32("parakeet.diar.sil_threshold", float(sf("sil_threshold", 0.2)))
+        w.add_float32("parakeet.diar.pred_score_threshold",
+                      float(sf("pred_score_threshold", 0.25)))
+        w.add_float32("parakeet.diar.scores_boost_latest",
+                      float(sf("scores_boost_latest", 0.05)))
+        w.add_float32("parakeet.diar.strong_boost_rate", float(sf("strong_boost_rate", 0.75)))
+        w.add_float32("parakeet.diar.weak_boost_rate", float(sf("weak_boost_rate", 1.5)))
+        w.add_float32("parakeet.diar.min_pos_scores_rate",
+                      float(sf("min_pos_scores_rate", 0.5)))
+        w.add_bool("parakeet.diar.use_learnable_sil_emb",
+                   bool(sf("use_learnable_sil_emb", False)))
+
         # Write tensors from state_dict
         written = 0
         quantized = 0
@@ -394,24 +412,14 @@ def main():
     # ------------------------------------------------------------------
     # ASR path: load via NeMo model class (as before)
     # ------------------------------------------------------------------
-    m = None
-    if SortformerEncLabelModel is not None:
-        try:
-            if is_local:
-                m = SortformerEncLabelModel.restore_from(args.model, map_location="cpu")
-            else:
-                m = SortformerEncLabelModel.from_pretrained(args.model, map_location="cpu")
-        except Exception:
-            m = None  # not a diarization model, fall through to ASRModel
-    if m is None:
-        try:
-            if is_local:
-                m = ASRModel.restore_from(args.model, map_location="cpu")
-            else:
-                m = ASRModel.from_pretrained(args.model, map_location="cpu")
-        except Exception as e:  # pragma: no cover - network/cache guard
-            print(f"PARAKEET_MODEL_UNAVAILABLE: {e}", file=sys.stderr)
-            sys.exit(2)
+    try:
+        if is_local:
+            m = ASRModel.restore_from(args.model, map_location="cpu")
+        else:
+            m = ASRModel.from_pretrained(args.model, map_location="cpu")
+    except Exception as e:  # pragma: no cover - network/cache guard
+        print(f"PARAKEET_MODEL_UNAVAILABLE: {e}", file=sys.stderr)
+        sys.exit(2)
     m.eval()
 
     arch = detect_arch(m)
@@ -538,62 +546,12 @@ def main():
     w.add_float32("parakeet.preprocessor.log_zero_guard",
                   float(lzg) if isinstance(lzg, (int, float)) else 2 ** -24)
 
-    # vocab / tokenizer (ASR models only — diarization has no tokenizer)
-    vocab = 0
-    if arch != "diarization":
-        vocab = int(m.tokenizer.vocab_size)
-        w.add_uint32("parakeet.vocab_size", vocab)
-        w.add_uint32("parakeet.blank_id", vocab)  # blank always == vocab_size
-        pieces = [m.tokenizer.ids_to_tokens([i])[0] for i in range(vocab)]
-        w.add_array("parakeet.tokenizer.pieces", [str(p) for p in pieces])
-
-    # diarization config (SortformerEncLabelModel)
-    if arch == "diarization":
-        sf = m.sortformer_modules
-        # Speaker head dimensions
-        tf_d_model = int(sf.tf_d_model) if hasattr(sf, "tf_d_model") else 192
-        n_spk = int(sf.n_speakers) if hasattr(sf, "n_speakers") else 8
-        # Upsample factor = subsampling_factor (high_resolution=True → 10ms frames)
-        upsample = int(_get(enc, "subsampling_factor", 8))
-        # Thresholds from cfg or NeMo defaults
-        diar_cfg = _get(cfg, "diarizer", {}) or {}
-        cfg_clustering = _get(diar_cfg, "clustering", {}) or {}
-        onset = float(_get(diar_cfg, "onset", 0.5))
-        offset = float(_get(diar_cfg, "offset", 0.5))
-        w.add_uint32("parakeet.diar.n_speakers", n_spk)
-        w.add_uint32("parakeet.diar.tf_d_model", tf_d_model)
-        w.add_uint32("parakeet.diar.upsample_factor", upsample)
-        w.add_float32("parakeet.diar.frame_resolution_sec", 0.01)
-        w.add_float32("parakeet.diar.onset_threshold", onset)
-        w.add_float32("parakeet.diar.offset_threshold", offset)
-
-        # AOSC streaming config (Phase 2)
-        # Nemotron-3-Diarization defaults from NeMo config
-        streaming_cfg = _get(cfg, "streaming", {}) or {}
-        chunk_len = int(_get(streaming_cfg, "chunk_len", 264))
-        spkcache_len = int(_get(streaming_cfg, "spkcache_len", chunk_len))
-        fifo_len = int(_get(streaming_cfg, "fifo_len", 0))
-        spkcache_update = int(_get(streaming_cfg, "spkcache_update_period", chunk_len))
-        sil_per_spk = int(_get(streaming_cfg, "spkcache_sil_frames_per_spk", 3))
-        sil_thresh = float(_get(streaming_cfg, "sil_threshold", 0.2))
-        pred_score_thresh = float(_get(streaming_cfg, "pred_score_threshold", 0.25))
-        scores_boost = float(_get(streaming_cfg, "scores_boost_latest", 0.05))
-        strong_boost = float(_get(streaming_cfg, "strong_boost_rate", 0.75))
-        weak_boost = float(_get(streaming_cfg, "weak_boost_rate", 1.5))
-        min_pos = float(_get(streaming_cfg, "min_pos_scores_rate", 0.5))
-        learnable_sil = bool(_get(streaming_cfg, "use_learnable_sil_emb", True))
-        w.add_uint32("parakeet.diar.chunk_len", chunk_len)
-        w.add_uint32("parakeet.diar.spkcache_len", spkcache_len)
-        w.add_uint32("parakeet.diar.fifo_len", fifo_len)
-        w.add_uint32("parakeet.diar.spkcache_update_period", spkcache_update)
-        w.add_uint32("parakeet.diar.spkcache_sil_frames_per_spk", sil_per_spk)
-        w.add_float32("parakeet.diar.sil_threshold", sil_thresh)
-        w.add_float32("parakeet.diar.pred_score_threshold", pred_score_thresh)
-        w.add_float32("parakeet.diar.scores_boost_latest", scores_boost)
-        w.add_float32("parakeet.diar.strong_boost_rate", strong_boost)
-        w.add_float32("parakeet.diar.weak_boost_rate", weak_boost)
-        w.add_float32("parakeet.diar.min_pos_scores_rate", min_pos)
-        w.add_bool("parakeet.diar.use_learnable_sil_emb", learnable_sil)
+    # vocab / tokenizer
+    vocab = int(m.tokenizer.vocab_size)
+    w.add_uint32("parakeet.vocab_size", vocab)
+    w.add_uint32("parakeet.blank_id", vocab)  # blank always == vocab_size
+    pieces = [m.tokenizer.ids_to_tokens([i])[0] for i in range(vocab)]
+    w.add_array("parakeet.tokenizer.pieces", [str(p) for p in pieces])
 
     # transducer config
     if arch in ("rnnt", "tdt", "hybrid_rnnt_ctc", "hybrid_tdt_ctc"):
@@ -627,15 +585,7 @@ def main():
     written = 0
     quantized = 0
     keep_buffers = {"preprocessor.featurizer.fb", "preprocessor.featurizer.window"}
-    # Frozen/unused weights to skip (diarization: hidden_to_spks is a frozen
-    # placeholder that is never called in offline inference).
-    skip_names = set()
-    if arch == "diarization":
-        skip_names.add("sortformer_modules.hidden_to_spks.weight")
-        skip_names.add("sortformer_modules.hidden_to_spks.bias")
     for name, t in sd.items():
-        if name in skip_names:
-            continue
         if name.startswith("preprocessor.") and name not in keep_buffers:
             continue  # skip preprocessor internals except fb/window
         if not hasattr(t, "detach"):
