@@ -99,10 +99,10 @@ int main() {
     write_npy_f32(std::string(out_dir) + "/enc_out_pk.npy", enc_out.data(),
                   {(int64_t)d_model, (int64_t)T_enc});
 
-    // 3. Head
+    // 3. Head (full offline pipeline incl. NeMo peak-normalize + length trim)
     std::vector<float> probs;
     int n_spk = 0, T_out = 0;
-    head.forward(enc_out, d_model, T_enc, probs, n_spk, T_out);
+    m->speaker_probs(audio.samples, probs, n_spk, T_out);
     std::printf("probs: [%d, %d]\n", n_spk, T_out);
     write_npy_f32(std::string(out_dir) + "/probs_pk.npy", probs.data(),
                   {(int64_t)n_spk, (int64_t)T_out});

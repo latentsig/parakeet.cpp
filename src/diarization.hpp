@@ -44,6 +44,12 @@ public:
     DiarizationResult diarize_pcm(const std::vector<float>& samples,
                                    int sample_rate);
 
+    // Per-frame speaker activity probabilities for already-16 kHz PCM, the
+    // same tensor NeMo's offline forward() returns: row-major [n_spk, T]
+    // (probs[s*T + t], post-sigmoid), one frame per 10 ms mel frame.
+    void speaker_probs(const std::vector<float>& pcm16k, std::vector<float>& probs,
+                       int& n_spk, int& T) const;
+
     const ParakeetConfig& config() const { return loader_.config(); }
     const ModelLoader& loader() const { return loader_; }
 

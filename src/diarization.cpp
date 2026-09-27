@@ -59,33 +59,78 @@ DiarizationResult DiarizationModel::diarize_pcm(
     return run(pcm16k);
 }
 
+void DiarizationModel::speaker_probs(const std::vector<float>& samples,
+                                     std::vector<float>& probs,
+                                     int& n_spk, int& T) const {
+    const ParakeetConfig& cfg = loader_.config();
+    n_spk = (int)cfg.diarization.n_speakers;
+    T = 0;
+    probs.clear();
+
+    // 1. Log-mel front end -> feats [n_mels, T]
+    // NeMo SortformerEncLabelModel.process_signal peak-normalizes the waveform
+    // in offline (non-streaming) mode: x * 1 / (max(x) + eps), eps = 1e-3.
+    // Note max(x), not max(|x|).
+    std::vector<float> norm(samples);
+    if (!norm.empty()) {
+        const float peak = *std::max_element(norm.begin(), norm.end());
+        const float scale = 1.0f / (peak + 1e-3f);
+        for (float& v : norm) v *= scale;
+    }
+    std::vector<float> feats;
+    int n_mels = 0, T_mel = 0;
+    mel_->compute(norm, feats, n_mels, T_mel);
+
+    // NeMo trims the features to the valid length floor(S / hop) before the
+    // encoder; the centered STFT yields one extra frame past it.
+    const int hop = (int)cfg.hop_length;
+    const int T_valid = hop > 0 ? std::min(T_mel, (int)(samples.size() / hop)) : T_mel;
+    if (T_valid < T_mel) {
+        std::vector<float> trimmed((size_t)n_mels * T_valid);
+        for (int m = 0; m < n_mels; ++m)
+            std::copy_n(feats.begin() + (size_t)m * T_mel, T_valid,
+                        trimmed.begin() + (size_t)m * T_valid);
+        feats.swap(trimmed);
+        T_mel = T_valid;
+    }
+    if (T_mel == 0) return;
+
+    // 2. Diarization encoder -> enc_out [d_model, T_enc] (channels-first)
+    std::vector<float> enc_out;
+    int d_model = 0, T_enc = 0;
+    encoder_->forward(feats, n_mels, T_mel, enc_out, d_model, T_enc);
+
+    // 3. Diarization head -> probs [n_spk, T_out] (post-sigmoid)
+    int T_out = 0;
+    head_->forward(enc_out, d_model, T_enc, probs, n_spk, T_out);
+
+    // High-resolution output has one frame per mel frame; drop the frames the
+    // FeatureStacking pad added past T_mel (NeMo slices preds to the mel length).
+    if (T_out > T_mel) {
+        std::vector<float> cut((size_t)n_spk * T_mel);
+        for (int s = 0; s < n_spk; ++s)
+            std::copy_n(probs.begin() + (size_t)s * T_out, T_mel,
+                        cut.begin() + (size_t)s * T_mel);
+        probs.swap(cut);
+        T_out = T_mel;
+    }
+    T = T_out;
+}
+
 DiarizationResult DiarizationModel::run(const std::vector<float>& samples) {
     const ParakeetConfig& cfg = loader_.config();
 
-    // 1. Log-mel front end → feats [n_mels, T]
-    std::vector<float> feats;
-    int n_mels = 0, T = 0;
-    mel_->compute(samples, feats, n_mels, T);
-
-    // 2. Diarization encoder → enc_out [d_model, T_enc] (channels-first)
-    std::vector<float> enc_out;
-    int d_model = 0, T_enc = 0;
-    encoder_->forward(feats, n_mels, T, enc_out, d_model, T_enc);
-
-    // 3. Diarization head → probs [n_spk, T_out] (post-sigmoid)
     std::vector<float> probs;
     int n_spk = 0, T_out = 0;
-    head_->forward(enc_out, d_model, T_enc, probs, n_spk, T_out);
+    speaker_probs(samples, probs, n_spk, T_out);
 
-    // 4. Post-process → speaker segments
-    std::vector<SpeakerSegment> segs = postprocess(
+    // 4. Post-process -> speaker segments
+    DiarizationResult result;
+    result.segments = postprocess(
         probs, n_spk, T_out,
         cfg.diarization.frame_resolution_sec,
         cfg.diarization.onset_threshold,
         cfg.diarization.offset_threshold);
-
-    DiarizationResult result;
-    result.segments = std::move(segs);
     result.n_speakers = n_spk;
     return result;
 }

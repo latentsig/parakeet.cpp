@@ -65,61 +65,35 @@ void DiarizationHead::forward(const std::vector<float>& enc_out, int d_model, in
             ggml_tensor* ep_b = ml.tensor("sortformer_modules.encoder_proj.bias");
             if (ep_b) proj = ggml_add(ctx, proj, ep_b);
 
-            // ---- subpixel_upsample: Conv1d(tf → tf*up, k=3, pad=1) + bias ----
-            // Conv1d expects data as ne[0]=T, ne[1]=IC, ne[2]=N
-            // proj is ne[0]=tf, ne[1]=T_enc → need transpose
+            // ---- subpixel_upsample: Conv1d(tf -> tf*up, k=3, pad=1) + bias ----
+            // im2col + mul_mat in F32 (ggml_conv_1d would force an F16 im2col).
+            // im2col wants data as ne=[T, IC, N]; proj is ne=[tf, T_enc].
             ggml_tensor* conv_in = ggml_cont(ctx, ggml_transpose(ctx, proj));
-            // conv_in: ne[0]=T_enc, ne[1]=tf
             conv_in = ggml_reshape_3d(ctx, conv_in, T_enc, tf, 1);
-            // conv_in: ne[0]=T_enc, ne[1]=tf, ne[2]=1
 
-            // Conv1d weight: GGUF stores ne=[k, IC, OC]=[3, 192, 1536] (converter
-            // already wrote it in ggml layout). Use directly.
+            // GGUF stores the PyTorch [OC, IC, k] weight as ggml ne=[k, IC, OC].
             ggml_tensor* spk_w = ml.tensor("sortformer_modules.subpixel_upsample.weight");
             if (!spk_w) throw std::runtime_error("parakeet: missing sortformer_modules.subpixel_upsample.weight");
+            ggml_tensor* cols = ggml_im2col(ctx, spk_w, conv_in, /*s0*/1, /*s1*/0,
+                                            /*p0*/1, /*p1*/0, /*d0*/1, /*d1*/0,
+                                            /*is_2D*/false, GGML_TYPE_F32);
+            // cols: ne=[k*IC, T_enc, 1]
+            cols = ggml_reshape_2d(ctx, cols, cols->ne[0], T_enc);
+            ggml_tensor* w2d = spk_w->type == GGML_TYPE_F32
+                ? spk_w : ggml_cast(ctx, spk_w, GGML_TYPE_F32);
+            w2d = ggml_reshape_2d(ctx, w2d, spk_w->ne[0] * spk_w->ne[1], spk_w->ne[2]);
+            ggml_tensor* conv_out = ggml_mul_mat(ctx, w2d, cols);
+            // conv_out: ne=[OC=tf*up, T_enc], flat[c + t*OC]
 
-            // ggml's CPU im2col expects the conv kernel to be F16 (assertion
-            // in ggml_compute_forward_im2col_f16). Cast it explicitly.
-            spk_w = ggml_cast(ctx, spk_w, GGML_TYPE_F16);
-            // Also cast the input to F16 for the im2col path
-            conv_in = ggml_cast(ctx, conv_in, GGML_TYPE_F16);
-
-            // ggml_conv_1d(ctx, kernel, data, stride=1, pad=1, dilation=1)
-            ggml_tensor* conv_out = ggml_conv_1d(ctx, spk_w, conv_in, 1, 1, 1);
-            // conv_out: ne[0]=T_enc, ne[1]=tf*up, ne[2]=1
-            // Data layout: flat[t + c*T_enc] (ne[0]=T_enc fastest)
-
-            // Reshape to 2D (keep ne[0]=T_enc, ne[1]=tf*up)
-            conv_out = ggml_reshape_2d(ctx, conv_out, T_enc, tf * up);
-            // ne[0]=T_enc, ne[1]=tf*up, data: flat[t + c*T_enc]
-
-            // Add subpixel bias [tf*up] directly. Reshape to [1, tf*up]
-            // so ggml_add broadcasts over ne[0]=T_enc.
             ggml_tensor* spk_b = ml.tensor("sortformer_modules.subpixel_upsample.bias");
-            if (spk_b) {
-                ggml_tensor* spk_b_2d = ggml_reshape_2d(ctx, spk_b, 1, tf * up);
-                conv_out = ggml_add(ctx, conv_out, spk_b_2d);
-            }
+            if (spk_b) conv_out = ggml_add(ctx, conv_out, spk_b);
 
-            // Subpixel reshape: conv_out is ne=[T_enc, tf*up], data: flat[t + c*T_enc].
-            //
-            // Reference PyTorch: x.view(B, C//up, up, T) then x.view(B, C//up, up*T)
-            //   → up_pk[h, t'] = conv[h*up+u, t] where t' = u*T + t
-            //
-            // In ggml (column-major, ne[0] fastest):
-            // 1. reshape_3d(T_enc, up, tf): ne=[T_enc, up, tf]
-            //    element(t,u,h) = flat[t + u*T_enc + h*up*T_enc] = flat[t + c*T_enc] ✓
-            // 2. reshape_2d(T_out, tf): ne=[T_out, tf]
-            //    element(t',h) = flat[t' + h*T_out] where t' = t + u*T_enc ✓
-            // 3. transpose: ne=[tf, T_out]
-            // 4. cont: copies to flat[h + t'*tf] (2D cont works correctly)
-            //
-            // NOTE: 3D permute+cont is BROKEN in this ggml backend — the cont op
-            // does not actually rearrange data for 3D tensors. Using 2D
-            // transpose+cont avoids this bug.
-            ggml_tensor* upsampled = ggml_reshape_3d(ctx, conv_out, T_enc, up, tf);
-            upsampled = ggml_reshape_2d(ctx, upsampled, T_enc * up, tf);
-            upsampled = ggml_cont(ctx, ggml_transpose(ctx, upsampled));
+            // Subpixel shuffle, NeMo SortformerModules.upsample_hidden:
+            //   conv(x).transpose(1,2).reshape(B, T, up, tf).reshape(B, T*up, tf)
+            // so output frame t*up+u, hidden h reads conv channel u*tf+h at
+            // frame t. With conv_out time-major (flat[u*tf + h + t*tf*up]) this
+            // is a plain reshape: element (h, t*up+u) = flat[h + (t*up+u)*tf].
+            ggml_tensor* upsampled = ggml_reshape_2d(ctx, conv_out, tf, (int64_t)T_enc * up);
             // ne[0]=tf, ne[1]=T_out
 
             // ---- forward_speaker_logits: relu → Linear(tf→tf) → relu → Linear(tf→ns) → sigmoid ----
