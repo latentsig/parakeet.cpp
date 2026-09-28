@@ -1467,7 +1467,7 @@ static int cmd_scene(int argc, char** argv) {
         return 1;
     }
 
-    pk::SceneRenderer renderer(diar_model != nullptr, show_speech, label);
+    pk::SceneRenderer renderer(diar_model != nullptr, show_speech, label, asr_model != nullptr);
 
     const int chunk_samples = chunk_ms * 16;  // 16 samples/ms at 16 kHz
     const int n = (int)audio.samples.size();

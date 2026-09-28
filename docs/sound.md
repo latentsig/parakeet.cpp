@@ -261,6 +261,10 @@ plain-speech label alongside `Speech`, `Conversation`, and the rest, so it
 does not show up twice next to the transcript). Pass `--show-speech` to see
 it. With only `--sound`, the output is the sound lines alone; with only
 `--model` (no `--diar`), the utterance lines drop the `Speaker N:` prefix.
+With `--diar` but no `--model`, there is no transcript, so each closed
+speaker segment prints as `[start - end]  Speaker N`, in time order with
+the sound lines. A segment line waits while an earlier-starting segment is
+still open.
 
 ## Scene stream C-API
 

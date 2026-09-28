@@ -8,7 +8,7 @@ namespace pk {
 
 namespace {
 
-// CED labels the renderer treats as "just speech" — already carried by the
+// CED labels the renderer treats as "just speech": already carried by the
 // ASR/diarization transcript, so redundant on screen unless asked for.
 bool speech_label_set(const std::string& label) {
     static const char* kSpeech[] = {
@@ -51,10 +51,29 @@ std::string format_span(double start, double end) {
     return "[" + mmss(start) + " - " + mmss(end) + "]";
 }
 
-SceneRenderer::SceneRenderer(bool has_diar, bool show_speech, std::function<const char*(int)> label)
-    : has_diar_(has_diar), show_speech_(show_speech), label_(std::move(label)) {}
+SceneRenderer::SceneRenderer(bool has_diar, bool show_speech, std::function<const char*(int)> label,
+                             bool has_asr)
+    : has_diar_(has_diar),
+      show_speech_(show_speech),
+      speaker_lines_(has_diar && !has_asr),
+      label_(std::move(label)) {}
 
 void SceneRenderer::add(const SceneUpdate& u) {
+    if (speaker_lines_) {
+        for (const SpeakerSegment& g : u.speakers) {
+            pending_.push_back({(double)g.start,
+                                format_span(g.start, g.end) + "  Speaker " + std::to_string(g.speaker)});
+            diarized_ = std::max(diarized_, (double)g.end);
+        }
+        // A closed segment ends at or before the diarized time, and an open
+        // one reports it as its end. A segment that opens later starts at or
+        // after it; one that is open now keeps its start.
+        for (const StreamingSpeakerSegment& o : u.active_speakers)
+            diarized_ = std::max(diarized_, (double)o.end);
+        speaker_bound_ = diarized_;
+        for (const StreamingSpeakerSegment& o : u.active_speakers)
+            speaker_bound_ = std::min(speaker_bound_, (double)o.start);
+    }
     for (const SpeakerUtterance& utt : u.utterances) {
         std::string line = format_span(utt.start, utt.end) + "  ";
         if (has_diar_) {
@@ -78,6 +97,7 @@ void SceneRenderer::add(const SceneUpdate& u) {
 }
 
 std::vector<std::string> SceneRenderer::flush(double safe_until) {
+    if (speaker_lines_) safe_until = std::min(safe_until, speaker_bound_);
     std::stable_sort(pending_.begin(), pending_.end(),
                       [](const Item& a, const Item& b) { return a.start < b.start; });
     std::vector<std::string> out;

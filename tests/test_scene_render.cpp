@@ -48,6 +48,34 @@ int main() {
     auto synth_lines = show_synth.flush_all();
     CHECK(synth_lines.size() == 1 && synth_lines[0] == "[00:02.0 - 00:04.0]  (Speech synthesizer 0.80)");
 
+    // Diarization without ASR: closed speaker segments become lines, ordered
+    // with sounds, and held while an earlier-starting segment is still open.
+    SceneRenderer dz(/*has_diar=*/true, /*show_speech=*/false, label, /*has_asr=*/false);
+    SceneUpdate d1;
+    d1.speakers = {{1, 2.0f, 4.0f}};
+    d1.active_speakers = {{0, 1.0f, 5.0f}};   // speaker 0 open since 1.0 s
+    d1.sounds = {{359, 3.0f, 3.5f, 0.7f}};
+    dz.add(d1);
+    CHECK(dz.flush(5.0).empty());               // speaker 0 may still close with start 1.0
+    SceneUpdate d2;
+    d2.speakers = {{0, 1.0f, 6.0f}};
+    d2.active_speakers = {{1, 6.5f, 7.0f}};
+    dz.add(d2);
+    auto dl = dz.flush(7.0);
+    CHECK(dl.size() == 3 && dl[0] == "[00:01.0 - 00:06.0]  Speaker 0" &&
+          dl[1] == "[00:02.0 - 00:04.0]  Speaker 1" && dl[2] == "[00:03.0 - 00:03.5]  (Knock 0.70)");
+    SceneUpdate d3;
+    d3.speakers = {{1, 6.5f, 8.0f}};
+    dz.add(d3);
+    auto dr = dz.flush_all();
+    CHECK(dr.size() == 1 && dr[0] == "[00:06.5 - 00:08.0]  Speaker 1");
+
+    // With ASR, speaker segments are not printed (utterances carry the speaker).
+    SceneRenderer withasr(/*has_diar=*/true, /*show_speech=*/false, label);
+    withasr.add(d1);
+    auto wl = withasr.flush_all();
+    CHECK(wl.size() == 1 && wl[0] == "[00:03.0 - 00:03.5]  (Knock 0.70)");
+
     if (failures) return 1;
     std::fprintf(stderr, "PASS\n");
     return 0;
