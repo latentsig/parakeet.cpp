@@ -1388,6 +1388,12 @@ static int cmd_scene(int argc, char** argv) {
         std::fprintf(stderr, "parakeet-cli scene: --chunk-ms must be > 0\n");
         return 2;
     }
+    // chunk_ms * 16 (samples/ms at 16 kHz) must not overflow int; 60 s is far
+    // above any sane chunk size (the default is 200 ms) and leaves headroom.
+    if (chunk_ms > 60000) {
+        std::fprintf(stderr, "parakeet-cli scene: --chunk-ms must be <= 60000\n");
+        return 2;
+    }
     pk::DiarLatency latency = pk::DiarLatency::Model;
     if (!latency_str.empty()) {
         if (latency_str == "model") {

@@ -18,6 +18,7 @@ bool speech_label_set(const std::string& label) {
         "Child speech, kid speaking",
         "Conversation",
         "Narration, monologue",
+        "Speech synthesizer",
     };
     for (const char* s : kSpeech)
         if (label == s) return true;
@@ -35,6 +36,7 @@ std::string format_span(double start, double end) {
         // double here can sit a few ULPs under the intended value (10.9f
         // widens to ~10.899999...). Round to hundredths first to absorb
         // that noise, keeping genuine truncation (10.04 -> 10.0) intact.
+        if (!std::isfinite(x)) x = 0.0;  // NaN/inf: never let the cast below hit UB.
         double hundredths = std::round(x * 100.0) / 100.0;
         long long total_tenths = (long long)std::floor(hundredths * 10.0 + 1e-9);
         if (total_tenths < 0) total_tenths = 0;
