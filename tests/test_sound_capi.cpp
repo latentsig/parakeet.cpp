@@ -7,6 +7,7 @@
 #include "sound_stream.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,6 +56,7 @@ int main() {
     CHECK(s != nullptr, "begin: %s", parakeet_capi_last_error(tag));
     std::vector<parakeet_sound_segment> segs;
     std::string scores;
+    bool checked_active = false;
     for (size_t i = 0; i < pcm.size(); i += 4000) {
         const int n = (int)std::min<size_t>(4000, pcm.size() - i);
         parakeet_sound_segment* out = nullptr;
@@ -66,6 +68,24 @@ int main() {
         char* j = parakeet_capi_sound_stream_drain_scores_json(s);
         CHECK(j != nullptr, "drain");
         if (j) { scores += j; parakeet_capi_free_string(j); }
+
+        // Around 3.5 s in (inside the rooster slot), check the still-open
+        // segments: whatever comes back must be internally consistent, even
+        // when nothing happens to be open at this exact instant.
+        if (!checked_active && i + n >= 3.5 * 16000) {
+            checked_active = true;
+            parakeet_sound_segment* act = nullptr;
+            int nact = 0;
+            CHECK(parakeet_capi_sound_stream_active(s, &act, &nact) == 0,
+                  "active: %s", parakeet_capi_last_error(tag));
+            const double t = (i + n) / 16000.0;
+            for (int k = 0; k < nact; ++k) {
+                CHECK(act[k].start <= act[k].end, "active start <= end");
+                CHECK(std::fabs(act[k].end - t) < 1e-3, "active end == stream time (%.3f vs %.3f)",
+                      act[k].end, t);
+            }
+            parakeet_capi_free_sound_segments(act);
+        }
     }
     for (const auto& g : segs)
         std::fprintf(stderr, "  %-24s %6.2f %6.2f %.3f\n", g.label, g.start, g.end, g.peak);

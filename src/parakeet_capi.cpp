@@ -1532,11 +1532,21 @@ extern "C" int parakeet_capi_sound_stream_feed(parakeet_sound_stream* s, const f
 extern "C" int parakeet_capi_sound_stream_active(parakeet_sound_stream* s,
                                                  parakeet_sound_segment** out, int* n_out) {
     if (!s || !out || !n_out) return 1;
-    if (!to_c_sound_segments(s->ss->open_segments(), *s->ctx->tagger, out, n_out)) {
-        s->ctx->last_error = "out of memory";
-        return 1;
+    *out = nullptr;
+    *n_out = 0;
+    try {
+        if (!to_c_sound_segments(s->ss->open_segments(), *s->ctx->tagger, out, n_out)) {
+            s->ctx->last_error = "out of memory";
+            return 1;
+        }
+        s->ctx->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        s->ctx->last_error = e.what();
+    } catch (...) {
+        s->ctx->last_error = "unknown error";
     }
-    return 0;
+    return 1;
 }
 
 extern "C" char* parakeet_capi_sound_stream_drain_scores_json(parakeet_sound_stream* s) {
