@@ -23,14 +23,12 @@ static SoundScorer fake() {
         return true;
     };
 }
-// BRIEF DEFECT (see task-3-report.md): default SoundOpts::top_k is 5, but
-// validate_sound_opts requires top_k <= n_classes, and every fake-scorer
-// test below uses n_classes = 2 (fixed by fake()'s hardcoded 2-score
-// output). SoundOpts{} therefore fails validation and SoundStream's
-// constructor throws std::invalid_argument, uncaught, before any test body
-// runs. top_k only feeds drain_windows()'s top-k queue, never the
-// open/close hysteresis logic, so capping it to n_classes here changes no
-// segment expectation in this file; it only makes construction valid.
+// The default SoundOpts::top_k is 5, but validate_sound_opts requires
+// top_k <= n_classes, and every fake-scorer test below uses n_classes = 2
+// (fake() returns two scores), so SoundOpts{} would make the constructor
+// throw std::invalid_argument. top_k only feeds drain_windows()'s top-k
+// queue, never the open/close hysteresis, so capping it to n_classes
+// changes no segment expectation in this file.
 static SoundOpts opts2() { SoundOpts o; o.top_k = 2; return o; }
 // `sec` seconds of audio with the "sound" (1.0) in [a, b) seconds.
 static std::vector<float> clip(float sec, float a, float b) {
@@ -165,7 +163,7 @@ static void test_scorer_failure() {
     CHECK(threw);
 }
 
-// RULING (task-3-brief plan defect fix): the buffer trim must key off
+// The buffer trim must key off
 // min(next_end_, samples_in_), not next_end_ alone, or an is_last tail
 // window that ends between two hops reads before the buffer start.
 // clip(8.5, 5.0, 8.5) fed in 0.1 s (1600-sample) pieces, is_last on the
@@ -188,19 +186,19 @@ static void test_is_last_tail_window_after_hop_gap() {
 }
 
 // safe_until() must be a true lower bound on every future segment's start,
-// including across the is_last tail window (fix round 1: while streaming,
+// including across the is_last tail window (while streaming,
 // safe_until() has to account for a tail window that could still open a
 // class at max(0, samples_in_ - hop_n_), not just the last window actually
 // scored). With the default 3 s window / 1 s hop, sound in [7.5, 8.5) only
 // scores 0.5/3 = 0.167 in the regular window ending at 8 s, below
 // on_threshold, so use a lower on_threshold (0.3) to open a class in the
 // is_last tail window [5.5, 8.5) (score 1/3 = 0.333). Right before the
-// final 0.1 s piece, samples_in_ = 8.4 s and scored_end_ = 8.0 s: the old
-// safe_until() (= scored_end_ alone) said 8.0 s, but that final feed()
-// call returns a segment starting at 7.5 s (the tail window's newest hop,
-// max(0, samples_in_ - hop_n_) at samples_in_ = 8.5 s) -- a segment
-// starting 0.5 s before what the old code promised. The fixed safe_until()
-// says min(8.0, 8.4 - 1.0) = 7.4 s at that point, which 7.5 s honors.
+// final 0.1 s piece, samples_in_ = 8.4 s and scored_end_ = 8.0 s. A bound
+// of scored_end_ alone would say 8.0 s, but that final feed() call returns
+// a segment starting at 7.5 s (the tail window's newest hop,
+// max(0, samples_in_ - hop_n_) at samples_in_ = 8.5 s), 0.5 s earlier.
+// safe_until() says min(8.0, 8.4 - 1.0) = 7.4 s at that point, which
+// 7.5 s honors.
 static void test_safe_until_bounds_tail_open() {
     SoundOpts o = opts2(); o.on_threshold = 0.3f; o.off_threshold = 0.2f;
     SoundStream s(fake(), 2, o);

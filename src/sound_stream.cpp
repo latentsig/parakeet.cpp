@@ -100,12 +100,12 @@ std::vector<SoundSegment> SoundStream::feed(const float* pcm, int n, bool is_las
             if (open_[c]) close(c, (float)time(), closed);
         finished_ = true;
     }
-    // Keep only what the next window needs. RULING (task-3-brief plan defect
-    // fix): the naive `next_end_ - win_n_` looks ahead to a hop that has not
-    // arrived yet, which over-trims whenever the stream ends between two
-    // hops; the is_last tail window above starts at
-    // `samples_in_ - win_n_`, earlier than that, and would read before the
-    // buffer start. Clamp the lookahead to what has actually streamed.
+    // Keep only what the next window needs. Trimming to `next_end_ - win_n_`
+    // alone looks ahead to a hop that has not arrived yet, which over-trims
+    // whenever the stream ends between two hops: the is_last tail window
+    // above starts at `samples_in_ - win_n_`, earlier than that, and would
+    // read before the buffer start. Clamp the lookahead to what has
+    // actually streamed.
     const long long keep_from = std::max(0LL, std::min(next_end_, samples_in_) - win_n_);
     if (keep_from > buf_start_) {
         const long long drop = std::min<long long>(keep_from - buf_start_, (long long)buf_.size());

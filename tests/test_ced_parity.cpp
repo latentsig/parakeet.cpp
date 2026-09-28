@@ -59,7 +59,8 @@ int main() {
     const char* dev = std::getenv("CED_DEVICE");
     const double tol = (dev && std::strcmp(dev, "cpu") == 0) ? 1e-6 : 1e-3;
     if (md > tol) { std::fprintf(stderr, "FAIL: tol %.0e\n", tol); return 1; }
-    if (std::strcmp(tagger->label(0), "Speech") != 0) { std::fprintf(stderr, "FAIL: label 0\n"); return 1; }
+    const char* label0 = tagger->label(0);
+    if (!label0 || std::strcmp(label0, "Speech") != 0) { std::fprintf(stderr, "FAIL: label 0\n"); return 1; }
     std::fprintf(stderr, "PASS\n");
     return 0;
 }

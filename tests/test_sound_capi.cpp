@@ -28,6 +28,7 @@ static int fails = 0;
 int main() {
     const char* gguf = std::getenv("PARAKEET_TEST_CED_GGUF");
     if (!gguf) { std::fprintf(stderr, "SKIP: PARAKEET_TEST_CED_GGUF unset\n"); return 77; }
+    if (!pk::CedTagger::available()) { std::fprintf(stderr, "SKIP: built without CED\n"); return 77; }
     parakeet_ctx* tag = parakeet_capi_load(gguf);
     if (!tag) { std::fprintf(stderr, "FAIL: load\n"); return 1; }
 
@@ -101,7 +102,8 @@ int main() {
     CHECK(found("Guitar", 12.0f, 18.0f) || found("Acoustic guitar", 12.0f, 18.0f), "guitar in [12, 18)");
     CHECK(scores.find("\"tags\":[{\"index\":") != std::string::npos, "score json shape");
 
-    // Window scores are exactly the tagger's numbers for the same samples.
+    // Window scores are exactly CedTagger::scorer()'s numbers for the same
+    // samples (test_ced_parity checks those against the PyTorch baseline).
     {
         auto t = pk::CedTagger::load(gguf);
         std::vector<float> direct;
