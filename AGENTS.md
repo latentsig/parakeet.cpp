@@ -108,7 +108,7 @@ tests/               ctest targets
                        test_streaming_eou_reset.cpp, multi-utterance streaming: decoder resets on <EOU>, transcript == NeMo reset-on-EOU (issue #13; PARAKEET_TEST_BASELINE_EOU_RESET)
                        test_capi_stream.cpp    , streaming C-API transcript == NeMo streaming (PARAKEET_TEST_BASELINE_EOU_STREAM)
                        test_diarization_accuracy.cpp, offline diarization == NeMo (PARAKEET_TEST_BASELINE_DIAR)
-                       test_streaming_diarization.cpp, streaming diarization == NeMo streaming (same baseline)
+                       test_streaming_diarization.cpp, streaming diarization == NeMo streaming, every latency mode (same baseline)
                        test_combined_offline.cpp, SAS + streaming diarization/SAS through the C-API
                        test_sas_merge.cpp      , SAS merge/grouping (model-independent)
                        python/check_convert.py , converter round-trip (model-dependent)
@@ -277,9 +277,9 @@ diarization GGUF loads into its own `parakeet_ctx`; see `docs/diarization.md`:
 parakeet_capi_diarize_path / _pcm              # offline, JSON segments
 parakeet_capi_transcribe_and_diarize(_json)    # speaker-attributed ASR (two contexts)
 parakeet_capi_free_sas_results                 # frees the array and every .text
-parakeet_capi_diarize_stream_begin / _feed / _free / _chunk_samples
+parakeet_capi_diarize_stream_begin / _begin_latency / _feed / _active / _time / _free / _chunk_samples
 parakeet_capi_free_diar_segments
-parakeet_capi_sas_stream_begin / _feed / _free
+parakeet_capi_sas_stream_begin / _begin_latency / _feed / _free
 ```
 
 `parakeet_capi_transcribe_path_json(ctx, wav, decoder)` returns malloc'd UTF-8
@@ -338,7 +338,8 @@ PARAKEET_TEST_DIAR_GGUF=/tmp/diar.gguf PARAKEET_TEST_BASELINE_DIAR=/tmp/diar_bas
 ```
 
 Quantized diarization GGUFs keep the same segments but move probabilities
-more; set `PARAKEET_TEST_DIAR_PROB_TOL=0.05` for Q8_0.
+more; set `PARAKEET_TEST_DIAR_PROB_TOL=0.15` for Q8_0. The baseline also
+holds each low-latency streaming mode (`--modes`, NeMo is slow on them).
 
 ASR:
 
