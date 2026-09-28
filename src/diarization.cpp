@@ -151,17 +151,17 @@ DiarizationResult DiarizationModel::run_streaming(const std::vector<float>& samp
     if (T <= 0) return result;
     const int T_full = (int)(feats.size() / n_mels);
 
-    StreamingDiarization sd(loader_);
-    const int cm = sd.chunk_mel_frames();
-    std::vector<float> chunk;
-    for (int lo = 0; lo < T; lo += cm) {
-        const int n = std::min(cm, T - lo);
-        chunk.resize((size_t)n_mels * n);
+    // Whole clip in one feed: the diarizer chunks it with the checkpoint's
+    // streaming configuration, exactly as NeMo's diarize() does.
+    if ((int)(feats.size() / n_mels) != T) {
+        std::vector<float> trimmed((size_t)n_mels * T);
         for (int m = 0; m < n_mels; ++m)
-            std::copy_n(feats.begin() + (size_t)m * T_full + lo, n, chunk.begin() + (size_t)m * n);
-        for (const auto& g : sd.feed_mel_chunk(chunk, n_mels, n, lo + n >= T))
-            result.segments.push_back({g.speaker, g.start, g.end});
+            std::copy_n(feats.begin() + (size_t)m * T_full, T, trimmed.begin() + (size_t)m * T);
+        feats.swap(trimmed);
     }
+    StreamingDiarization sd(loader_);
+    for (const auto& g : sd.feed_mel(feats, n_mels, T, /*is_last=*/true))
+        result.segments.push_back({g.speaker, g.start, g.end});
     std::sort(result.segments.begin(), result.segments.end(),
               [](const SpeakerSegment& a, const SpeakerSegment& b) {
                   return a.start != b.start ? a.start < b.start : a.speaker < b.speaker;

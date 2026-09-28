@@ -295,9 +295,60 @@ int main() {
         }
     }
 
-    // 4. Streaming SAS.
+    // 3b. Low-latency streaming diarization: diarized time trails the audio by
+    //     at most the mode's latency, and _active names the current speaker.
     {
-        parakeet_sas_stream* ss = parakeet_capi_sas_stream_begin(asr, diar);
+        parakeet_diar_stream* ds = parakeet_capi_diarize_stream_begin_latency(diar, PARAKEET_DIAR_LATENCY_LOW);
+        CHECK(ds != nullptr, "diarize_stream_begin_latency: %s", parakeet_capi_last_error(diar));
+        const int latency = ds ? parakeet_capi_diarize_stream_chunk_samples(ds) : 0;
+        CHECK(latency == 16640, "LOW latency is %d samples, expected 16640 (1.04 s)", latency);
+        std::vector<parakeet_diar_segment> streamed;
+        int active_checks = 0;
+        float prev_t = 0.0f;
+        for (int lo = 0; ds && lo < n; lo += 1600) {
+            const int len = std::min(1600, n - lo);
+            parakeet_diar_segment* segs = nullptr;
+            int ns = 0;
+            const bool last = lo + len >= n;
+            CHECK(parakeet_capi_diarize_stream_feed(ds, pcm.data() + lo, len, last, &segs, &ns) == 0,
+                  "feed: %s", parakeet_capi_last_error(diar));
+            streamed.insert(streamed.end(), segs, segs + ns);
+            parakeet_capi_free_diar_segments(segs);
+            if (last) break;
+            const float fed = (lo + len) / 16000.0f;
+            const float t = parakeet_capi_diarize_stream_time(ds);
+            CHECK(fed - t <= 1.04f + 0.24f + 1e-3f, "diarized %.2f s of %.2f s fed", t, fed);
+            // Mid-utterance of each speaker the current speaker must be known,
+            // checked when the diarized time first passes each probe (it
+            // advances in 0.72 s steps).
+            for (const float probe : {3.0f, 9.0f, 16.0f, 22.0f}) {
+                if (prev_t < probe && t >= probe) {
+                    parakeet_diar_segment* act = nullptr;
+                    int na = 0;
+                    CHECK(parakeet_capi_diarize_stream_active(ds, &act, &na) == 0, "active");
+                    const int want = (probe == 3.0f || probe == 16.0f) ? 0 : 1;
+                    CHECK(na == 1 && act[0].speaker == want && act[0].end == t,
+                          "at %.2f s: %d active, speaker %d (want %d)", t, na,
+                          na ? act[0].speaker : -1, want);
+                    parakeet_capi_free_diar_segments(act);
+                    ++active_checks;
+                }
+            }
+            prev_t = t;
+        }
+        parakeet_capi_diarize_stream_free(ds);
+        std::vector<int> spk;
+        std::sort(streamed.begin(), streamed.end(), [](const auto& a, const auto& b) { return a.start < b.start; });
+        for (const auto& g : streamed) spk.push_back(g.speaker);
+        std::printf("low-latency diarization: %zu segments, turns %s, %d active checks\n",
+                    streamed.size(), show(turns(spk)).c_str(), active_checks);
+        CHECK(turns(spk) == expected_turns, "low-latency turns %s", show(turns(spk)).c_str());
+        CHECK(active_checks == 4, "only %d of 4 active checks ran", active_checks);
+    }
+
+    // 4. Streaming SAS (checkpoint config, then 1.04 s latency).
+    for (const int latency : {PARAKEET_DIAR_LATENCY_MODEL, PARAKEET_DIAR_LATENCY_LOW}) {
+        parakeet_sas_stream* ss = parakeet_capi_sas_stream_begin_latency(asr, diar, latency);
         CHECK(ss != nullptr, "sas_stream_begin");
         std::vector<int> spk;
         int words = 0;
@@ -317,7 +368,7 @@ int main() {
             parakeet_capi_free_sas_results(r, nr);
         }
         parakeet_capi_sas_stream_free(ss);
-        std::printf("streaming SAS: %d words, turns %s\n  %s\n", words,
+        std::printf("streaming SAS (latency mode %d): %d words, turns %s\n  %s\n", latency, words,
                     show(turns(spk)).c_str(), text.c_str());
         CHECK(turns(spk) == expected_turns, "streaming turns %s", show(turns(spk)).c_str());
         CHECK(std::abs(words - n_words_offline) <= 3, "streaming words %d vs offline %d",

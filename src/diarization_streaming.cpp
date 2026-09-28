@@ -30,8 +30,43 @@ float round2(float x) { return std::round(x * 100.0f) / 100.0f; }
 
 }  // namespace
 
+DiarStreamConfig DiarStreamConfig::from_model(const ParakeetConfig& cfg) {
+    const auto& d = cfg.diarization;
+    DiarStreamConfig c;
+    c.spkcache_len = d.spkcache_len;
+    c.fifo_len = d.fifo_len;
+    c.chunk_len = d.chunk_len;
+    c.left_context = 0;
+    c.right_context = 0;
+    c.update_period = d.spkcache_update_period;
+    return c;
+}
+
+DiarStreamConfig diar_stream_config(DiarLatency latency, const ParakeetConfig& cfg) {
+    DiarStreamConfig c = DiarStreamConfig::from_model(cfg);
+    // Model-card presets: speaker cache 264, FIFO 264, update period 222.
+    auto preset = [&](int chunk, int right) {
+        c.spkcache_len = 264;
+        c.fifo_len = 264;
+        c.chunk_len = chunk;
+        c.left_context = 0;
+        c.right_context = right;
+        c.update_period = 222;
+    };
+    switch (latency) {
+        case DiarLatency::Model: break;
+        case DiarLatency::Low: preset(9, 4); break;
+        case DiarLatency::VeryLow: preset(6, 2); break;
+        case DiarLatency::UltraLow: preset(3, 1); break;
+    }
+    return c;
+}
+
 StreamingDiarization::StreamingDiarization(const ModelLoader& ml)
-    : ml_(ml), encoder_(ml), head_(ml) {
+    : StreamingDiarization(ml, DiarStreamConfig::from_model(ml.config())) {}
+
+StreamingDiarization::StreamingDiarization(const ModelLoader& ml, const DiarStreamConfig& scfg)
+    : ml_(ml), encoder_(ml), head_(ml), scfg_(scfg) {
     const auto& cfg = ml.config();
     const auto& d = cfg.diarization;
     d_model_       = (int)cfg.d_model;
@@ -39,10 +74,6 @@ StreamingDiarization::StreamingDiarization(const ModelLoader& ml)
     subsampling_   = encoder_.subsampling();
     upsample_      = (int)d.upsample_factor;
     n_mels_        = encoder_.n_mels();
-    chunk_len_     = d.chunk_len;
-    spkcache_len_  = d.spkcache_len;
-    fifo_len_      = d.fifo_len;
-    update_period_ = d.spkcache_update_period;
     sil_frames_per_spk_ = d.spkcache_sil_frames_per_spk;
     frame_sec_     = d.frame_resolution_sec;
     onset_         = d.onset_threshold;
@@ -54,8 +85,11 @@ StreamingDiarization::StreamingDiarization(const ModelLoader& ml)
     weak_boost_rate_      = d.weak_boost_rate;
     min_pos_scores_rate_  = d.min_pos_scores_rate;
 
-    if (chunk_len_ <= 0 || spkcache_len_ <= 0 || fifo_len_ < 0 || update_period_ <= 0 ||
-        upsample_ != subsampling_ || spkcache_len_ / n_spk_ - sil_frames_per_spk_ <= 0) {
+    // NeMo _check_streaming_parameters: every size positive, and the update
+    // period between the chunk and the FIFO + chunk.
+    if (scfg_.chunk_len <= 0 || scfg_.spkcache_len <= 0 || scfg_.fifo_len < 0 ||
+        scfg_.left_context < 0 || scfg_.right_context < 0 || scfg_.update_period <= 0 ||
+        upsample_ != subsampling_ || scfg_.spkcache_len / n_spk_ - sil_frames_per_spk_ <= 0) {
         throw std::runtime_error("parakeet: invalid diarization streaming config");
     }
 
@@ -77,6 +111,10 @@ void StreamingDiarization::reset() {
     spkcache_compressed_ = false;
     mean_sil_emb_.assign(d_model_, 0.0f);
     n_sil_frames_ = 0;
+    buf_.clear();
+    buf_start_ = 0;
+    frames_in_ = 0;
+    next_stt_ = 0;
     frames_done_ = 0;
     last_probs_.clear();
     last_frames_ = 0;
@@ -84,27 +122,95 @@ void StreamingDiarization::reset() {
     start_frame_.assign(n_spk_, 0);
 }
 
-std::vector<StreamingSpeakerSegment> StreamingDiarization::feed_mel_chunk(
+std::vector<StreamingSpeakerSegment> StreamingDiarization::feed_mel(
         const std::vector<float>& mel, int n_mels, int n_frames, bool is_last) {
-    if (n_mels != n_mels_ || n_frames <= 0 || n_frames > chunk_mel_frames() ||
-        mel.size() != (size_t)n_mels * n_frames) {
-        throw std::runtime_error("parakeet: bad streaming diarization chunk shape");
+    if (n_mels != n_mels_ || n_frames < 0 || mel.size() != (size_t)n_mels * n_frames)
+        throw std::runtime_error("parakeet: bad streaming diarization mel shape");
+
+    // Buffer frame-major.
+    const size_t base = buf_.size();
+    buf_.resize(base + (size_t)n_frames * n_mels_);
+    for (int m = 0; m < n_mels_; ++m)
+        for (int t = 0; t < n_frames; ++t)
+            buf_[base + (size_t)t * n_mels_ + m] = mel[(size_t)m * n_frames + t];
+    frames_in_ += n_frames;
+
+    // Run every chunk whose look-ahead has arrived (NeMo streaming_feat_loader:
+    // left/right context clipped at the stream edges).
+    std::vector<StreamingSpeakerSegment> closed;
+    std::vector<std::vector<float>> out(n_spk_);
+    last_frames_ = 0;
+    const long long cm = chunk_mel_frames();
+    const long long lc = (long long)scfg_.left_context * subsampling_;
+    const long long rc = (long long)scfg_.right_context * subsampling_;
+    for (;;) {
+        const long long stt = next_stt_;
+        long long end = stt + cm;
+        if (is_last) {
+            if (stt >= frames_in_) break;
+            end = std::min(end, frames_in_);
+        } else if (frames_in_ < end + rc) {
+            break;
+        }
+        const int left = (int)std::min(lc, stt);
+        const int right = (int)std::min(rc, frames_in_ - end);
+        const bool final_chunk = is_last && end == frames_in_;
+        step(stt, end, left, right, final_chunk, closed);
+        // step() leaves this chunk's output in last_probs_ ([n_spk, n]).
+        const int n = (int)(end - stt);
+        for (int s = 0; s < n_spk_; ++s)
+            out[s].insert(out[s].end(), last_probs_.begin() + (size_t)s * n,
+                          last_probs_.begin() + (size_t)(s + 1) * n);
+        last_frames_ += n;
+        next_stt_ = end;
+        // Keep only what the next chunk's left context needs.
+        const long long keep_from = std::max(buf_start_, next_stt_ - lc);
+        if (keep_from > buf_start_) {
+            buf_.erase(buf_.begin(), buf_.begin() + (size_t)(keep_from - buf_start_) * n_mels_);
+            buf_start_ = keep_from;
+        }
     }
+    if (is_last) {
+        // A stream that ended exactly on a chunk edge still closes its segments.
+        std::vector<float> none;
+        track_segments(none, 0, true, closed);
+    }
+    last_probs_.clear();
+    for (int s = 0; s < n_spk_; ++s) last_probs_.insert(last_probs_.end(), out[s].begin(), out[s].end());
+    std::sort(closed.begin(), closed.end(),
+              [](const StreamingSpeakerSegment& a, const StreamingSpeakerSegment& b) {
+                  return a.start != b.start ? a.start < b.start : a.speaker < b.speaker;
+              });
+    return closed;
+}
 
-    // 1. Pre-encode the chunk -> [cl, d].
-    std::vector<float> chunk_emb;
-    int cl = 0;
-    encoder_.pre_encode(mel, n_mels, n_frames, chunk_emb, cl);
+// NeMo forward_streaming_step (sync mode) on mel frames [stt - left, end + right).
+void StreamingDiarization::step(long long stt, long long end, int left, int right,
+                                bool final_chunk, std::vector<StreamingSpeakerSegment>& closed) {
+    const int n_win = left + (int)(end - stt) + right;
+    std::vector<float> win((size_t)n_mels_ * n_win);
+    const long long w0 = stt - left;
+    for (int t = 0; t < n_win; ++t)
+        for (int m = 0; m < n_mels_; ++m)
+            win[(size_t)m * n_win + t] = buf_[(size_t)(w0 - buf_start_ + t) * n_mels_ + m];
 
-    // 2. Transformer + head over [spkcache | fifo | chunk].
+    // 1. Pre-encode the window -> [lc + cl + rc, d] (pre-norm embeddings).
+    std::vector<float> emb;
+    int T_c = 0;
+    encoder_.pre_encode(win, n_mels_, n_win, emb, T_c);
+    const int lc_enc = (int)std::lround((double)left / subsampling_);
+    const int rc_enc = (right + subsampling_ - 1) / subsampling_;
+    const int cl = T_c - lc_enc - rc_enc;
+
+    // 2. Transformer + head over [spkcache | fifo | window].
     const int S = (int)(spkcache_.size() / d_model_);
     const int F = (int)(fifo_.size() / d_model_);
-    const int total = S + F + cl;
+    const int total = S + F + T_c;
     std::vector<float> seq;
     seq.reserve((size_t)total * d_model_);
     seq.insert(seq.end(), spkcache_.begin(), spkcache_.end());
     seq.insert(seq.end(), fifo_.begin(), fifo_.end());
-    seq.insert(seq.end(), chunk_emb.begin(), chunk_emb.end());
+    seq.insert(seq.end(), emb.begin(), emb.end());
 
     std::vector<float> enc;
     encoder_.transformer_forward(seq, total, enc);
@@ -122,35 +228,35 @@ std::vector<StreamingSpeakerSegment> StreamingDiarization::feed_mel_chunk(
             preds[(size_t)t * n_spk_ + s] = (float)(acc / upsample_);
         }
 
-    // 4. This chunk's high-resolution slice, trimmed to the real mel frames.
-    const int base = (S + F) * upsample_;
-    last_frames_ = n_frames;
-    last_probs_.resize((size_t)n_spk_ * n_frames);
+    // 4. The chunk's high-resolution slice (after the left context), trimmed
+    //    to its real mel frames.
+    const int n = (int)(end - stt);
+    const size_t hr0 = (size_t)(S + F + lc_enc) * upsample_;
+    last_probs_.resize((size_t)n_spk_ * n);
     for (int s = 0; s < n_spk_; ++s)
-        std::copy_n(hp.begin() + (size_t)s * T_hr + base, n_frames,
-                    last_probs_.begin() + (size_t)s * n_frames);
+        std::copy_n(hp.begin() + (size_t)s * T_hr + hr0, n, last_probs_.begin() + (size_t)s * n);
 
     // 5. Cache update for the next chunk.
-    if (!is_last) streaming_update(chunk_emb, cl, preds, S, F);
+    if (!final_chunk) streaming_update(emb, lc_enc, cl, preds, S, F);
 
-    std::vector<StreamingSpeakerSegment> out;
-    track_segments(last_probs_, n_frames, is_last, out);
-    return out;
+    track_segments(last_probs_, n, false, closed);
 }
 
-// SortformerModules.streaming_update (sync mode, lc = rc = 0).
-void StreamingDiarization::streaming_update(const std::vector<float>& chunk_emb,
-                                            int cl, const std::vector<float>& preds,
+// SortformerModules.streaming_update (sync mode). emb is the pre-encoded
+// window; the chunk is its rows [lc, lc + cl) and its predictions sit at
+// S + F + lc in preds.
+void StreamingDiarization::streaming_update(const std::vector<float>& emb, int lc, int cl,
+                                            const std::vector<float>& preds,
                                             int S, int F) {
     const int d = d_model_, ns = n_spk_;
     // FIFO predictions are refreshed from this step's output.
     fifo_preds_.assign(preds.begin() + (size_t)S * ns, preds.begin() + (size_t)(S + F) * ns);
-    fifo_.insert(fifo_.end(), chunk_emb.begin(), chunk_emb.end());
-    append_rows(fifo_preds_, preds, ns, S + F, S + F + cl);
+    append_rows(fifo_, emb, d, lc, lc + cl);
+    append_rows(fifo_preds_, preds, ns, S + F + lc, S + F + lc + cl);
 
-    if (F + cl <= fifo_len_) return;
+    if (F + cl <= scfg_.fifo_len) return;
 
-    int pop = std::max(update_period_, cl - fifo_len_ + F);
+    int pop = std::max(scfg_.update_period, cl - scfg_.fifo_len + F);
     pop = std::min(pop, F + cl);
 
     if (!use_learnable_sil_emb_) {
@@ -183,7 +289,7 @@ void StreamingDiarization::streaming_update(const std::vector<float>& chunk_emb,
     drop_rows(fifo_, d, pop);
     drop_rows(fifo_preds_, ns, pop);
 
-    if ((int)(spkcache_.size() / d) > spkcache_len_) {
+    if ((int)(spkcache_.size() / d) > scfg_.spkcache_len) {
         compress_spkcache();
         spkcache_compressed_ = true;
     }
@@ -193,7 +299,7 @@ void StreamingDiarization::streaming_update(const std::vector<float>& chunk_emb,
 void StreamingDiarization::compress_spkcache() {
     const int d = d_model_, ns = n_spk_;
     const int n = (int)(spkcache_preds_.size() / ns);
-    const int per_spk = spkcache_len_ / ns - sil_frames_per_spk_;
+    const int per_spk = scfg_.spkcache_len / ns - sil_frames_per_spk_;
     const int strong_k = (int)std::floor(per_spk * strong_boost_rate_);
     const int weak_k   = (int)std::floor(per_spk * weak_boost_rate_);
     const int min_pos  = (int)std::floor(per_spk * min_pos_scores_rate_);
@@ -230,7 +336,7 @@ void StreamingDiarization::compress_spkcache() {
 
     // Boost frames newly added since the last compression.
     if (scores_boost_latest_ > 0.0f)
-        for (size_t i = (size_t)spkcache_len_ * ns; i < sc.size(); ++i) sc[i] += scores_boost_latest_;
+        for (size_t i = (size_t)scfg_.spkcache_len * ns; i < sc.size(); ++i) sc[i] += scores_boost_latest_;
 
     // _boost_topk_scores: add -scale*log(0.5) to each speaker's top-k frames.
     auto boost = [&](int k, float scale) {
@@ -259,7 +365,7 @@ void StreamingDiarization::compress_spkcache() {
     for (int s = 0; s < ns; ++s)
         for (int t = 0; t < n_tot; ++t)
             flat[(size_t)s * n_tot + t] = {t < n ? sc[(size_t)t * ns + s] : kInf, s * n_tot + t};
-    const int K = spkcache_len_;
+    const int K = scfg_.spkcache_len;
     std::nth_element(flat.begin(), flat.begin() + (K - 1), flat.end(),
                      [](const std::pair<float, int>& a, const std::pair<float, int>& b) {
                          return a.first != b.first ? a.first > b.first : a.second < b.second;

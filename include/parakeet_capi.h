@@ -52,6 +52,9 @@ typedef struct parakeet_ctx parakeet_ctx;
 //     for nvidia/Nemotron-3-Diarization. A parakeet_ctx now holds either an
 //     ASR or a diarization model; parakeet_capi_load detects which. No
 //     existing signatures changed.
+//     Additive, same ABI: parakeet_capi_diarize_stream_begin_latency /
+//     _time / _active and parakeet_capi_sas_stream_begin_latency (the model
+//     card's 1.04 / 0.64 / 0.32 s streaming modes).
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -399,11 +402,16 @@ char* parakeet_capi_transcribe_and_diarize_json(parakeet_ctx* asr_ctx, parakeet_
 
 // --- Streaming diarization -------------------------------------------------
 // NeMo cache-aware streaming (speaker cache + FIFO) over live 16 kHz mono
-// float PCM. Audio is processed in the model's chunks
-// (parakeet_capi_diarize_stream_chunk_samples; 21.12 s for
-// Nemotron-3-Diarization), so segments arrive once per chunk. Speaker indices
-// stay consistent across chunks. The stream borrows `diar_ctx`: free the
-// stream first, and do not use one context from two threads at once.
+// float PCM. Speaker indices stay consistent across chunks. The stream
+// borrows `diar_ctx`: free the stream first, and do not use one context from
+// two threads at once.
+//
+// Latency modes (the Nemotron-3-Diarization model card presets). Latency is
+// the audio buffered before a chunk runs: (chunk + look-ahead) x 80 ms.
+#define PARAKEET_DIAR_LATENCY_MODEL     0  // checkpoint config: 21.12 s chunks
+#define PARAKEET_DIAR_LATENCY_LOW       1  // 1.04 s
+#define PARAKEET_DIAR_LATENCY_VERY_LOW  2  // 0.64 s
+#define PARAKEET_DIAR_LATENCY_ULTRA_LOW 3  // 0.32 s
 
 typedef struct parakeet_diar_segment {
     int   speaker;
@@ -413,11 +421,25 @@ typedef struct parakeet_diar_segment {
 
 typedef struct parakeet_diar_stream parakeet_diar_stream;
 
-// NULL on error (last_error on diar_ctx).
+// Begin a stream in the checkpoint's own configuration
+// (PARAKEET_DIAR_LATENCY_MODEL). NULL on error (last_error on diar_ctx).
 parakeet_diar_stream* parakeet_capi_diarize_stream_begin(parakeet_ctx* diar_ctx);
 
-// Samples per processing chunk (the segment latency). 0 on NULL.
+// Begin a stream in one of the PARAKEET_DIAR_LATENCY_* modes.
+parakeet_diar_stream* parakeet_capi_diarize_stream_begin_latency(parakeet_ctx* diar_ctx,
+                                                                 int latency);
+
+// Samples buffered before a chunk runs (the input latency). 0 on NULL.
 int parakeet_capi_diarize_stream_chunk_samples(parakeet_diar_stream* s);
+
+// Seconds of audio diarized so far (trails the audio fed by up to the latency).
+float parakeet_capi_diarize_stream_time(parakeet_diar_stream* s);
+
+// Segments still open at the diarized time ("who is speaking now"), with `end`
+// at parakeet_capi_diarize_stream_time. Same ownership as
+// parakeet_capi_diarize_stream_feed. Returns 0, or non-zero on error.
+int parakeet_capi_diarize_stream_active(parakeet_diar_stream* s,
+                                        parakeet_diar_segment** out, int* n_out);
 
 // Feed PCM; `is_last` flushes the tail and closes open segments. Returns 0 and
 // sets *out / *n_out to the segments that ENDED since the previous call
@@ -431,17 +453,22 @@ void parakeet_capi_free_diar_segments(parakeet_diar_segment* segs);
 void parakeet_capi_diarize_stream_free(parakeet_diar_stream* s);
 
 // --- Streaming speaker-attributed ASR ---------------------------------------
-// Streaming diarization plus ASR over the same live 16 kHz PCM. Each time a
-// diarization chunk completes, the not-yet-committed audio is transcribed;
+// Streaming diarization plus ASR over the same live 16 kHz PCM. Each time
+// diarization advances, the not-yet-committed audio is transcribed;
 // all words but the last (which may still be cut by the chunk edge) are
 // committed with their speakers, and the rest is carried into the next
 // chunk. `is_last` commits everything. Borrows both contexts.
 
 typedef struct parakeet_sas_stream parakeet_sas_stream;
 
-// NULL on error (last_error on the context that failed).
+// NULL on error (last_error on the context that failed). _begin uses the
+// checkpoint's diarization config; _begin_latency takes a
+// PARAKEET_DIAR_LATENCY_* mode, which also sets how often words commit.
 parakeet_sas_stream* parakeet_capi_sas_stream_begin(parakeet_ctx* asr_ctx,
                                                     parakeet_ctx* diar_ctx);
+parakeet_sas_stream* parakeet_capi_sas_stream_begin_latency(parakeet_ctx* asr_ctx,
+                                                            parakeet_ctx* diar_ctx,
+                                                            int latency);
 
 // Returns 0 and sets *out / *n_out to the utterances committed by this call
 // (free with parakeet_capi_free_sas_results(*out, *n_out)). Consecutive calls

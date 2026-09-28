@@ -1124,76 +1124,85 @@ struct parakeet_diar_stream {
     parakeet_ctx* ctx = nullptr;
     std::unique_ptr<pk::StreamingDiarization> sd;
     std::unique_ptr<pk::StreamingMel> mel;
-    std::vector<float> pending;   // mel frames not yet diarized, frame-major [t][n_mels]
     long long samples_in = 0;     // PCM samples fed so far
     bool finished = false;
 };
 
 namespace {
 
-// Append feat-major [n_mels, n] mel frames to a frame-major buffer.
-void push_frames(std::vector<float>& dst, const std::vector<float>& fm, int n_mels, int n) {
-    const size_t base = dst.size();
-    dst.resize(base + (size_t)n * n_mels);
-    for (int m = 0; m < n_mels; ++m)
-        for (int t = 0; t < n; ++t) dst[base + (size_t)t * n_mels + m] = fm[(size_t)m * n + t];
-}
-
-// Feed PCM to the stream's mel front end and run every full diarization chunk
-// (and, with is_last, the tail). Closed segments are appended to `segs`.
-// Returns the number of chunks run.
-int diar_stream_advance(parakeet_diar_stream* s, const float* pcm, int n, bool is_last,
-                        std::vector<pk::StreamingSpeakerSegment>& segs) {
+// Feed PCM to the stream's mel front end and the diarizer, which runs every
+// chunk whose look-ahead has arrived (and, with is_last, the rest). Closed
+// segments are appended to `segs`. Returns the mel frames diarized by this call.
+long long diar_stream_advance(parakeet_diar_stream* s, const float* pcm, int n, bool is_last,
+                              std::vector<pk::StreamingSpeakerSegment>& segs) {
     const int n_mels = s->sd->n_mels();
+    const long long done_before = s->sd->frames_done();
+    std::vector<float> mel;
     int nf = 0;
     if (n > 0) {
-        std::vector<float> fm = s->mel->feed(pcm, n, nf);
-        push_frames(s->pending, fm, n_mels, nf);
+        mel = s->mel->feed(pcm, n, nf);
         s->samples_in += n;
     }
     if (is_last) {
-        std::vector<float> fm = s->mel->finalize(nf);
-        push_frames(s->pending, fm, n_mels, nf);
-        // NeMo keeps floor(S / hop) frames; the centered STFT emits one more.
+        int nt = 0;
+        std::vector<float> tail = s->mel->finalize(nt);
+        // Join the two feat-major blocks, then keep floor(S / hop) frames in
+        // total like NeMo (the centered STFT emits one more).
         const long long valid = s->samples_in / (long long)s->ctx->diar->config().hop_length;
-        const long long have = s->sd->frames_done() + (long long)(s->pending.size() / n_mels);
-        if (have > valid) s->pending.resize(s->pending.size() - (size_t)(have - valid) * n_mels);
+        const int keep = (int)std::max(0LL, std::min<long long>(nf + nt, valid - s->sd->frames_in()));
+        std::vector<float> joined((size_t)n_mels * keep);
+        for (int m = 0; m < n_mels; ++m)
+            for (int t = 0; t < keep; ++t)
+                joined[(size_t)m * keep + t] = t < nf ? mel[(size_t)m * nf + t]
+                                                      : tail[(size_t)m * nt + (t - nf)];
+        mel.swap(joined);
+        nf = keep;
+        s->finished = true;
     }
-    const int cm = s->sd->chunk_mel_frames();
-    int chunks = 0;
-    for (;;) {
-        const int avail = (int)(s->pending.size() / n_mels);
-        const bool last = is_last && avail <= cm;
-        if (avail < cm && !(last && avail > 0)) break;
-        const int take = std::min(avail, cm);
-        std::vector<float> chunk((size_t)n_mels * take);
-        for (int t = 0; t < take; ++t)
-            for (int m = 0; m < n_mels; ++m)
-                chunk[(size_t)m * take + t] = s->pending[(size_t)t * n_mels + m];
-        s->pending.erase(s->pending.begin(), s->pending.begin() + (size_t)take * n_mels);
-        auto closed = s->sd->feed_mel_chunk(chunk, n_mels, take, last);
-        segs.insert(segs.end(), closed.begin(), closed.end());
-        ++chunks;
-        if (last) break;
+    auto closed = s->sd->feed_mel(mel, n_mels, nf, is_last);
+    segs.insert(segs.end(), closed.begin(), closed.end());
+    return s->sd->frames_done() - done_before;
+}
+
+pk::DiarLatency latency_from_int(int latency) {
+    switch (latency) {
+        case PARAKEET_DIAR_LATENCY_LOW: return pk::DiarLatency::Low;
+        case PARAKEET_DIAR_LATENCY_VERY_LOW: return pk::DiarLatency::VeryLow;
+        case PARAKEET_DIAR_LATENCY_ULTRA_LOW: return pk::DiarLatency::UltraLow;
+        default: return pk::DiarLatency::Model;
     }
-    if (is_last && chunks == 0 && s->sd->frames_done() > 0) {
-        // Stream length was an exact multiple of the chunk: close open segments.
-        auto open = s->sd->open_segments();
-        segs.insert(segs.end(), open.begin(), open.end());
-    }
-    if (is_last) s->finished = true;
-    return chunks;
+}
+
+// Copy segments into a malloc'd C array (NULL when empty). False on OOM.
+bool to_c_segments(const std::vector<pk::StreamingSpeakerSegment>& segs,
+                   parakeet_diar_segment** out, int* n_out) {
+    *out = nullptr;
+    *n_out = 0;
+    if (segs.empty()) return true;
+    auto* r = static_cast<parakeet_diar_segment*>(std::malloc(segs.size() * sizeof(parakeet_diar_segment)));
+    if (!r) return false;
+    for (size_t i = 0; i < segs.size(); ++i) r[i] = {segs[i].speaker, segs[i].start, segs[i].end};
+    *out = r;
+    *n_out = (int)segs.size();
+    return true;
 }
 
 }  // namespace
 
-extern "C" parakeet_diar_stream* parakeet_capi_diarize_stream_begin(parakeet_ctx* diar_ctx) {
+extern "C" parakeet_diar_stream* parakeet_capi_diarize_stream_begin_latency(parakeet_ctx* diar_ctx,
+                                                                            int latency) {
     if (!require_diar(diar_ctx)) return nullptr;
+    if (latency < PARAKEET_DIAR_LATENCY_MODEL || latency > PARAKEET_DIAR_LATENCY_ULTRA_LOW) {
+        diar_ctx->last_error = "unknown diarization latency mode";
+        return nullptr;
+    }
     try {
+        const pk::ModelLoader& ml = diar_ctx->diar->loader();
         auto* s = new parakeet_diar_stream();
         s->ctx = diar_ctx;
-        s->sd  = std::make_unique<pk::StreamingDiarization>(diar_ctx->diar->loader());
-        s->mel = std::make_unique<pk::StreamingMel>(diar_ctx->diar->loader());
+        s->sd  = std::make_unique<pk::StreamingDiarization>(
+            ml, pk::diar_stream_config(latency_from_int(latency), ml.config()));
+        s->mel = std::make_unique<pk::StreamingMel>(ml);
         diar_ctx->last_error.clear();
         return s;
     } catch (const std::exception& e) {
@@ -1204,9 +1213,28 @@ extern "C" parakeet_diar_stream* parakeet_capi_diarize_stream_begin(parakeet_ctx
     return nullptr;
 }
 
+extern "C" parakeet_diar_stream* parakeet_capi_diarize_stream_begin(parakeet_ctx* diar_ctx) {
+    return parakeet_capi_diarize_stream_begin_latency(diar_ctx, PARAKEET_DIAR_LATENCY_MODEL);
+}
+
 extern "C" int parakeet_capi_diarize_stream_chunk_samples(parakeet_diar_stream* s) {
     if (!s) return 0;
-    return s->sd->chunk_mel_frames() * (int)s->ctx->diar->config().hop_length;
+    return s->sd->latency_mel_frames() * (int)s->ctx->diar->config().hop_length;
+}
+
+extern "C" float parakeet_capi_diarize_stream_time(parakeet_diar_stream* s) {
+    if (!s) return 0.0f;
+    return (float)(s->sd->frames_done() * s->sd->frame_sec());
+}
+
+extern "C" int parakeet_capi_diarize_stream_active(parakeet_diar_stream* s,
+                                                   parakeet_diar_segment** out, int* n_out) {
+    if (!s || !out || !n_out) return 1;
+    if (!to_c_segments(s->sd->open_segments(), out, n_out)) {
+        s->ctx->last_error = "out of memory";
+        return 1;
+    }
+    return 0;
 }
 
 extern "C" int parakeet_capi_diarize_stream_feed(parakeet_diar_stream* s, const float* pcm,
@@ -1220,13 +1248,7 @@ extern "C" int parakeet_capi_diarize_stream_feed(parakeet_diar_stream* s, const 
     try {
         std::vector<pk::StreamingSpeakerSegment> segs;
         diar_stream_advance(s, pcm, n_samples, is_last != 0, segs);
-        if (!segs.empty()) {
-            auto* r = static_cast<parakeet_diar_segment*>(std::malloc(segs.size() * sizeof(parakeet_diar_segment)));
-            if (!r) { s->ctx->last_error = "out of memory"; return 1; }
-            for (size_t i = 0; i < segs.size(); ++i) r[i] = {segs[i].speaker, segs[i].start, segs[i].end};
-            *out = r;
-            *n_out = (int)segs.size();
-        }
+        if (!to_c_segments(segs, out, n_out)) { s->ctx->last_error = "out of memory"; return 1; }
         s->ctx->last_error.clear();
         return 0;
     } catch (const std::exception& e) {
@@ -1269,16 +1291,22 @@ std::string word_key(const std::string& w) {
 
 }  // namespace
 
-extern "C" parakeet_sas_stream* parakeet_capi_sas_stream_begin(parakeet_ctx* asr_ctx,
-                                                               parakeet_ctx* diar_ctx) {
+extern "C" parakeet_sas_stream* parakeet_capi_sas_stream_begin_latency(parakeet_ctx* asr_ctx,
+                                                                       parakeet_ctx* diar_ctx,
+                                                                       int latency) {
     if (!require_asr(asr_ctx) || !require_diar(diar_ctx)) return nullptr;
-    parakeet_diar_stream* d = parakeet_capi_diarize_stream_begin(diar_ctx);
+    parakeet_diar_stream* d = parakeet_capi_diarize_stream_begin_latency(diar_ctx, latency);
     if (!d) return nullptr;
     auto* s = new (std::nothrow) parakeet_sas_stream();
     if (!s) { parakeet_capi_diarize_stream_free(d); return nullptr; }
     s->asr = asr_ctx;
     s->diar = d;
     return s;
+}
+
+extern "C" parakeet_sas_stream* parakeet_capi_sas_stream_begin(parakeet_ctx* asr_ctx,
+                                                               parakeet_ctx* diar_ctx) {
+    return parakeet_capi_sas_stream_begin_latency(asr_ctx, diar_ctx, PARAKEET_DIAR_LATENCY_MODEL);
 }
 
 extern "C" int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float* pcm,
@@ -1292,10 +1320,15 @@ extern "C" int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float
     parakeet_ctx* failed = s->diar->ctx;
     try {
         std::vector<pk::StreamingSpeakerSegment> closed;
-        const int chunks = diar_stream_advance(s->diar, pcm, n_samples, is_last != 0, closed);
+        const long long advanced = diar_stream_advance(s->diar, pcm, n_samples, is_last != 0, closed);
         for (const auto& c : closed) s->segs.push_back({c.speaker, c.start, c.end});
         if (n_samples > 0) s->audio.insert(s->audio.end(), pcm, pcm + n_samples);
-        if (chunks == 0 && !is_last) return 0;
+        if (advanced == 0 && !is_last) return 0;
+
+        // Offline ASR on a short window loses words, so wait until enough
+        // uncommitted, diarized audio has built up (it bounds how often the
+        // text commits, not the speaker latency).
+        constexpr double kSasMinWindowSec = 4.0;
 
         // Diarized audio ends at frames_done; transcribe the uncommitted span.
         const double hop_sec = (double)s->diar->ctx->diar->config().hop_length / 16000.0;
@@ -1303,6 +1336,7 @@ extern "C" int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float
         size_t span = is_last ? s->audio.size()
                               : std::min(s->audio.size(),
                                          (size_t)std::max(0.0, (diar_end - s->commit_sec) * 16000.0));
+        if (!is_last && span < (size_t)(kSasMinWindowSec * 16000.0)) return 0;
         failed = s->asr;
         std::vector<pk::Word> words;
         if (span > 0) {
@@ -1319,8 +1353,9 @@ extern "C" int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float
             const double limit = (double)span / 16000.0 - kSasRightContextSec;
             keep = 0;
             while (keep < words.size() && words[keep].end <= limit) ++keep;
-            next_commit = s->commit_sec + (keep < words.size() ? words[keep].start
-                                                                : std::max(0.0, limit));
+            // Resume right after the last committed word: audio the ASR
+            // skipped this time is heard again with more context.
+            next_commit = s->commit_sec + (keep > 0 ? words[keep - 1].end : 0.0);
         }
         std::vector<pk::Word> committed(words.begin(), words.begin() + keep);
         for (auto& w : committed) { w.start += (float)s->commit_sec; w.end += (float)s->commit_sec; }
