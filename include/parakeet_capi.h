@@ -520,6 +520,45 @@ void  parakeet_capi_sound_stream_free(parakeet_sound_stream* s);
 int         parakeet_capi_num_classes(const parakeet_ctx* ctx);
 const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);
 
+// --- Combined scene stream (ABI v8) -----------------------------------------
+// ASR, diarization and sound-event tagging over one live 16 kHz mono PCM
+// stream. Any of the three contexts may be NULL; at least one is required.
+// Borrows the contexts it is given (same lifetime rule as sas_stream /
+// sound_stream): free the scene stream first.
+
+typedef struct {
+    int size;                    // sizeof(parakeet_scene_opts), for versioning
+    int diar_latency;            // PARAKEET_DIAR_LATENCY_*, used only with a diar ctx
+    parakeet_sound_opts sound;   // used only with a tagger ctx
+    int flags;                   // reserved, must be 0
+} parakeet_scene_opts;
+void parakeet_capi_scene_opts_default(parakeet_scene_opts* o);
+
+typedef struct parakeet_scene_stream parakeet_scene_stream;
+
+// Any context may be NULL; at least one must be given. NULL opts = defaults.
+// NULL on error: with an all-NULL call there is no context to report on, so
+// nothing is set; otherwise last_error is set on the context of the wrong
+// kind (or, on an internal failure, the part that failed).
+parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parakeet_ctx* diar,
+                                                         parakeet_ctx* tagger,
+                                                         const parakeet_scene_opts* o);
+
+// Everything finalized by this call, as one JSON document (see
+// docs/superpowers/specs for the shape: "t", "utterances", "words",
+// "speakers", "sounds", "active"). NULL on error. Free with
+// parakeet_capi_free_string.
+char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, const float* pcm, int n,
+                                           int is_last);
+
+// Same shape as parakeet_capi_sound_stream_drain_scores_json; "[]" without a
+// tagger. Free with parakeet_capi_free_string.
+char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s);
+
+// Last error of this stream, "" if none. Borrowed.
+const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stream* s);
+void  parakeet_capi_scene_stream_free(parakeet_scene_stream* s);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

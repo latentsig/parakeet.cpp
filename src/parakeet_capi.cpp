@@ -1468,3 +1468,109 @@ extern "C" int parakeet_capi_num_classes(const parakeet_ctx* ctx) {
 extern "C" const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index) {
     return (ctx && ctx->tagger) ? ctx->tagger->label(index) : nullptr;
 }
+
+// ---------------------------------------------------------------------------
+// Combined scene stream (ABI v8)
+// ---------------------------------------------------------------------------
+
+// A pk::SceneStream over up to three contexts (ASR, diarization, tagger).
+struct parakeet_scene_stream {
+    parakeet_ctx* asr_ctx = nullptr;
+    parakeet_ctx* diar_ctx = nullptr;
+    parakeet_ctx* tagger_ctx = nullptr;
+    std::unique_ptr<pk::SceneStream> scene;
+    std::string last_error;
+};
+
+namespace {
+
+// Which context was running when the scene stream last threw, mirroring the
+// sas_stream wrapper's diar/asr attribution, extended with the tagger.
+parakeet_ctx* scene_failed_ctx(parakeet_scene_stream* s) {
+    switch (s->scene->failed_part()) {
+        case pk::ScenePart::Diarization: return s->diar_ctx ? s->diar_ctx : s->asr_ctx;
+        case pk::ScenePart::Asr:         return s->asr_ctx ? s->asr_ctx : s->diar_ctx;
+        case pk::ScenePart::Sound:       return s->tagger_ctx;
+        default:                         return s->asr_ctx ? s->asr_ctx
+                                                : s->diar_ctx ? s->diar_ctx : s->tagger_ctx;
+    }
+}
+
+}  // namespace
+
+extern "C" void parakeet_capi_scene_opts_default(parakeet_scene_opts* o) {
+    if (!o) return;
+    o->size = (int)sizeof(*o);
+    o->diar_latency = PARAKEET_DIAR_LATENCY_MODEL;
+    parakeet_capi_sound_opts_default(&o->sound);
+    o->flags = 0;
+}
+
+extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parakeet_ctx* diar,
+                                                                    parakeet_ctx* tagger,
+                                                                    const parakeet_scene_opts* o) {
+    if (!asr && !diar && !tagger) return nullptr;
+    if ((asr && !require_asr(asr)) || (diar && !require_diar(diar)) || (tagger && !require_tagger(tagger)))
+        return nullptr;
+    parakeet_scene_opts def;
+    parakeet_capi_scene_opts_default(&def);
+    if (!o) o = &def;
+    if (o->size >= (int)(offsetof(parakeet_scene_opts, flags) + sizeof(int)) && o->flags != 0) {
+        (asr ? asr : diar ? diar : tagger)->last_error = "scene flags must be 0";
+        return nullptr;
+    }
+    try {
+        pk::SceneParts p;
+        p.asr = asr ? asr->model.get() : nullptr;
+        p.diar = diar ? diar->diar.get() : nullptr;
+        p.diar_latency = latency_from_int(o->diar_latency);
+        p.tagger = tagger ? tagger->tagger.get() : nullptr;
+        p.sound = to_sound_opts(&o->sound);
+        if (tagger) {
+            const std::string err = pk::validate_sound_opts(p.sound, tagger->tagger->n_classes());
+            if (!err.empty()) { tagger->last_error = "invalid sound options: " + err; return nullptr; }
+        }
+        auto* s = new parakeet_scene_stream();
+        s->asr_ctx = asr;
+        s->diar_ctx = diar;
+        s->tagger_ctx = tagger;
+        s->scene = std::make_unique<pk::SceneStream>(p);
+        return s;
+    } catch (const std::exception& e) {
+        (asr ? asr : diar ? diar : tagger)->last_error = e.what();
+    }
+    return nullptr;
+}
+
+extern "C" char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, const float* pcm,
+                                                       int n, int is_last) {
+    if (!s) return nullptr;
+    if ((!pcm && n > 0) || n < 0) { s->last_error = "invalid samples buffer"; return nullptr; }
+    if (s->scene->finished()) { s->last_error = "stream already finished"; return nullptr; }
+    try {
+        const pk::SceneUpdate u = s->scene->feed(pcm, n, is_last != 0);
+        const pk::CedTagger* t = s->tagger_ctx ? s->tagger_ctx->tagger.get() : nullptr;
+        s->last_error.clear();
+        return dup_to_c(pk::scene_update_to_json(u, [t](int i) { return t ? t->label(i) : nullptr; }));
+    } catch (const std::exception& e) {
+        s->last_error = e.what();
+        if (parakeet_ctx* c = scene_failed_ctx(s)) c->last_error = e.what();
+    } catch (...) {
+        s->last_error = "unknown error";
+        if (parakeet_ctx* c = scene_failed_ctx(s)) c->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s) {
+    if (!s) return nullptr;
+    const pk::CedTagger* t = s->tagger_ctx ? s->tagger_ctx->tagger.get() : nullptr;
+    return dup_to_c(pk::sound_windows_to_json(s->scene->drain_windows(),
+                                              [t](int i) { return t ? t->label(i) : nullptr; }));
+}
+
+extern "C" const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stream* s) {
+    return s ? s->last_error.c_str() : "";
+}
+
+extern "C" void parakeet_capi_scene_stream_free(parakeet_scene_stream* s) { delete s; }

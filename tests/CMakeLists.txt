@@ -82,6 +82,11 @@ set_tests_properties(test_ced_parity PROPERTIES LABELS "model")
 pk_add_test(test_sound_capi)
 target_compile_definitions(test_sound_capi PRIVATE PK_CED_SOURCE_DIR="${CMAKE_SOURCE_DIR}/third_party/ced.cpp")
 set_tests_properties(test_sound_capi PROPERTIES LABELS "model")
+pk_add_test(test_scene_stream)
+target_compile_definitions(test_scene_stream PRIVATE
+  PK_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+  PK_CED_SOURCE_DIR="${CMAKE_SOURCE_DIR}/third_party/ced.cpp")
+set_tests_properties(test_scene_stream PROPERTIES LABELS "model")
 
 if(TARGET parakeet-cli)
   add_test(NAME cli_version_long COMMAND $<TARGET_FILE:parakeet-cli> --version)

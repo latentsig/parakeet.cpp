@@ -1,14 +1,14 @@
 #include "scene_stream.hpp"
 
-#include "model.hpp"  // pk::Model
+#include "ced_tagger.hpp"  // pk::CedTagger
+#include "model.hpp"       // pk::Model
+#include "transcription_json.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 
 namespace pk {
 
-// A scene with only a tagger is accepted but does nothing yet: the sound
-// part is not wired into feed().
 SceneStream::SceneStream(const SceneParts& p) {
     if (!p.asr && !p.diar && !p.tagger)
         throw std::invalid_argument("scene stream needs at least one model");
@@ -18,6 +18,8 @@ SceneStream::SceneStream(const SceneParts& p) {
         asr_ = std::make_unique<AsrCommitter>(
             [m](const std::vector<float>& x) { return m->transcribe_with_timestamps(x, 16000).words; });
     }
+    if (p.tagger)
+        sound_ = std::make_unique<SoundStream>(p.tagger->scorer(), p.tagger->n_classes(), p.sound);
 }
 
 SceneStream::~SceneStream() = default;
@@ -60,6 +62,11 @@ SceneUpdate SceneStream::feed(const float* pcm, int n, bool is_last) {
                         segs_.end());
         }
     }
+    if (sound_) {
+        part_ = ScenePart::Sound;
+        u.sounds = sound_->feed(pcm, n, is_last);
+        u.active_sounds = sound_->open_segments();
+    }
     t_ += (n > 0 ? n : 0) / 16000.0;
     if (is_last) finished_ = true;
     u.t = t_;
@@ -67,11 +74,94 @@ SceneUpdate SceneStream::feed(const float* pcm, int n, bool is_last) {
         part_ = ScenePart::Diarization;
         u.active_speakers = diar_->open_segments();
     }
-    u.safe_until = finished_ ? t_ : (asr_ ? asr_->commit_sec() : t_);
+    if (finished_) {
+        u.safe_until = t_;
+    } else if (sound_ && asr_) {
+        u.safe_until = std::min(asr_->commit_sec(), sound_->safe_until());
+    } else if (sound_) {
+        u.safe_until = sound_->safe_until();
+    } else if (asr_) {
+        u.safe_until = asr_->commit_sec();
+    } else {
+        u.safe_until = t_;
+    }
     part_ = ScenePart::None;
     return u;
 }
 
-std::vector<SoundWindow> SceneStream::drain_windows() { return {}; }
+std::vector<SoundWindow> SceneStream::drain_windows() {
+    return sound_ ? sound_->drain_windows() : std::vector<SoundWindow>{};
+}
+
+namespace {
+
+void append_speaker_segment(std::string& out, const SpeakerSegment& s) {
+    out += "{\"speaker\":"; append_json_int(out, s.speaker);
+    out += ",\"start\":";   append_json_float(out, "%.3f", s.start);
+    out += ",\"end\":";     append_json_float(out, "%.3f", s.end);
+    out += "}";
+}
+
+void append_active_speaker(std::string& out, const StreamingSpeakerSegment& s) {
+    out += "{\"speaker\":"; append_json_int(out, s.speaker);
+    out += ",\"start\":";   append_json_float(out, "%.3f", s.start);
+    out += "}";
+}
+
+std::string utterances_to_json(const std::vector<SpeakerUtterance>& utts) {
+    std::string out = "[";
+    for (size_t i = 0; i < utts.size(); ++i) {
+        if (i) out += ",";
+        out += "{\"speaker\":"; append_json_int(out, utts[i].speaker);
+        out += ",\"text\":";    append_json_string(out, utts[i].text);
+        out += ",\"start\":";   append_json_float(out, "%.3f", utts[i].start);
+        out += ",\"end\":";     append_json_float(out, "%.3f", utts[i].end);
+        out += ",\"conf\":";    append_json_float(out, "%.4f", utts[i].conf);
+        out += "}";
+    }
+    return out + "]";
+}
+
+std::string words_to_json(const std::vector<SpeakerWord>& words) {
+    std::string out = "[";
+    for (size_t i = 0; i < words.size(); ++i) {
+        if (i) out += ",";
+        out += "{\"text\":";    append_json_string(out, words[i].text);
+        out += ",\"start\":";   append_json_float(out, "%.3f", words[i].start);
+        out += ",\"end\":";     append_json_float(out, "%.3f", words[i].end);
+        out += ",\"conf\":";    append_json_float(out, "%.4f", words[i].conf);
+        out += ",\"speaker\":"; append_json_int(out, words[i].speaker);
+        out += "}";
+    }
+    return out + "]";
+}
+
+std::string speakers_to_json(const std::vector<SpeakerSegment>& segs) {
+    std::string out = "[";
+    for (size_t i = 0; i < segs.size(); ++i) {
+        if (i) out += ",";
+        append_speaker_segment(out, segs[i]);
+    }
+    return out + "]";
+}
+
+}  // namespace
+
+std::string scene_update_to_json(const SceneUpdate& u, const std::function<const char*(int)>& label) {
+    std::string out = "{\"t\":";
+    append_json_float(out, "%.3f", (float)u.t);
+    out += ",\"utterances\":" + utterances_to_json(u.utterances);
+    out += ",\"words\":" + words_to_json(u.words);
+    out += ",\"speakers\":" + speakers_to_json(u.speakers);
+    out += ",\"sounds\":" + sound_segments_to_json(u.sounds, label);
+    out += ",\"active\":{\"speakers\":[";
+    for (size_t i = 0; i < u.active_speakers.size(); ++i) {
+        if (i) out += ",";
+        append_active_speaker(out, u.active_speakers[i]);
+    }
+    out += "],\"sounds\":" + sound_segments_to_json(u.active_sounds, label);
+    out += "}}";
+    return out;
+}
 
 } // namespace pk
