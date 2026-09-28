@@ -1312,6 +1312,8 @@ extern "C" int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float
     try {
         const pk::SceneUpdate u = s->scene->feed(pcm, n_samples, is_last != 0);
         if (!to_c_results(u.utterances, out, n_out)) { s->asr->last_error = "out of memory"; return 1; }
+        // Any successful feed clears the ASR ctx's last error, also one
+        // that commits nothing.
         s->asr->last_error.clear();
         return 0;
     } catch (const std::exception& e) {

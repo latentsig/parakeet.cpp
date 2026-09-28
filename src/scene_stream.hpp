@@ -48,7 +48,10 @@ public:
 
     SceneUpdate feed(const float* pcm, int n, bool is_last);
     std::vector<SoundWindow> drain_windows();       // empty without a tagger
-    bool finished() const { return finished_; }
+    // True after an is_last feed. With diarization it turns true as soon as
+    // the diarizer takes the is_last chunk, so an is_last feed that throws
+    // later (diarizer or transcriber) still ends the stream and is not re-run.
+    bool finished() const { return finished_ || (diar_ && diar_->finished()); }
     const DiarPcmStream* diar() const { return diar_.get(); }
     // The part that was running when the last feed() threw.
     ScenePart failed_part() const { return part_; }

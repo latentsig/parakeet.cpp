@@ -7,6 +7,8 @@
 
 namespace pk {
 
+// A scene with only a tagger is accepted but does nothing yet: the sound
+// part is not wired into feed().
 SceneStream::SceneStream(const SceneParts& p) {
     if (!p.asr && !p.diar && !p.tagger)
         throw std::invalid_argument("scene stream needs at least one model");
