@@ -375,8 +375,8 @@ and `parakeet-cli scene` (all three models, `--latency low`, on the demo clip
 used above) were run on three GPU backends, staged and built through the `rc`
 fleet (Vulkan on `strix:gpu0`, CUDA on `dgx:gpu0`) and over SSH (Metal on an
 M4 Mac). All three matched the CPU transcript of the same build word for
-word. Those runs predate the ASR change that releases non-speech audio,
-which changed the last three transcript lines above. Sound scores and
+word. Those runs predate the ASR changes that release non-speech audio,
+which changed where the last transcript lines above break. Sound scores and
 boundaries vary by low single hundredths and by hop-width ordering between
 backends, as expected of independent floating-point runs.
 
