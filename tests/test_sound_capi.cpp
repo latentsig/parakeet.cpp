@@ -142,9 +142,12 @@ int main() {
         CHECK(std::strstr(parakeet_capi_last_error(asr), "ASR model") != nullptr, "message: %s",
               parakeet_capi_last_error(asr));
         CHECK(parakeet_capi_num_classes(asr) == -1, "num_classes on ASR ctx");
+        CHECK(parakeet_capi_model_kind(asr) == PARAKEET_MODEL_KIND_ASR, "model_kind on ASR ctx");
         parakeet_capi_free(asr);
     }
     CHECK(parakeet_capi_num_classes(tag) == 527, "num_classes");
+    CHECK(parakeet_capi_model_kind(tag) == PARAKEET_MODEL_KIND_SOUND, "model_kind on tagger ctx");
+    CHECK(parakeet_capi_model_kind(nullptr) == PARAKEET_MODEL_KIND_NONE, "model_kind on NULL");
     parakeet_capi_free(tag);
     if (fails) return 1;
     std::fprintf(stderr, "PASS\n");

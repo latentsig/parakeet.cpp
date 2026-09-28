@@ -162,6 +162,12 @@ void  parakeet_capi_sound_stream_free(parakeet_sound_stream* s);
 
 int         parakeet_capi_num_classes(const parakeet_ctx* ctx);
 const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);
+
+#define PARAKEET_MODEL_KIND_NONE        0
+#define PARAKEET_MODEL_KIND_ASR         1
+#define PARAKEET_MODEL_KIND_DIARIZATION 2
+#define PARAKEET_MODEL_KIND_SOUND       3
+int parakeet_capi_model_kind(const parakeet_ctx* ctx);
 ```
 
 `parakeet_capi_sound_stream_begin` with `o = NULL` uses the defaults above.
@@ -172,6 +178,11 @@ the segments still open right now, with `end` set to the current stream time.
 `_drain_scores_json` returns the raw per-window top-k scores scored since the
 previous drain, as
 `[{"start":..,"end":..,"tags":[{"index":..,"label":..,"score":..}]}]`.
+
+`parakeet_capi_model_kind` reports which kind of model a `parakeet_capi_load`
+context holds (`PARAKEET_MODEL_KIND_NONE` on `NULL`), so a caller loading ASR,
+diarization and tagger GGUFs through the same entry point can dispatch without
+probing individual functions.
 The stream keeps one entry per hop until it is drained, so the queue grows
 with the stream: drain regularly, or set `top_k = 0` to keep no scores.
 

@@ -1480,6 +1480,14 @@ extern "C" const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int in
     return (ctx && ctx->tagger) ? ctx->tagger->label(index) : nullptr;
 }
 
+extern "C" int parakeet_capi_model_kind(const parakeet_ctx* ctx) {
+    if (!ctx) return PARAKEET_MODEL_KIND_NONE;
+    if (ctx->model) return PARAKEET_MODEL_KIND_ASR;
+    if (ctx->diar) return PARAKEET_MODEL_KIND_DIARIZATION;
+    if (ctx->tagger) return PARAKEET_MODEL_KIND_SOUND;
+    return PARAKEET_MODEL_KIND_NONE;
+}
+
 // ---------------------------------------------------------------------------
 // Combined scene stream (ABI v8)
 // ---------------------------------------------------------------------------

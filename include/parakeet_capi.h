@@ -522,6 +522,14 @@ void  parakeet_capi_sound_stream_free(parakeet_sound_stream* s);
 int         parakeet_capi_num_classes(const parakeet_ctx* ctx);
 const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);
 
+// Which kind of model a context holds, so a caller loading through the same
+// parakeet_capi_load can dispatch without probing individual entry points.
+#define PARAKEET_MODEL_KIND_NONE        0
+#define PARAKEET_MODEL_KIND_ASR         1
+#define PARAKEET_MODEL_KIND_DIARIZATION 2
+#define PARAKEET_MODEL_KIND_SOUND       3
+int parakeet_capi_model_kind(const parakeet_ctx* ctx);
+
 // --- Combined scene stream (ABI v8) -----------------------------------------
 // ASR, diarization and sound-event tagging over one live 16 kHz mono PCM
 // stream. Any of the three contexts may be NULL; at least one is required.

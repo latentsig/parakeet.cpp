@@ -310,6 +310,7 @@ parakeet_capi_sound_stream_begin / _feed / _active / _drain_scores_json / _free
 parakeet_capi_free_sound_segments
 parakeet_capi_num_classes
 parakeet_capi_class_label
+parakeet_capi_model_kind        # which kind of ctx (NONE/ASR/DIARIZATION/SOUND)
 ```
 
 Combined scene stream (ABI v8, additive; not used by LocalAI yet). One stream

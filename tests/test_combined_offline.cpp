@@ -205,6 +205,13 @@ int main() {
         parakeet_capi_free(diar);
         return 1;
     }
+    if (parakeet_capi_model_kind(asr) != PARAKEET_MODEL_KIND_ASR ||
+        parakeet_capi_model_kind(diar) != PARAKEET_MODEL_KIND_DIARIZATION) {
+        std::fprintf(stderr, "test_combined_offline: model_kind mismatch\n");
+        parakeet_capi_free(asr);
+        parakeet_capi_free(diar);
+        return 1;
+    }
     pk::Audio audio;
     if (!pk::load_audio_16k_mono("tests/fixtures/two_speakers.wav", audio)) {
         std::fprintf(stderr, "test_combined_offline: cannot read the fixture\n");
