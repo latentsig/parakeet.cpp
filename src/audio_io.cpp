@@ -1,4 +1,3 @@
-#define DR_WAV_IMPLEMENTATION
 #include "dr_wav.h"
 #include "audio_io.hpp"
 #include "common.hpp"
