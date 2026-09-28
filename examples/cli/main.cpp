@@ -18,6 +18,10 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "transcription_json.hpp"
+#include "diarization.hpp"
+#include "ced_tagger.hpp"
+#include "scene_stream.hpp"
+#include "scene_render.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -1335,6 +1339,157 @@ static int cmd_bench_decode(int argc, char** argv) {
     return 0;
 }
 
+static const char* kSceneUsage =
+    "usage: parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] "
+    "[--sound <ced.gguf>] --input <wav|-> "
+    "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
+    "[--show-speech] [--json]\n";
+
+// parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>]
+//                    --input <wav|-> [--latency model|low|very_low|ultra_low]
+//                    [--chunk-ms N] [--show-speech] [--json]
+// Streams the WAV through pk::SceneStream (ASR + diarization + sound events,
+// each optional -- at least one is required) and prints a time-ordered
+// transcript with sound annotations. --json prints scene_update_to_json per
+// update (one JSON document per line) instead of the rendered transcript.
+static int cmd_scene(int argc, char** argv) {
+    std::string model, diar, sound, input, latency_str;
+    bool json = false;
+    bool show_speech = false;
+    int chunk_ms = 200;
+    for (int i = 0; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
+            model = argv[++i];
+        } else if (std::strcmp(argv[i], "--diar") == 0 && i + 1 < argc) {
+            diar = argv[++i];
+        } else if (std::strcmp(argv[i], "--sound") == 0 && i + 1 < argc) {
+            sound = argv[++i];
+        } else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
+            input = argv[++i];
+        } else if (std::strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
+            latency_str = argv[++i];
+        } else if (std::strcmp(argv[i], "--chunk-ms") == 0 && i + 1 < argc) {
+            chunk_ms = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--json") == 0) {
+            json = true;
+        } else if (std::strcmp(argv[i], "--show-speech") == 0) {
+            show_speech = true;
+        } else {
+            std::fprintf(stderr, "%s", kSceneUsage);
+            return 2;
+        }
+    }
+
+    if ((model.empty() && diar.empty() && sound.empty()) || input.empty()) {
+        std::fprintf(stderr, "%s", kSceneUsage);
+        return 2;
+    }
+    if (chunk_ms <= 0) {
+        std::fprintf(stderr, "parakeet-cli scene: --chunk-ms must be > 0\n");
+        return 2;
+    }
+    pk::DiarLatency latency = pk::DiarLatency::Model;
+    if (!latency_str.empty()) {
+        if (latency_str == "model") {
+            latency = pk::DiarLatency::Model;
+        } else if (latency_str == "low") {
+            latency = pk::DiarLatency::Low;
+        } else if (latency_str == "very_low") {
+            latency = pk::DiarLatency::VeryLow;
+        } else if (latency_str == "ultra_low") {
+            latency = pk::DiarLatency::UltraLow;
+        } else {
+            std::fprintf(stderr,
+                "parakeet-cli scene: unknown --latency '%s' (want model|low|very_low|ultra_low)\n",
+                latency_str.c_str());
+            return 2;
+        }
+    }
+    if (!sound.empty() && !pk::CedTagger::available()) {
+        std::fprintf(stderr, "parakeet-cli: built without sound tagging (PARAKEET_WITH_CED=OFF)\n");
+        return 2;
+    }
+
+    std::unique_ptr<pk::Model> asr_model;
+    if (!model.empty()) {
+        asr_model = pk::Model::load(model);
+        if (!asr_model) {
+            std::fprintf(stderr, "parakeet-cli scene: failed to load model %s\n", model.c_str());
+            return 1;
+        }
+    }
+    std::unique_ptr<pk::DiarizationModel> diar_model;
+    if (!diar.empty()) {
+        diar_model = pk::DiarizationModel::load(diar);
+        if (!diar_model) {
+            std::fprintf(stderr, "parakeet-cli scene: failed to load diarization model %s\n",
+                         diar.c_str());
+            return 1;
+        }
+    }
+    std::unique_ptr<pk::CedTagger> tagger;
+    if (!sound.empty()) {
+        tagger = pk::CedTagger::load(sound);
+        if (!tagger) {
+            std::fprintf(stderr, "parakeet-cli scene: failed to load sound model %s\n", sound.c_str());
+            return 1;
+        }
+    }
+
+    pk::Audio audio;
+    if (!load_audio_arg_16k_mono(input, audio)) {
+        std::string display = input_display_name(input);
+        std::fprintf(stderr, "parakeet-cli scene: failed to load audio %s\n", display.c_str());
+        return 1;
+    }
+
+    pk::SceneParts parts;
+    parts.asr = asr_model.get();
+    parts.diar = diar_model.get();
+    parts.diar_latency = latency;
+    parts.tagger = tagger.get();
+
+    // scene_update_to_json's label(i) may return nullptr (emitted as ""); the
+    // same lambda drives the renderer's --json-less line formatting.
+    auto label = [&](int i) -> const char* { return tagger ? tagger->label(i) : nullptr; };
+
+    std::unique_ptr<pk::SceneStream> stream;
+    try {
+        stream.reset(new pk::SceneStream(parts));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "parakeet-cli scene: %s\n", e.what());
+        return 1;
+    }
+
+    pk::SceneRenderer renderer(diar_model != nullptr, show_speech, label);
+
+    const int chunk_samples = chunk_ms * 16;  // 16 samples/ms at 16 kHz
+    const int n = (int)audio.samples.size();
+    for (int lo = 0; lo < n || lo == 0; lo += chunk_samples) {
+        const int len = std::min(chunk_samples, n - lo);
+        const bool is_last = lo + len >= n;
+        pk::SceneUpdate u;
+        try {
+            u = stream->feed(audio.samples.data() + lo, len, is_last);
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "parakeet-cli scene: feed failed: %s\n", e.what());
+            return 1;
+        }
+        if (json) {
+            std::printf("%s\n", pk::scene_update_to_json(u, label).c_str());
+        } else {
+            renderer.add(u);
+            for (const std::string& line : renderer.flush(u.safe_until))
+                std::printf("%s\n", line.c_str());
+            if (is_last)
+                for (const std::string& line : renderer.flush_all())
+                    std::printf("%s\n", line.c_str());
+        }
+        if (is_last) break;
+    }
+    return 0;
+}
+
 // Run a subcommand, then free the process-global backend while the GPU driver is
 // still alive (the subcommand's local Model is already destroyed by the time it
 // returns, releasing its device weight buffer). Avoids the CUDA "driver shutting
@@ -1363,6 +1518,8 @@ int main(int argc, char** argv) {
         return run_and_shutdown(cmd_bench_decode, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "bench") == 0)
         return run_and_shutdown(cmd_bench, argc - 2, argv + 2);
+    if (argc >= 2 && std::strcmp(argv[1], "scene") == 0)
+        return run_and_shutdown(cmd_scene, argc - 2, argv + 2);
     std::fprintf(stderr,
         "usage:\n"
         "  parakeet-cli info <model.gguf>\n"
@@ -1377,6 +1534,10 @@ int main(int argc, char** argv) {
         "  parakeet-cli bench-batch --model <model.gguf> --manifest <file> "
         "[--decoder ctc|tdt] [--threads N] [--batch-sizes 1,4,8] [--json <out>]\n"
         "  parakeet-cli bench-decode --model <model.gguf> --audio <wav> "
-        "[--batch-sizes 1,4,8,16] [--threads N] [--reps R] [--json <out>]\n");
+        "[--batch-sizes 1,4,8,16] [--threads N] [--reps R] [--json <out>]\n"
+        "  parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] "
+        "[--sound <ced.gguf>] --input <wav|-> "
+        "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
+        "[--show-speech] [--json]\n");
     return 2;
 }

@@ -127,7 +127,8 @@ set(PARAKEET_SRC
     src/scene_stream.cpp
     src/diarization_streaming.cpp
     src/ced_tagger.cpp
-    src/sound_stream.cpp)
+    src/sound_stream.cpp
+    src/scene_render.cpp)
 
 if(PARAKEET_SHARED)
   add_library(parakeet SHARED ${PARAKEET_SRC})
