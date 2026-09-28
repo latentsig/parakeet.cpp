@@ -1,6 +1,7 @@
 // Unit test for pk::AsrCommitter with a fake transcriber (no model).
 #include "asr_committer.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -12,13 +13,14 @@ static int failures = 0;
 
 // The PCM value at each sample is its absolute time in seconds, so the fake
 // knows where the buffer starts.
-static Transcriber fake() {
-    return [](const std::vector<float>& pcm) {
+// Words start at `speech_from` seconds (silence before it).
+static Transcriber fake(double speech_from = 0.0) {
+    return [speech_from](const std::vector<float>& pcm) {
         std::vector<Word> w;
         if (pcm.empty()) return w;
         const double t0 = pcm[0];
         const double dur = pcm.size() / 16000.0;
-        const int first = (int)std::ceil(t0 / 0.5 - 1e-6);
+        const int first = (int)std::ceil(std::max(t0, speech_from) / 0.5 - 1e-6);
         for (int i = first;; ++i) {
             const double s = i * 0.5 + 0.05 - t0, e = i * 0.5 + 0.45 - t0;
             if (e > dur) break;
@@ -85,7 +87,45 @@ static void test_duplicate_word_dropped() {
     CHECK(b.size() == 1 && b[0].text == "friend");
 }
 
+// Non-speech: no words at all. The commit point must still advance and the
+// buffer must not grow with the stream.
+static void test_silence_released() {
+    AsrCommitter c([](const std::vector<float>&) { return std::vector<Word>{}; });
+    size_t max_buffered = 0;
+    for (int s = 0; s < 20; ++s) {
+        auto x = timeline(s, s + 1);
+        c.push(x.data(), (int)x.size());
+        CHECK(c.commit(s + 1.0, false).empty());
+        max_buffered = std::max(max_buffered, c.buffered_samples());
+    }
+    CHECK(c.commit_sec() >= 15.0);                     // only the right context is held back
+    CHECK(max_buffered <= (size_t)(5 * 16000));        // min window + one piece
+    CHECK(c.buffered_samples() <= (size_t)(5 * 16000));
+}
+
+// Speech after a silent stretch commits every word once, at absolute times.
+static void test_speech_after_silence() {
+    AsrCommitter c(fake(10.0));
+    std::vector<Word> all;
+    for (int s = 0; s < 20; ++s) {
+        auto x = timeline(s, s + 1);
+        c.push(x.data(), (int)x.size());
+        auto w = c.commit(s + 1.0, s == 19);
+        all.insert(all.end(), w.begin(), w.end());
+        CHECK(c.buffered_samples() <= (size_t)(5 * 16000));
+    }
+    CHECK(all.size() == 20);                           // w20..w39
+    for (size_t i = 0; i < all.size(); ++i) {
+        const int k = 20 + (int)i;
+        CHECK(all[i].text == "w" + std::to_string(k));
+        CHECK(std::fabs(all[i].start - (k * 0.5 + 0.05)) < 1e-3);
+        CHECK(std::fabs(all[i].end - (k * 0.5 + 0.45)) < 1e-3);
+    }
+}
+
 int main() {
+    test_silence_released();
+    test_speech_after_silence();
     test_min_window();
     test_right_context_and_resume();
     test_is_last_commits_all();

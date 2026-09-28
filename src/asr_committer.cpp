@@ -52,9 +52,19 @@ std::vector<Word> AsrCommitter::commit(double until, bool is_last) {
         const double limit = (double)span / 16000.0 - right_context_sec_;
         keep = 0;
         while (keep < words.size() && words[keep].end <= limit) ++keep;
-        // Resume right after the last committed word: audio the ASR skipped
-        // this time is heard again with more context.
-        next_commit = commit_sec_ + (keep > 0 ? words[keep - 1].end : 0.0);
+        if (keep > 0) {
+            // Resume right after the last committed word: audio the ASR
+            // skipped this time is heard again with more context.
+            next_commit = commit_sec_ + words[keep - 1].end;
+        } else {
+            // No committable word (silence, music, long non-speech). Release
+            // the audio before the first word heard, or before the right
+            // context when there is none, so the buffer and the cost of each
+            // transcription stay bounded.
+            double rel = limit;
+            if (!words.empty()) rel = std::min(rel, (double)words.front().start);
+            next_commit = commit_sec_ + std::max(0.0, rel);
+        }
     }
     std::vector<Word> committed(words.begin(), words.begin() + keep);
     for (auto& w : committed) { w.start += (float)commit_sec_; w.end += (float)commit_sec_; }
