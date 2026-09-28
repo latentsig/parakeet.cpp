@@ -75,6 +75,7 @@ pk_add_test(test_diarization_accuracy)
 pk_add_test(test_sas_merge)
 pk_add_test(test_combined_offline)
 pk_add_test(test_streaming_diarization)
+pk_add_test(test_sound_stream)
 pk_add_test(test_ced_parity)
 set_tests_properties(test_ced_parity PROPERTIES LABELS "model")
 

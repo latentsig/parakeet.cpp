@@ -123,7 +123,8 @@ set(PARAKEET_SRC
     src/diarization_head.cpp
     src/sas_merge.cpp
     src/diarization_streaming.cpp
-    src/ced_tagger.cpp)
+    src/ced_tagger.cpp
+    src/sound_stream.cpp)
 
 if(PARAKEET_SHARED)
   add_library(parakeet SHARED ${PARAKEET_SRC})
