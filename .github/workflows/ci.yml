@@ -39,6 +39,13 @@ jobs:
           cmake -B build-noced -DPARAKEET_BUILD_TESTS=ON -DGGML_NATIVE=OFF -DPARAKEET_WITH_CED=OFF
           cmake --build build-noced -j
           ctest --test-dir build-noced --output-on-failure -LE model
+          # scene --sound must fail cleanly (exit 2) with a clear message.
+          # Capture first: steps run with -e -o pipefail.
+          rc=0
+          out=$(build-noced/examples/cli/parakeet-cli scene --sound x --input y 2>&1) || rc=$?
+          echo "$out"
+          test "$rc" -eq 2
+          grep -q "built without sound tagging" <<< "$out"
 
   # -------------------------------------------------------------------------
   # server-e2e: drive the real parakeet-server over HTTP.
