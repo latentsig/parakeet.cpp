@@ -58,6 +58,10 @@ enum class ScenePart { None, Diarization, Asr, Sound };
 // (diarization takes the is_last chunk before ASR or sound run), so the
 // stream ends without flushing whatever the throwing part (or anything
 // after it) would otherwise have flushed on that final call.
+//
+// After a feed() that throws, later timestamps may be misaligned: the parts
+// that did not see the failed chunk lag behind the ones that did. Callers
+// should end the stream after an error rather than keep feeding it.
 class SceneStream {
 public:
     explicit SceneStream(const SceneParts& p);      // throws std::invalid_argument when no part is given

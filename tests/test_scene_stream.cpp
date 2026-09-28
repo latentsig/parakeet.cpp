@@ -3,10 +3,12 @@
 //     sounds == sound_stream alone.
 //  2. scene_sound_only: tagger alone returns sounds and empty word arrays.
 //  3. asr+tagger (no diar): words have speaker -1.
-//  4. scene_wrong_kinds: a tagger passed as ASR is rejected with a message.
+//  4. scene_wrong_kinds: a tagger passed as ASR is rejected with a message,
+//     and so is an unknown diarization latency mode.
 // Needs PARAKEET_TEST_GGUF, PARAKEET_TEST_DIAR_GGUF, PARAKEET_TEST_CED_GGUF.
 #include "parakeet_capi.h"
 #include "audio_io.hpp"
+#include "ced_tagger.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -110,6 +112,7 @@ int main() {
     const char* d = std::getenv("PARAKEET_TEST_DIAR_GGUF");
     const char* c = std::getenv("PARAKEET_TEST_CED_GGUF");
     if (!a || !d || !c) { std::fprintf(stderr, "SKIP: needs ASR, diar and CED GGUFs\n"); return 77; }
+    if (!pk::CedTagger::available()) { std::fprintf(stderr, "SKIP: built without CED\n"); return 77; }
     parakeet_ctx* asr = parakeet_capi_load(a);
     parakeet_ctx* diar = parakeet_capi_load(d);
     parakeet_ctx* tag = parakeet_capi_load(c);
@@ -194,6 +197,16 @@ int main() {
     CHECK(std::strstr(parakeet_capi_last_error(tag), "CED sound model") != nullptr, "message: %s",
           parakeet_capi_last_error(tag));
     CHECK(parakeet_capi_scene_stream_begin(nullptr, nullptr, nullptr, nullptr) == nullptr, "no parts accepted");
+    parakeet_scene_opts bad;
+    parakeet_capi_scene_opts_default(&bad);
+    bad.diar_latency = 42;
+    CHECK(parakeet_capi_scene_stream_begin(nullptr, diar, nullptr, &bad) == nullptr, "latency 42 accepted");
+    CHECK(std::strcmp(parakeet_capi_last_error(diar), "unknown diarization latency mode") == 0, "message: %s",
+          parakeet_capi_last_error(diar));
+    // Without a diar ctx the latency is unused, so it is not checked.
+    parakeet_scene_stream* nolat = parakeet_capi_scene_stream_begin(nullptr, nullptr, tag, &bad);
+    CHECK(nolat != nullptr, "latency checked without a diar ctx");
+    parakeet_capi_scene_stream_free(nolat);
 
     parakeet_capi_free(asr); parakeet_capi_free(diar); parakeet_capi_free(tag);
     if (fails) return 1;

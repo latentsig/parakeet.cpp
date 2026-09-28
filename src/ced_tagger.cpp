@@ -40,10 +40,12 @@ const char* CedTagger::label(int i) const { return ced_capi_label(static_cast<ce
 SoundScorer CedTagger::scorer() {
     return [this](const float* pcm, int n, std::vector<float>& probs) {
         auto* c = static_cast<ced_ctx*>(ctx_);
+        last_error_.clear();   // describes the latest call only
         probs.assign((size_t)n_classes(), 0.0f);
         const int w = ced_capi_classify_pcm_probs(c, pcm, n, 16000, probs.data(), (int)probs.size());
         if (w != (int)probs.size()) {
-            last_error_ = ced_capi_last_error(c);
+            const char* m = ced_capi_last_error(c);
+            last_error_ = m ? m : "";
             return false;
         }
         return true;

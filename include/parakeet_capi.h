@@ -511,7 +511,9 @@ int   parakeet_capi_sound_stream_feed(parakeet_sound_stream* s, const float* pcm
 int   parakeet_capi_sound_stream_active(parakeet_sound_stream* s,
                                         parakeet_sound_segment** out, int* n_out);
 // [{"start":..,"end":..,"tags":[{"index":..,"label":..,"score":..}]}], windows
-// since the previous drain. Free with parakeet_capi_free_string.
+// since the previous drain. Free with parakeet_capi_free_string. The stream
+// keeps one entry per hop until drained: drain regularly, or set top_k = 0
+// to keep no scores.
 char* parakeet_capi_sound_stream_drain_scores_json(parakeet_sound_stream* s);
 void  parakeet_capi_free_sound_segments(parakeet_sound_segment* segs);
 void  parakeet_capi_sound_stream_free(parakeet_sound_stream* s);
@@ -539,19 +541,23 @@ typedef struct parakeet_scene_stream parakeet_scene_stream;
 // Any context may be NULL; at least one must be given. NULL opts = defaults.
 // NULL on error: with an all-NULL call there is no context to report on, so
 // nothing is set; otherwise last_error is set on the context of the wrong
-// kind (or, on an internal failure, the part that failed).
+// kind, on the diar ctx for an unknown diar_latency ("unknown diarization
+// latency mode"), or, on an internal failure, on the part that failed.
 parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parakeet_ctx* diar,
                                                          parakeet_ctx* tagger,
                                                          const parakeet_scene_opts* o);
 
 // Everything finalized by this call, as one JSON document (see docs/sound.md
 // for the shape: "t", "utterances", "words", "speakers", "sounds", "active").
-// NULL on error. Free with parakeet_capi_free_string.
+// NULL on error. Free with parakeet_capi_free_string. After an error, later
+// timestamps may be misaligned (the parts that did not see the failed chunk
+// lag behind), so end the stream instead of feeding it more.
 char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, const float* pcm, int n,
                                            int is_last);
 
 // Same shape as parakeet_capi_sound_stream_drain_scores_json; "[]" without a
-// tagger. Free with parakeet_capi_free_string.
+// tagger. Free with parakeet_capi_free_string. Scores are kept until drained:
+// drain regularly, or set sound.top_k = 0 to keep no scores.
 char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s);
 
 // Last error of this stream, "" if none. Borrowed.

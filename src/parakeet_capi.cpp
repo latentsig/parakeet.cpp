@@ -1419,7 +1419,9 @@ extern "C" int parakeet_capi_sound_stream_feed(parakeet_sound_stream* s, const f
         s->ctx->last_error.clear();
         return 0;
     } catch (const std::exception& e) {
-        s->ctx->last_error = std::string(e.what()) + ": " + s->ctx->tagger->last_error();
+        s->ctx->last_error = e.what();
+        const std::string& detail = s->ctx->tagger->last_error();
+        if (!detail.empty()) s->ctx->last_error += ": " + detail;
     } catch (...) {
         s->ctx->last_error = "unknown error";
     }
@@ -1526,6 +1528,11 @@ extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx*
     if (!o) o = &def;
     if (o->size >= (int)(offsetof(parakeet_scene_opts, flags) + sizeof(int)) && o->flags != 0) {
         (asr ? asr : diar ? diar : tagger)->last_error = "scene flags must be 0";
+        return nullptr;
+    }
+    if (diar && (o->diar_latency < PARAKEET_DIAR_LATENCY_MODEL ||
+                 o->diar_latency > PARAKEET_DIAR_LATENCY_ULTRA_LOW)) {
+        diar->last_error = "unknown diarization latency mode";
         return nullptr;
     }
     try {

@@ -48,7 +48,9 @@ public:
     // Classes open right now, with end = time().
     std::vector<SoundSegment> open_segments() const;
 
-    // Windows scored since the previous drain.
+    // Windows scored since the previous drain. The queue grows by one entry
+    // per hop until drained: drain regularly, or set top_k = 0 to keep no
+    // scores.
     std::vector<SoundWindow> drain_windows();
 
     double time() const { return (double)samples_in_ / kRate; }
@@ -79,7 +81,7 @@ private:
     long long scored_end_ = 0;      // end of the last scored window
     std::vector<char> open_;        // per class
     std::vector<float> open_start_, open_peak_;
-    std::vector<SoundWindow> windows_;
+    std::vector<SoundWindow> windows_;   // scored windows not yet drained (empty with top_k = 0)
     std::vector<float> probs_;
     bool finished_ = false;
 };
