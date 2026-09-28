@@ -544,10 +544,9 @@ parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parak
                                                          parakeet_ctx* tagger,
                                                          const parakeet_scene_opts* o);
 
-// Everything finalized by this call, as one JSON document (see
-// docs/superpowers/specs for the shape: "t", "utterances", "words",
-// "speakers", "sounds", "active"). NULL on error. Free with
-// parakeet_capi_free_string.
+// Everything finalized by this call, as one JSON document (see docs/sound.md
+// for the shape: "t", "utterances", "words", "speakers", "sounds", "active").
+// NULL on error. Free with parakeet_capi_free_string.
 char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, const float* pcm, int n,
                                            int is_last);
 

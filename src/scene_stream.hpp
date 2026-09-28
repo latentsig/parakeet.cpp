@@ -26,7 +26,12 @@ struct SceneParts {
 // What one feed finalized. All times are seconds on the stream clock.
 struct SceneUpdate {
     double t = 0;                    // stream time consumed
-    double safe_until = 0;           // renderer: nothing later can start before this
+    // Renderer promise: no utterance, word or sound segment returned by a
+    // later feed() can start before this. It does NOT cover `speakers`: an
+    // already-open speaker segment can still close later with a start
+    // earlier than safe_until (diarization does not give that bound, and
+    // speaker segments are not the thing a renderer commits to the screen).
+    double safe_until = 0;
     std::vector<SpeakerUtterance> utterances;
     std::vector<SpeakerWord> words;
     std::vector<SpeakerSegment> speakers;           // closed this call
@@ -41,6 +46,18 @@ enum class ScenePart { None, Diarization, Asr, Sound };
 // Speech, speakers and sound events over one live 16 kHz mono PCM stream.
 // Each feed gives the PCM to every part, then collects what each one
 // finalized. Not thread-safe.
+//
+// Error paths: feed() runs diarization, then ASR, then the sound part, in
+// that order, and does not catch between them, so a part that throws loses
+// the rest of that call. If the sound part throws, anything diarization or
+// ASR already finalized in this call (including words the commit window
+// released) is lost with it, not returned before the exception propagates.
+// If ASR throws, the sound part for that chunk never runs (skipped, not
+// deferred: it does not see that audio again). If a part throws on the
+// is_last feed while diarization is present, finished() is already true
+// (diarization takes the is_last chunk before ASR or sound run), so the
+// stream ends without flushing whatever the throwing part (or anything
+// after it) would otherwise have flushed on that final call.
 class SceneStream {
 public:
     explicit SceneStream(const SceneParts& p);      // throws std::invalid_argument when no part is given

@@ -1448,9 +1448,18 @@ extern "C" int parakeet_capi_sound_stream_active(parakeet_sound_stream* s,
 
 extern "C" char* parakeet_capi_sound_stream_drain_scores_json(parakeet_sound_stream* s) {
     if (!s) return nullptr;
-    const pk::CedTagger& t = *s->ctx->tagger;
-    return dup_to_c(pk::sound_windows_to_json(s->ss->drain_windows(),
-                                                [&](int i) { return t.label(i); }));
+    try {
+        const pk::CedTagger& t = *s->ctx->tagger;
+        char* out = dup_to_c(pk::sound_windows_to_json(s->ss->drain_windows(),
+                                                        [&](int i) { return t.label(i); }));
+        s->ctx->last_error.clear();
+        return out;
+    } catch (const std::exception& e) {
+        s->ctx->last_error = e.what();
+    } catch (...) {
+        s->ctx->last_error = "unknown error";
+    }
+    return nullptr;
 }
 
 extern "C" void parakeet_capi_free_sound_segments(parakeet_sound_segment* segs) { std::free(segs); }
@@ -1535,9 +1544,14 @@ extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx*
         s->diar_ctx = diar;
         s->tagger_ctx = tagger;
         s->scene = std::make_unique<pk::SceneStream>(p);
+        if (asr) asr->last_error.clear();
+        if (diar) diar->last_error.clear();
+        if (tagger) tagger->last_error.clear();
         return s;
     } catch (const std::exception& e) {
         (asr ? asr : diar ? diar : tagger)->last_error = e.what();
+    } catch (...) {
+        (asr ? asr : diar ? diar : tagger)->last_error = "unknown error";
     }
     return nullptr;
 }
@@ -1564,9 +1578,18 @@ extern "C" char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, 
 
 extern "C" char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s) {
     if (!s) return nullptr;
-    const pk::CedTagger* t = s->tagger_ctx ? s->tagger_ctx->tagger.get() : nullptr;
-    return dup_to_c(pk::sound_windows_to_json(s->scene->drain_windows(),
-                                              [t](int i) { return t ? t->label(i) : nullptr; }));
+    try {
+        const pk::CedTagger* t = s->tagger_ctx ? s->tagger_ctx->tagger.get() : nullptr;
+        char* out = dup_to_c(pk::sound_windows_to_json(s->scene->drain_windows(),
+                                                        [t](int i) { return t ? t->label(i) : nullptr; }));
+        s->last_error.clear();
+        return out;
+    } catch (const std::exception& e) {
+        s->last_error = e.what();
+    } catch (...) {
+        s->last_error = "unknown error";
+    }
+    return nullptr;
 }
 
 extern "C" const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stream* s) {
