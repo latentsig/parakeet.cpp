@@ -7,6 +7,9 @@
 #include "transcription.hpp"  // pk::Transcription
 #include "ggml_graph.hpp"     // pk::set_num_threads, pk::shutdown_backend
 #include "dr_wav.h"           // declarations only; impl lives in libparakeet
+#include "ced_tagger.hpp"     // pk::CedTagger
+#include "sound_stream.hpp"   // pk::SoundStream, pk::SoundSegment
+#include "audio_io.hpp"       // pk::resample_linear
 
 #include <csignal>
 #include <cstdio>
@@ -49,15 +52,17 @@ void usage() {
     std::fprintf(stderr,
         "usage:\n"
         "  parakeet-server --model <path|url|alias> [--host 127.0.0.1] "
-        "[--port 8080] [--threads N] [--cache-dir <dir>]\n"
+        "[--port 8080] [--threads N] [--cache-dir <dir>] [--sound-model <path>]\n"
         "\n"
-        "Serves POST /v1/audio/transcriptions (OpenAI-compatible) for one model.\n");
+        "Serves POST /v1/audio/transcriptions (OpenAI-compatible) for one model.\n"
+        "--sound-model loads a ced.cpp sound-event tagger (local GGUF path); "
+        "verbose_json responses then include a \"sound_events\" array.\n");
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
-    std::string model_arg, host = "127.0.0.1", cache_dir;
+    std::string model_arg, host = "127.0.0.1", cache_dir, sound_model;
     int port = 8080, threads = 0;
 
     for (int i = 1; i < argc; ++i) {
@@ -71,6 +76,7 @@ int main(int argc, char** argv) {
         else if (a == "--port")    port = std::atoi(next("--port").c_str());
         else if (a == "--threads") threads = std::atoi(next("--threads").c_str());
         else if (a == "--cache-dir") cache_dir = next("--cache-dir");
+        else if (a == "--sound-model") sound_model = next("--sound-model");
         else if (a == "-h" || a == "--help") { usage(); return 0; }
         else if (a == "--version" || a == "-V") {
             std::printf("parakeet-server %s\n", parakeet_version());
@@ -106,6 +112,24 @@ int main(int argc, char** argv) {
         pk::shutdown_backend();
         return 1;
     }
+
+    // --sound-model is a local path only; it does not go through the ASR
+    // model's alias/URL resolver.
+    std::unique_ptr<pk::CedTagger> tagger;
+    if (!sound_model.empty()) {
+        if (!pk::CedTagger::available()) {
+            std::fprintf(stderr, "parakeet-server: built without sound tagging (PARAKEET_WITH_CED=OFF)\n");
+            pk::shutdown_backend();
+            return 2;
+        }
+        tagger = pk::CedTagger::load(sound_model);
+        if (!tagger) {
+            std::fprintf(stderr, "parakeet-server: failed to load sound model %s\n", sound_model.c_str());
+            pk::shutdown_backend();
+            return 1;
+        }
+    }
+
     std::mutex infer_mu;
 
     httplib::Server svr;
@@ -150,11 +174,39 @@ int main(int argc, char** argv) {
 
         try {
             pk::Transcription tr;
+            std::vector<SoundEventOut> sound_events;
+            bool have_sounds = false;
             {
                 std::lock_guard<std::mutex> lock(infer_mu);
                 tr = model->transcribe_with_timestamps(pcm, sr, pk::Decoder::kDefault);
+
+                // Sound tagging is verbose_json-only so json/text requests never
+                // pay for it. Runs under the same lock as ASR: the tagger is not
+                // thread-safe. A failure here must not fail the transcription.
+                if (tagger && fmt == Format::kVerboseJson) {
+                    try {
+                        const std::vector<float>* mono16k = &pcm;
+                        std::vector<float> resampled;
+                        if (sr != 16000) {
+                            resampled = pk::resample_linear(pcm, sr, 16000);
+                            mono16k = &resampled;
+                        }
+                        pk::SoundStream stream(tagger->scorer(), tagger->n_classes(), pk::SoundOpts{});
+                        std::vector<pk::SoundSegment> segs =
+                            stream.feed(mono16k->data(), (int)mono16k->size(), /*is_last=*/true);
+                        sound_events.reserve(segs.size());
+                        for (const pk::SoundSegment& s : segs) {
+                            const char* label = tagger->label(s.cls);
+                            sound_events.push_back({label ? label : "", s.start, s.end, s.peak});
+                        }
+                        have_sounds = true;
+                    } catch (const std::exception& e) {
+                        std::fprintf(stderr, "parakeet-server: sound tagging error: %s\n", e.what());
+                    }
+                }
             }
-            Response out = format_transcription(tr, fmt, duration_sec, include_words);
+            Response out = format_transcription(tr, fmt, duration_sec, include_words,
+                                                have_sounds ? &sound_events : nullptr);
             res.set_content(out.body, out.content_type.c_str());
         } catch (const std::exception& e) {
             std::fprintf(stderr, "parakeet-server: inference error: %s\n", e.what());

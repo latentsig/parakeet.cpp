@@ -46,7 +46,8 @@ static std::string fixed(double v, int prec) {
 }
 
 Response format_transcription(const pk::Transcription& tr, Format fmt,
-                              double duration_sec, bool include_words) {
+                              double duration_sec, bool include_words,
+                              const std::vector<SoundEventOut>* sounds) {
     Response r;
     if (fmt == Format::kText) {
         r.body = tr.text;
@@ -83,6 +84,18 @@ Response format_transcription(const pk::Transcription& tr, Format fmt,
             b += "\"start\":" + fixed(w.start, 3) + ",";
             b += "\"end\":" + fixed(w.end, 3) + ",";
             b += "\"conf\":" + fixed(w.conf, 4) + "}";
+        }
+        b += "]";
+    }
+    if (sounds) {
+        b += ",\"sound_events\":[";
+        for (size_t i = 0; i < sounds->size(); ++i) {
+            const SoundEventOut& s = (*sounds)[i];
+            if (i) b += ",";
+            b += "{\"label\":\"" + json_escape(s.label) + "\",";
+            b += "\"start\":" + fixed(s.start, 3) + ",";
+            b += "\"end\":" + fixed(s.end, 3) + ",";
+            b += "\"score\":" + fixed(s.score, 4) + "}";
         }
         b += "]";
     }
