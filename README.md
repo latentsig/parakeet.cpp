@@ -323,7 +323,7 @@ To batch from code, use the batched entry points (single-clip B=1 is just N=1):
 parakeet.cpp can also tag everyday sounds (dog bark, glass breaking, applause,
 alarms, music, and the rest of the 527-class AudioSet ontology) with
 [CED](https://github.com/RicherMans/CED), through the
-[ced.cpp](https://github.com/mudler/ced.cpp) submodule (`PARAKEET_WITH_CED`,
+[ced.cpp](https://github.com/localai-org/ced.cpp) submodule (`PARAKEET_WITH_CED`,
 on by default). `parakeet-cli scene` combines it with ASR and diarization into
 one time-ordered feed:
 

@@ -3,7 +3,7 @@
 parakeet.cpp can tag everyday sounds (dog bark, glass breaking, applause,
 alarms, music, speech, and the rest of the 527-class AudioSet ontology) using
 [CED](https://github.com/RicherMans/CED) (Consistent Ensemble Distillation),
-run through [ced.cpp](https://github.com/mudler/ced.cpp), the same LocalAI-team
+run through [ced.cpp](https://github.com/localai-org/ced.cpp), the same LocalAI-team
 ggml port used standalone. This is separate from ASR: a CED GGUF loads into
 its own context (a "tagger"), and `pk::CedTagger` / the sound-stream C-API are
 the only code in this repository that talks to it.
@@ -51,13 +51,14 @@ whether an event is open:
 - A closed segment shorter than `min_duration_sec` is dropped.
 
 Because a score only tells you "this class was present somewhere in the last
-`window_sec`," a segment's start and end are only known to **one hop's**
-resolution: the code places the open boundary at the start of the newest hop
-inside the triggering window (the latest boundary consistent with the score),
-and the close boundary at the end of the oldest hop inside the triggering
-window (the earliest boundary consistent with the score). So segment
-boundaries can be off by up to one `hop_sec` from the true event edge, never
-more.
+`window_sec`," segment boundaries follow a **one-hop** grid: the code places
+the open boundary at the start of the newest hop inside the triggering window
+(the latest boundary consistent with the score), and the close boundary at
+the end of the oldest hop inside the triggering window (the earliest boundary
+consistent with the score). For a sharp event edge that puts the boundary
+within about one `hop_sec` of it. A score that rises or falls slowly crosses
+the thresholds later or earlier than the true edge, so it can move a boundary
+by more than one hop.
 
 At end of stream (`is_last`), a final tail window is scored if at least one
 CED patch's worth of audio (0.16 s) remains unscored, and every class still
@@ -171,6 +172,8 @@ the segments still open right now, with `end` set to the current stream time.
 `_drain_scores_json` returns the raw per-window top-k scores scored since the
 previous drain, as
 `[{"start":..,"end":..,"tags":[{"index":..,"label":..,"score":..}]}]`.
+The stream keeps one entry per hop until it is drained, so the queue grows
+with the stream: drain regularly, or set `top_k = 0` to keep no scores.
 
 ### C example
 
@@ -249,9 +252,9 @@ $ parakeet-cli scene --model asr.gguf --diar diar.gguf --sound ced-base-q8_0.ggu
 [00:24.0 - 00:30.0]  (Chicken, rooster 0.86)
 [00:25.0 - 00:27.0]  (Cluck 0.46)
 [00:26.0 - 00:30.0]  (Crowing, cock-a-doodle-doo 0.65)
-[00:30.0 - 00:30.6]  Speaker 1: Well, I don't
-[00:31.1 - 00:34.0]  Speaker 1: wish to see it anymore, observed Phoebe, turning away her eyes.
-[00:34.6 - 00:36.7]  Speaker 1: It is certainly very like the old portrait.
+[00:30.0 - 00:30.4]  Speaker 1: Well, I
+[00:30.6 - 00:33.5]  Speaker 1: don't wish to see it any more, observed Phoebe, turning away
+[00:33.8 - 00:36.7]  Speaker 1: her eyes it is certainly very like the old portrait
 ```
 
 Each line is `[start - end]  <speaker + text | (label peak)>` in stream
@@ -318,7 +321,8 @@ sound-event segments that closed this call; `active` holds the speaker and
 sound segments still open, with `end`/`peak` as of the current stream time.
 `t` is the stream time consumed so far. `parakeet_capi_scene_stream_drain_scores_json`
 returns the same shape `parakeet_capi_sound_stream_drain_scores_json` does
-(`"[]"` without a tagger).
+(`"[]"` without a tagger). The same rule applies: drain regularly, or set
+`sound.top_k = 0` to keep no scores.
 
 ```c
 #include "parakeet_capi.h"
@@ -371,53 +375,33 @@ list.
 and `parakeet-cli scene` (all three models, `--latency low`, on the demo clip
 used above) were run on three GPU backends, staged and built through the `rc`
 fleet (Vulkan on `strix:gpu0`, CUDA on `dgx:gpu0`) and over SSH (Metal on an
-M4 Mac). All three reproduced the CLI transcript above (word for word; sound
-scores and boundaries vary by low single hundredths and by hop-width ordering
-between backends, as expected of independent floating-point runs).
+M4 Mac). All three matched the CPU transcript of the same build word for
+word. Those runs predate the ASR change that releases non-speech audio,
+which changed the last three transcript lines above. Sound scores and
+boundaries vary by low single hundredths and by hop-width ordering between
+backends, as expected of independent floating-point runs.
 
 | Device | Backend | `-LE model` | sound/scene ctest set | `test_ced_parity` | Scene demo wall time |
 |---|---|---|---|---|---|
-| strix:gpu0 (AMD Radeon 8060S, Vulkan0) | Vulkan | 21/22 (1 staging artifact, see below) | 8/8 | pass | 2.3 s |
-| dgx:gpu0 (NVIDIA GB10, CUDA0) | CUDA | 21/22 (same artifact) | 5/8 (3 known teardown crashes, see below) | pass | 2.8 s |
+| strix:gpu0 (AMD Radeon 8060S, Vulkan0) | Vulkan | 21/22 (`server_e2e` not run) | 8/8 | pass | 2.3 s |
+| dgx:gpu0 (NVIDIA GB10, CUDA0) | CUDA | 21/22 (`server_e2e` not run) | 5/8 (3 known teardown crashes, see below) | pass | 2.8 s |
 | Apple M4 (MTL0) | Metal | 22/22 | 5/8 (3 known teardown crashes, see below) | pass | 9.5 s |
 
-Two things came out of these runs that are not regressions in this change but
-are worth recording:
+One known issue came out of these runs. It is not a regression in this
+change:
 
-- **`server_e2e` "Not Run" / "permission denied" on strix and dgx.** Both
-  jobs stage the worktree over a CIFS-backed rsync/cp, which does not carry
-  the executable bit on `tests/server_e2e.sh`. The test is normally SKIP (77)
-  without the `PARAKEET_SERVER_E2E=1` env this run did not set; here ctest
-  instead reports `BAD_COMMAND` because it cannot exec the script at all.
-  This is an artifact of the staging method, not a build or product issue;
-  the Mac run (rsync over SSH, which preserves permissions) shows the normal
-  `***Skipped`.
 - **`test_combined_offline`, `test_streaming_diarization` and
   `test_scene_stream` abort on process exit on CUDA and Metal, not Vulkan.**
-  Each of these tests loads more than one GPU-backed context in the same
-  process (ASR + diarization, or ASR + diarization + a CED tagger). The
-  test's own assertions all print PASS before the crash; the abort happens
-  afterward, during static/global teardown. On CUDA the backtrace is
+  Each test holds more than one GPU-backed context in one process (ASR +
+  diarization, or ASR + diarization + a CED tagger). All assertions print
+  PASS first; the abort comes later, during static teardown. The
+  process-global backend's allocator is freed by a static destructor after
+  the GPU context it belongs to is already gone: on CUDA the backtrace is
   `ggml_gallocr_free -> ggml_backend_buffer_free -> cudaFree`, which fails
-  with `CUDA error: driver shutting down` because an earlier context's CUDA
-  backend has already torn down the (global, per-process) CUDA driver state
-  by the time a later context's buffers are freed at exit. Metal hits the
-  analogous case: `ggml_metal_device_free` asserts `[rsets->data count] == 0`
-  in `ggml-metal-device.m`, also during global destructor teardown, also only
-  when more than one Metal device/context existed in the process. Vulkan does
-  not have this problem: all 8 sound/scene tests pass cleanly on strix,
-  including the same three multi-context tests. `parakeet-cli scene`, which
-  also opens up to three contexts, did not crash in any of the three runs
-  above (single-shot CLI processes exit through a different path than the
-  ctest test binaries, and did not hit the same order-of-destruction window
-  in these runs).
-
-  This is a pre-existing gap in how ggml's CUDA and Metal backends handle
-  multiple device/driver instances torn down in one process, not something
-  introduced by the sound-events work; it is only now exercised because
-  these are the first tests that hold more than one GPU-backed
-  `parakeet_ctx` alive at once. No test tolerance or code was changed to make
-  it pass; it is recorded here as a known issue for CUDA/Metal multi-context
-  processes (the offline `parakeet-cli scene` / server paths, which is what
-  LocalAI would actually run, load each context in sequence and are not
-  currently known to hit it, per the CLI runs above).
+  with `CUDA error: driver shutting down`; on Metal,
+  `ggml_metal_device_free` asserts `[rsets->data count] == 0`.
+  `test_combined_offline` and `test_streaming_diarization` predate the
+  sound-events work and abort the same way on the base branch, so this is
+  not new with the scene tests. `parakeet-cli` does not hit it: it calls
+  `pk::shutdown_backend()` before it returns from `main`, while the GPU
+  context is still alive. No test tolerance or code was changed for it.

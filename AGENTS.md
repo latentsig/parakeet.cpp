@@ -118,7 +118,7 @@ tests/               ctest targets
                        test_combined_offline.cpp, SAS + streaming diarization/SAS through the C-API
                        test_sas_merge.cpp      , SAS merge/grouping (model-independent)
                        test_asr_committer.cpp  , shared word/utterance finalize logic (model-independent)
-                       test_ced_parity.cpp     , CedTagger scores == ced.cpp NeMo baseline (PARAKEET_TEST_CED_GGUF f32 + PARAKEET_TEST_CED_BASELINE)
+                       test_ced_parity.cpp     , CedTagger scores == ced.cpp PyTorch baseline (PARAKEET_TEST_CED_GGUF f32 + PARAKEET_TEST_CED_BASELINE)
                        test_sound_stream.cpp   , pk::SoundStream windowing/on-off-min_duration logic (model-independent)
                        test_sound_capi.cpp     , sound_stream_* C-API (PARAKEET_TEST_CED_GGUF)
                        test_scene_stream.cpp   , pk::SceneStream / scene_stream_* C-API, all three models together (PARAKEET_TEST_GGUF + PARAKEET_TEST_DIAR_GGUF + PARAKEET_TEST_CED_GGUF)
