@@ -154,6 +154,13 @@ bool ModelLoader::load(const std::string& path){
     // encoder.use_bias: false for nemotron (the attention/FFN linear projections
     // carry no bias tensor). Defaults true so existing models are unaffected.
     cfg_.use_bias = kv_bool(gguf_, "parakeet.encoder.use_bias", true);
+    // Transformer encoder config (diarization models with RoPE attention).
+    // Absent for ASR (FastConformer) models → safe defaults.
+    cfg_.self_attention_model = kv_str(gguf_, "parakeet.encoder.self_attention_model", "");
+    cfg_.qkv_bias = kv_bool(gguf_, "parakeet.encoder.qkv_bias", false);
+    cfg_.pre_block_norm = kv_bool(gguf_, "parakeet.encoder.pre_block_norm", true);
+    cfg_.rope_base = kv_f32(gguf_, "parakeet.encoder.rope_base", 10000.0f);
+    cfg_.rotary_fraction = kv_f32(gguf_, "parakeet.encoder.rotary_fraction", 1.0f);
     // Prompt conditioning (multilingual nemotron). Orthogonal capability flag;
     // absent -> present=false and the engine skips the prompt stage entirely.
     cfg_.prompt.present = kv_bool(gguf_, "parakeet.prompt.present", false);
@@ -190,6 +197,34 @@ bool ModelLoader::load(const std::string& path){
     cfg_.max_symbols = kv_u32(gguf_, "parakeet.decoding.max_symbols", 10);
     cfg_.vocab_size  = kv_u32(gguf_, "parakeet.vocab_size");
     cfg_.blank_id    = kv_u32(gguf_, "parakeet.blank_id");
+    // diarization config (absent for ASR models → present=false)
+    if (gguf_find_key(gguf_, "parakeet.diar.n_speakers") >= 0) {
+        auto& d = cfg_.diarization;
+        d.present = true;
+        d.n_speakers = kv_u32(gguf_, "parakeet.diar.n_speakers");
+        d.tf_d_model = kv_u32(gguf_, "parakeet.diar.tf_d_model");
+        d.upsample_factor = kv_u32(gguf_, "parakeet.diar.upsample_factor");
+        d.frame_resolution_sec = kv_f32(gguf_, "parakeet.diar.frame_resolution_sec", 0.01f);
+        d.onset_threshold = kv_f32(gguf_, "parakeet.diar.onset_threshold", 0.5f);
+        d.offset_threshold = kv_f32(gguf_, "parakeet.diar.offset_threshold", 0.5f);
+        // Streaming (speaker cache) config, in ENCODER frames as in NeMo
+        // SortformerModules. Defaults are the Nemotron-3-Diarization values,
+        // for GGUFs converted before these keys were written.
+        d.streaming_mode         = kv_bool(gguf_, "parakeet.diar.streaming_mode", true);
+        d.chunk_len              = (int32_t)kv_u32(gguf_, "parakeet.diar.chunk_len", 264);
+        d.spkcache_len           = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_len", 264);
+        d.fifo_len               = (int32_t)kv_u32(gguf_, "parakeet.diar.fifo_len", 0);
+        d.spkcache_update_period = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_update_period", 264);
+        d.spkcache_sil_frames_per_spk = (int32_t)kv_u32(gguf_, "parakeet.diar.spkcache_sil_frames_per_spk", 1);
+        d.sil_threshold          = kv_f32(gguf_, "parakeet.diar.sil_threshold", 0.2f);
+        d.pred_score_threshold   = kv_f32(gguf_, "parakeet.diar.pred_score_threshold", 0.25f);
+        d.scores_boost_latest    = kv_f32(gguf_, "parakeet.diar.scores_boost_latest", 0.05f);
+        d.strong_boost_rate      = kv_f32(gguf_, "parakeet.diar.strong_boost_rate", 0.75f);
+        d.weak_boost_rate        = kv_f32(gguf_, "parakeet.diar.weak_boost_rate", 1.5f);
+        d.min_pos_scores_rate    = kv_f32(gguf_, "parakeet.diar.min_pos_scores_rate", 0.5f);
+        d.use_learnable_sil_emb  = kv_bool(gguf_, "parakeet.diar.use_learnable_sil_emb",
+            gguf_find_tensor(gguf_, "sortformer_modules.learnable_sil_emb") >= 0);
+    }
     // durations array (stored as INT32 by the converter)
     { int64_t id = gguf_find_key(gguf_, "parakeet.tdt.durations");
       if(id>=0 && gguf_get_arr_type(gguf_,id)==GGUF_TYPE_INT32){
@@ -207,7 +242,7 @@ bool ModelLoader::load(const std::string& path){
     const int64_t nt = gguf_get_n_tensors(gguf_);
     for(int64_t i=0;i<nt;++i){ const char* nm = gguf_get_tensor_name(gguf_,i);
         ggml_tensor* t = ggml_get_tensor(ctx_, nm); if(t) tensors_[nm]=t; }
-    return cfg_.d_model>0 && cfg_.vocab_size>0;
+    return cfg_.d_model>0 && (cfg_.vocab_size>0 || cfg_.arch=="diarization");
 }
 ggml_tensor* ModelLoader::tensor(const std::string& n) const {
     auto it = tensors_.find(n); return it==tensors_.end()? nullptr : it->second;

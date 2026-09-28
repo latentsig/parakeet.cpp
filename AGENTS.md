@@ -76,12 +76,18 @@ src/                 libparakeet implementation
                        tdt.cpp / rnnt.cpp , TDT / RNNT greedy loops
                        streaming_encoder.hpp/cpp, cache-aware streaming FastConformer encoder
                        streaming.hpp/cpp  , pk::StreamingSession (carried RNN-T + EOU events) + run_stream_over_pcm
+                       diarization.hpp/cpp, pk::DiarizationModel: offline speaker diarization (Sortformer)
+                       diarization_encoder/head.*, RoPE Transformer encoder + speaker head
+                       diarization_streaming.*, NeMo cache-aware streaming diarization (speaker cache + FIFO)
+                       sas_merge.hpp/cpp  , ASR words x speaker segments -> speaker-attributed utterances
 examples/cli/        parakeet-cli binary
                        subcommands: info, transcribe (+ --stream), quantize
+                     diarize binary: diarize <diar.gguf> <wav> [--stream]
 scripts/             Python tooling
                        convert_parakeet_to_gguf.py, .nemo/.hf -> GGUF (--dtype f32|f16|q8_0)
                        gen_nemo_baseline.py        , NeMo intermediates -> baseline.gguf
                        gen_stream_baseline.py      , NeMo cache-aware streaming encode+decode -> stream baseline.gguf
+                       gen_diar_baseline.py        , NeMo offline + streaming diarization -> diar baseline.gguf
                        validate_vs_nemo.py         , WER parity gate vs NeMo
                        publish_hf.py               , convert+quantize -> HF upload (dry-run default)
                        requirements.txt            , nemo_toolkit[asr] + gguf
@@ -101,10 +107,15 @@ tests/               ctest targets
                        test_streaming_decode.cpp , streaming RNN-T tokens == NeMo cache-aware streaming
                        test_streaming_eou_reset.cpp, multi-utterance streaming: decoder resets on <EOU>, transcript == NeMo reset-on-EOU (issue #13; PARAKEET_TEST_BASELINE_EOU_RESET)
                        test_capi_stream.cpp    , streaming C-API transcript == NeMo streaming (PARAKEET_TEST_BASELINE_EOU_STREAM)
+                       test_diarization_accuracy.cpp, offline diarization == NeMo (PARAKEET_TEST_BASELINE_DIAR)
+                       test_streaming_diarization.cpp, streaming diarization == NeMo streaming (same baseline)
+                       test_combined_offline.cpp, SAS + streaming diarization/SAS through the C-API
+                       test_sas_merge.cpp      , SAS merge/grouping (model-independent)
                        python/check_convert.py , converter round-trip (model-dependent)
                        python/check_baseline.py, baseline dumper (model-dependent)
                        fixtures/clip.wav       , 2 s 16 kHz mono WAV for stage parity tests
                        fixtures/speech.wav     , LibriSpeech 2086-149220-0033, ~7.4 s
+                       fixtures/two_speakers.wav, LibriSpeech 1272 + 2086 alternating A-B-A-B, 23.6 s
 third_party/         vendored deps
                        ggml/     , submodule pinned at v0.13.0
                        dr_wav.h  , vendored single header
@@ -114,6 +125,7 @@ docs/
   conversion.md     , GGUF schema reference
   quantization.md   , quantization allowlist, policy, measured size + WER per type
   parity.md         , full model coverage matrix + per-stage tensor parity
+  diarization.md    , speaker diarization + speaker-attributed ASR: parity, C-API, speed
 .github/workflows/
   ci.yml            , build job (per-push) + closed-loop job (pull_request + dispatch)
 ```
@@ -258,6 +270,18 @@ parakeet_capi_stream_finalize   # flush the end-of-stream tail
 parakeet_capi_stream_free
 ```
 
+Speaker diarization (ABI v7, additive; not used by LocalAI yet). A
+diarization GGUF loads into its own `parakeet_ctx`; see `docs/diarization.md`:
+
+```
+parakeet_capi_diarize_path / _pcm              # offline, JSON segments
+parakeet_capi_transcribe_and_diarize(_json)    # speaker-attributed ASR (two contexts)
+parakeet_capi_free_sas_results                 # frees the array and every .text
+parakeet_capi_diarize_stream_begin / _feed / _free / _chunk_samples
+parakeet_capi_free_diar_segments
+parakeet_capi_sas_stream_begin / _feed / _free
+```
+
 `parakeet_capi_transcribe_path_json(ctx, wav, decoder)` returns malloc'd UTF-8
 JSON `{"text":..,"words":[{"w","start","end","conf"}],"tokens":[{"id","t","conf"}]}`
 (times in seconds, conf in `(0,1]`), built from
@@ -299,6 +323,24 @@ drain, a word finalizes when the next `▁`-token arrives, the last word on
 `--stream --timestamps` prints.
 
 ## Dumping NeMo baselines
+
+Diarization (needs NeMo main / >= 3.1: NeMo 3.0 cannot load the RoPE
+encoder of nvidia/Nemotron-3-Diarization):
+
+```
+.venv/bin/python scripts/convert_parakeet_to_gguf.py \
+    --model nvidia/Nemotron-3-Diarization --output /tmp/diar.gguf
+.venv/bin/python scripts/gen_diar_baseline.py \
+    --model nvidia/Nemotron-3-Diarization \
+    --audio tests/fixtures/two_speakers.wav --output /tmp/diar_baseline.gguf
+PARAKEET_TEST_DIAR_GGUF=/tmp/diar.gguf PARAKEET_TEST_BASELINE_DIAR=/tmp/diar_baseline.gguf \
+    ctest --test-dir build -R diar --output-on-failure
+```
+
+Quantized diarization GGUFs keep the same segments but move probabilities
+more; set `PARAKEET_TEST_DIAR_PROB_TOL=0.05` for Q8_0.
+
+ASR:
 
 Used by Phase 1 parity tests.  Requires the venv and a 16 kHz mono WAV.
 
