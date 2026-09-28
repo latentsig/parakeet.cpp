@@ -10,6 +10,13 @@ namespace pk {
 
 namespace {
 
+// Parakeet's word start times come from the frame where the first token is
+// emitted, often one or two 80 ms encoder frames after the sound actually
+// starts, so cutting exactly at a word start can permanently drop the tail
+// end of the previous window's onset. Back off by this much when no word
+// commits, so the next window re-hears that onset with full context.
+constexpr double kOnsetMargin = 0.3;
+
 // Lowercase letters and digits only, for comparing a word heard twice.
 std::string word_key(const std::string& w) {
     std::string k;
@@ -60,10 +67,13 @@ std::vector<Word> AsrCommitter::commit(double until, bool is_last) {
             // No committable word (silence, music, long non-speech). Release
             // the audio before the first word heard, or before the right
             // context when there is none, so the buffer and the cost of each
-            // transcription stay bounded.
-            double rel = limit;
-            if (!words.empty()) rel = std::min(rel, (double)words.front().start);
-            next_commit = commit_sec_ + std::max(0.0, rel);
+            // transcription stay bounded. Back off by the onset margin so the
+            // first uncommitted word's onset is re-heard with full context
+            // next time, not cut at its (possibly late) reported start.
+            double first_start = limit;
+            if (!words.empty()) first_start = std::min(first_start, (double)words.front().start);
+            const double rel = std::max(0.0, first_start - kOnsetMargin);
+            next_commit = commit_sec_ + rel;
         }
     }
     std::vector<Word> committed(words.begin(), words.begin() + keep);

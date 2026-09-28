@@ -87,6 +87,38 @@ static void test_duplicate_word_dropped() {
     CHECK(b.size() == 1 && b[0].text == "friend");
 }
 
+// A word whose reported span straddles the cut (its end lands past the right
+// context, so it does not commit) must not have the cut land exactly on its
+// start: the onset margin must back off from it, and the word must come back
+// intact, at its correct absolute times, once more audio gives it context.
+static void test_onset_margin_backoff() {
+    AsrCommitter c([](const std::vector<float>& pcm) {
+        std::vector<Word> w;
+        if (pcm.empty()) return w;
+        const double t0 = pcm[0];
+        const double dur = pcm.size() / 16000.0;
+        const double abs_start = 3.8, abs_end = 4.4;
+        if (abs_start >= t0 && abs_end <= t0 + dur)
+            w.push_back({"onset", (float)(abs_start - t0), (float)(abs_end - t0), 0.9f});
+        return w;
+    });
+    auto x = timeline(0, 5);
+    c.push(x.data(), (int)x.size());
+    auto w = c.commit(5.0, false);
+    CHECK(w.empty());                                  // straddles limit (4.0), so keep == 0
+    CHECK(std::fabs(c.commit_sec() - 3.5) < 1e-3);      // 3.8 - kOnsetMargin(0.3), not 3.8
+    // More audio gives the word its right context; it must return intact.
+    auto y = timeline(5, 10);
+    c.push(y.data(), (int)y.size());
+    auto w2 = c.commit(10.0, true);
+    CHECK(w2.size() == 1);
+    if (w2.size() == 1) {
+        CHECK(w2[0].text == "onset");
+        CHECK(std::fabs(w2[0].start - 3.8f) < 1e-3);
+        CHECK(std::fabs(w2[0].end - 4.4f) < 1e-3);
+    }
+}
+
 // Non-speech: no words at all. The commit point must still advance and the
 // buffer must not grow with the stream.
 static void test_silence_released() {
@@ -130,6 +162,7 @@ int main() {
     test_right_context_and_resume();
     test_is_last_commits_all();
     test_duplicate_word_dropped();
+    test_onset_margin_backoff();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     std::fprintf(stderr, "PASS\n");
     return 0;

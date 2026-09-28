@@ -252,9 +252,8 @@ $ parakeet-cli scene --model asr.gguf --diar diar.gguf --sound ced-base-q8_0.ggu
 [00:24.0 - 00:30.0]  (Chicken, rooster 0.86)
 [00:25.0 - 00:27.0]  (Cluck 0.46)
 [00:26.0 - 00:30.0]  (Crowing, cock-a-doodle-doo 0.65)
-[00:30.0 - 00:30.4]  Speaker 1: Well, I
-[00:30.6 - 00:33.5]  Speaker 1: don't wish to see it any more, observed Phoebe, turning away
-[00:33.8 - 00:36.7]  Speaker 1: her eyes it is certainly very like the old portrait
+[00:30.0 - 00:32.6]  Speaker 1: Well, I don't wish to see it any more, observed Phoebe,
+[00:33.0 - 00:36.7]  Speaker 1: turning away her eyes it is certainly very like the old portrait
 ```
 
 Each line is `[start - end]  <speaker + text | (label peak)>` in stream
