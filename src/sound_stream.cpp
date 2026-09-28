@@ -130,9 +130,14 @@ std::vector<SoundWindow> SoundStream::drain_windows() {
 
 double SoundStream::safe_until() const {
     if (finished_) return time();
-    // A class that opens in the next window starts at its newest hop, which
-    // begins at scored_end_; an open class keeps its (earlier) start.
-    double t = (double)scored_end_ / kRate;
+    // Two ways a not-yet-returned segment could still start earlier than
+    // expected: a regular window scored after scored_end_ (its newest hop
+    // begins at scored_end_), or an is_last tail window scored on the next
+    // feed() call, whose newest hop begins at max(0, samples_in_ - hop_n_)
+    // (a tail window is shorter than win_n_ but never shorter than hop_n_).
+    // An already-open class keeps its (earlier) start regardless.
+    const long long tail_hop_start = std::max(0LL, samples_in_ - hop_n_);
+    double t = (double)std::min(scored_end_, tail_hop_start) / kRate;
     for (int c = 0; c < n_classes_; ++c)
         if (open_[c]) t = std::min(t, (double)open_start_[c]);
     return t;

@@ -52,7 +52,14 @@ public:
     std::vector<SoundWindow> drain_windows();
 
     double time() const { return (double)samples_in_ / kRate; }
-    // No segment returned later can start before this time.
+    // No segment returned by a later feed() call can start before this
+    // time. While the stream is still open this is a lower bound over: any
+    // class already open (its start won't move), the last window actually
+    // scored (scored_end_), and the earliest a still-unscored is_last tail
+    // window could open a brand-new class (its newest hop, which starts at
+    // max(0, samples_in_ - hop_n_): a tail window can be shorter than a
+    // full window but is never shorter than one hop). Once finished(), it
+    // equals time() exactly.
     double safe_until() const;
     bool finished() const { return finished_; }
 

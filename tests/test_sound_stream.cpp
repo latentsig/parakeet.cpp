@@ -187,6 +187,40 @@ static void test_is_last_tail_window_after_hop_gap() {
     CHECK(s.finished());
 }
 
+// safe_until() must be a true lower bound on every future segment's start,
+// including across the is_last tail window (fix round 1: while streaming,
+// safe_until() has to account for a tail window that could still open a
+// class at max(0, samples_in_ - hop_n_), not just the last window actually
+// scored). With the default 3 s window / 1 s hop, sound in [7.5, 8.5) only
+// scores 0.5/3 = 0.167 in the regular window ending at 8 s, below
+// on_threshold, so use a lower on_threshold (0.3) to open a class in the
+// is_last tail window [5.5, 8.5) (score 1/3 = 0.333). Right before the
+// final 0.1 s piece, samples_in_ = 8.4 s and scored_end_ = 8.0 s: the old
+// safe_until() (= scored_end_ alone) said 8.0 s, but that final feed()
+// call returns a segment starting at 7.5 s (the tail window's newest hop,
+// max(0, samples_in_ - hop_n_) at samples_in_ = 8.5 s) -- a segment
+// starting 0.5 s before what the old code promised. The fixed safe_until()
+// says min(8.0, 8.4 - 1.0) = 7.4 s at that point, which 7.5 s honors.
+static void test_safe_until_bounds_tail_open() {
+    SoundOpts o = opts2(); o.on_threshold = 0.3f; o.off_threshold = 0.2f;
+    SoundStream s(fake(), 2, o);
+    auto x = clip(8.5f, 7.5f, 8.5f);
+    const int piece = 1600;  // 0.1 s
+    bool saw_segment = false;
+    for (size_t i = 0; i < x.size(); i += piece) {
+        const int n = (int)std::min<size_t>(piece, x.size() - i);
+        const bool last = i + piece >= x.size();
+        const double safe = s.safe_until();
+        auto got = s.feed(x.data() + i, n, last);
+        for (const auto& seg : got) {
+            saw_segment = true;
+            CHECK(seg.start >= safe - 1e-6);
+        }
+    }
+    CHECK(saw_segment);  // otherwise the invariant above is checked vacuously
+    CHECK(s.finished());
+}
+
 int main() {
     test_single_sound();
     test_piece_size_invariant();
@@ -200,6 +234,7 @@ int main() {
     test_opts_validation();
     test_scorer_failure();
     test_is_last_tail_window_after_hop_gap();
+    test_safe_until_bounds_tail_open();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     std::fprintf(stderr, "PASS\n");
     return 0;
