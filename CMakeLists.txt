@@ -17,6 +17,7 @@ option(PARAKEET_GGML_CUDA   "Forward GGML_CUDA" OFF)
 option(PARAKEET_GGML_METAL  "Forward GGML_METAL" OFF)
 option(PARAKEET_GGML_VULKAN "Forward GGML_VULKAN" OFF)
 option(PARAKEET_GGML_HIP "Forward GGML_HIP (ROCm)" OFF)
+option(PARAKEET_WITH_CED "Sound-event detection through ced.cpp" ON)
 
 set(GGML_CUDA    ${PARAKEET_GGML_CUDA}   CACHE BOOL "" FORCE)
 set(GGML_METAL   ${PARAKEET_GGML_METAL}  CACHE BOOL "" FORCE)
@@ -63,6 +64,15 @@ endif()
 
 add_subdirectory(third_party/ggml)
 
+if(PARAKEET_WITH_CED)
+  set(CED_BUILD_CLI OFF CACHE BOOL "" FORCE)
+  set(CED_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(CED_SHARED OFF CACHE BOOL "" FORCE)
+  set(CED_EXTERNAL_DR_WAV ON CACHE BOOL "" FORCE)   # parakeet's audio_io.cpp provides it
+  add_subdirectory(third_party/ced.cpp EXCLUDE_FROM_ALL)
+  set_target_properties(ced PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 set(PARAKEET_SRC
     src/parakeet.cpp
     src/model.cpp
@@ -97,7 +107,8 @@ set(PARAKEET_SRC
     src/diarization_encoder.cpp
     src/diarization_head.cpp
     src/sas_merge.cpp
-    src/diarization_streaming.cpp)
+    src/diarization_streaming.cpp
+    src/ced_tagger.cpp)
 
 if(PARAKEET_SHARED)
   add_library(parakeet SHARED ${PARAKEET_SRC})
@@ -113,6 +124,19 @@ target_include_directories(parakeet PUBLIC include PRIVATE src ${CMAKE_SOURCE_DI
 target_compile_definitions(parakeet PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>)
 target_compile_definitions(parakeet PRIVATE PARAKEET_VERSION="${PARAKEET_VERSION}")
 target_link_libraries(parakeet PUBLIC ggml)
+
+if(PARAKEET_WITH_CED)
+  target_link_libraries(parakeet PRIVATE ced)
+  target_compile_definitions(parakeet PRIVATE PARAKEET_WITH_CED=1)
+  # ced is built with CED_EXTERNAL_DR_WAV: its audio_io.cpp only declares
+  # dr_wav's functions and expects the implementation from parakeet's own
+  # audio_io.cpp (compiled with DR_WAV_IMPLEMENTATION). That is a genuine
+  # circular link dependency between the two static libraries (parakeet needs
+  # ced's classify symbols, ced needs parakeet's dr_wav symbols); declaring it
+  # both ways lets CMake repeat the archives in the generated link line so a
+  # single-pass linker (ld/lld/link.exe) still resolves both directions.
+  target_link_libraries(ced PRIVATE parakeet)
+endif()
 
 if(PARAKEET_BUILD_CLI)
   add_subdirectory(examples/cli)

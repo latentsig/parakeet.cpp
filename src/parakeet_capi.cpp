@@ -4,6 +4,7 @@
 #include "diarization.hpp" // pk::DiarizationModel
 #include "diarization_streaming.hpp" // pk::StreamingDiarization
 #include "streaming.hpp"  // pk::StreamingSession
+#include "ced_tagger.hpp" // pk::CedTagger
 #include "mel.hpp"        // pk::MelFrontend
 #include "sas_merge.hpp"  // pk::merge_asr_diarization, pk::group_speaker_words
 
@@ -44,14 +45,17 @@
 // v7: speaker diarization (diarize_*), speaker-attributed ASR
 //     (transcribe_and_diarize*, sas_stream_*) and streaming diarization
 //     (diarize_stream_*). A context holds either an ASR or a diarization model.
-#define PARAKEET_CAPI_ABI_VERSION 7
+// v8: sound-event detection (CED), sound_stream_*, scene_stream_*; additive.
+#define PARAKEET_CAPI_ABI_VERSION 8
 
 // The opaque context: a loaded model plus a buffer for the last error message.
-// Exactly one of `model` / `diar` is non-null: ASR models use `model`,
-// diarization models (Sortformer) use `diar`.
+// Exactly one of `model` / `diar` / `tagger` is non-null: ASR models use
+// `model`, diarization models (Sortformer) use `diar`, CED sound-event
+// taggers use `tagger`.
 struct parakeet_ctx {
     std::unique_ptr<pk::Model> model;
     std::unique_ptr<pk::DiarizationModel> diar;
+    std::unique_ptr<pk::CedTagger> tagger;
     std::string last_error;
 };
 
@@ -186,6 +190,15 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
     try {
         auto* ctx = new (std::nothrow) parakeet_ctx();
         if (!ctx) return nullptr;
+
+        // A CED GGUF (general.architecture "ced") is a sound tagger. Check the
+        // header first: the ASR loader would misread it.
+        if (pk::gguf_is_ced(gguf_path)) {
+            ctx->tagger = pk::CedTagger::load(gguf_path);
+            if (ctx->tagger) return ctx;
+            delete ctx;
+            return nullptr;
+        }
 
         // Try ASR first. Model::load returns nullptr if the GGUF is not a
         // valid ASR model (bad/missing file, or arch=="diarization" which
@@ -921,9 +934,9 @@ namespace {
 bool require_diar(parakeet_ctx* ctx) {
     if (!ctx) return false;
     if (!ctx->diar) {
-        ctx->last_error = ctx->model
-            ? "context holds an ASR model; diarize_* needs a diarization model"
-            : "context has no loaded model";
+        ctx->last_error = ctx->model  ? "context holds an ASR model; diarize_* needs a diarization model"
+                         : ctx->tagger ? "context holds a CED sound model; diarize_* needs a diarization model"
+                                       : "context has no loaded model";
         return false;
     }
     return true;
@@ -932,9 +945,23 @@ bool require_diar(parakeet_ctx* ctx) {
 bool require_asr(parakeet_ctx* ctx) {
     if (!ctx) return false;
     if (!ctx->model) {
-        ctx->last_error = ctx->diar
-            ? "context holds a diarization model; an ASR model is needed here"
-            : "context has no loaded model";
+        ctx->last_error = ctx->diar   ? "context holds a diarization model; an ASR model is needed here"
+                         : ctx->tagger ? "context holds a CED sound model; an ASR model is needed here"
+                                       : "context has no loaded model";
+        return false;
+    }
+    return true;
+}
+
+constexpr const char* kNoCed = "built without sound tagging (PARAKEET_WITH_CED=OFF)";
+
+bool require_tagger(parakeet_ctx* ctx) {
+    if (!ctx) return false;
+    if (!pk::CedTagger::available()) { ctx->last_error = kNoCed; return false; }
+    if (!ctx->tagger) {
+        ctx->last_error = ctx->model ? "context holds an ASR model; a CED sound model is needed here"
+                        : ctx->diar  ? "context holds a diarization model; a CED sound model is needed here"
+                                     : "context has no loaded model";
         return false;
     }
     return true;
@@ -1400,4 +1427,16 @@ extern "C" void parakeet_capi_sas_stream_free(parakeet_sas_stream* s) {
     if (!s) return;
     parakeet_capi_diarize_stream_free(s->diar);
     delete s;
+}
+
+// ---------------------------------------------------------------------------
+// Sound events (ABI v8): CED tagger introspection
+// ---------------------------------------------------------------------------
+
+extern "C" int parakeet_capi_num_classes(const parakeet_ctx* ctx) {
+    return (ctx && ctx->tagger) ? ctx->tagger->n_classes() : -1;
+}
+
+extern "C" const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index) {
+    return (ctx && ctx->tagger) ? ctx->tagger->label(index) : nullptr;
 }

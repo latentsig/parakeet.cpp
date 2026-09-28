@@ -55,6 +55,9 @@ typedef struct parakeet_ctx parakeet_ctx;
 //     Additive, same ABI: parakeet_capi_diarize_stream_begin_latency /
 //     _time / _active and parakeet_capi_sas_stream_begin_latency (the model
 //     card's 1.04 / 0.64 / 0.32 s streaming modes).
+// v8: sound-event detection (CED), sound_stream_*, scene_stream_*; additive.
+//     A CED GGUF loads into a third parakeet_ctx kind (a "tagger"); no
+//     existing signatures changed.
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -478,6 +481,12 @@ int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float* pcm,
                                   parakeet_sas_result** out, int* n_out);
 
 void parakeet_capi_sas_stream_free(parakeet_sas_stream* s);
+
+// --- Sound events (ABI v8) --------------------------------------------------
+// A CED GGUF (ced.cpp) loads with parakeet_capi_load into a "tagger" context.
+// Tagger introspection: -1 / NULL on a context that is not a tagger.
+int         parakeet_capi_num_classes(const parakeet_ctx* ctx);
+const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);
 
 #ifdef __cplusplus
 } // extern "C"
