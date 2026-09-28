@@ -484,6 +484,38 @@ void parakeet_capi_sas_stream_free(parakeet_sas_stream* s);
 
 // --- Sound events (ABI v8) --------------------------------------------------
 // A CED GGUF (ced.cpp) loads with parakeet_capi_load into a "tagger" context.
+
+typedef struct {
+    int   size;                    // sizeof(parakeet_sound_opts), for versioning
+    float window_sec, hop_sec;
+    float on_threshold, off_threshold, min_duration_sec;
+    int   top_k;                   // per-window scores kept for the drain
+} parakeet_sound_opts;
+void parakeet_capi_sound_opts_default(parakeet_sound_opts* o);
+
+typedef struct {
+    int         class_index;
+    const char* label;             // borrowed from the tagger ctx
+    float       start, end, peak;  // seconds from stream start
+} parakeet_sound_segment;
+
+typedef struct parakeet_sound_stream parakeet_sound_stream;
+
+// NULL opts = defaults. NULL on error (last_error on tagger).
+parakeet_sound_stream* parakeet_capi_sound_stream_begin(parakeet_ctx* tagger,
+                                                        const parakeet_sound_opts* o);
+// Segments that closed since the previous call; is_last closes all.
+int   parakeet_capi_sound_stream_feed(parakeet_sound_stream* s, const float* pcm, int n,
+                                      int is_last, parakeet_sound_segment** out, int* n_out);
+// Still-open segments, end = current stream time.
+int   parakeet_capi_sound_stream_active(parakeet_sound_stream* s,
+                                        parakeet_sound_segment** out, int* n_out);
+// [{"start":..,"end":..,"tags":[{"index":..,"label":..,"score":..}]}], windows
+// since the previous drain. Free with parakeet_capi_free_string.
+char* parakeet_capi_sound_stream_drain_scores_json(parakeet_sound_stream* s);
+void  parakeet_capi_free_sound_segments(parakeet_sound_segment* segs);
+void  parakeet_capi_sound_stream_free(parakeet_sound_stream* s);
+
 // Tagger introspection: -1 / NULL on a context that is not a tagger.
 int         parakeet_capi_num_classes(const parakeet_ctx* ctx);
 const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);

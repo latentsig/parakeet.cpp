@@ -5,6 +5,7 @@
 #include "diarization_streaming.hpp" // pk::StreamingDiarization
 #include "streaming.hpp"  // pk::StreamingSession
 #include "ced_tagger.hpp" // pk::CedTagger
+#include "sound_stream.hpp" // pk::SoundStream
 #include "mel.hpp"        // pk::MelFrontend
 #include "sas_merge.hpp"  // pk::merge_asr_diarization, pk::group_speaker_words
 
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1428,6 +1430,125 @@ extern "C" void parakeet_capi_sas_stream_free(parakeet_sas_stream* s) {
     parakeet_capi_diarize_stream_free(s->diar);
     delete s;
 }
+
+// ---------------------------------------------------------------------------
+// Sound events (ABI v8)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+pk::SoundOpts to_sound_opts(const parakeet_sound_opts* o) {
+    pk::SoundOpts s;
+    if (!o) return s;
+    // Only read fields the caller's struct has (size versioning).
+    auto has = [&](size_t end) { return o->size >= (int)end; };
+    if (has(offsetof(parakeet_sound_opts, hop_sec) + sizeof(float))) {
+        s.window_sec = o->window_sec;
+        s.hop_sec = o->hop_sec;
+    }
+    if (has(offsetof(parakeet_sound_opts, min_duration_sec) + sizeof(float))) {
+        s.on_threshold = o->on_threshold;
+        s.off_threshold = o->off_threshold;
+        s.min_duration_sec = o->min_duration_sec;
+    }
+    if (has(offsetof(parakeet_sound_opts, top_k) + sizeof(int))) s.top_k = o->top_k;
+    return s;
+}
+
+bool to_c_sound_segments(const std::vector<pk::SoundSegment>& in, const pk::CedTagger& t,
+                         parakeet_sound_segment** out, int* n_out) {
+    *out = nullptr;
+    *n_out = 0;
+    if (in.empty()) return true;
+    auto* a = static_cast<parakeet_sound_segment*>(std::malloc(in.size() * sizeof(parakeet_sound_segment)));
+    if (!a) return false;
+    for (size_t i = 0; i < in.size(); ++i) {
+        const char* l = t.label(in[i].cls);
+        a[i] = {in[i].cls, l ? l : "", in[i].start, in[i].end, in[i].peak};
+    }
+    *out = a;
+    *n_out = (int)in.size();
+    return true;
+}
+
+} // namespace
+
+struct parakeet_sound_stream {
+    parakeet_ctx* ctx = nullptr;
+    std::unique_ptr<pk::SoundStream> ss;
+};
+
+extern "C" void parakeet_capi_sound_opts_default(parakeet_sound_opts* o) {
+    if (!o) return;
+    const pk::SoundOpts d;
+    *o = {(int)sizeof(*o), d.window_sec, d.hop_sec, d.on_threshold, d.off_threshold,
+          d.min_duration_sec, d.top_k};
+}
+
+extern "C" parakeet_sound_stream* parakeet_capi_sound_stream_begin(parakeet_ctx* tagger,
+                                                                   const parakeet_sound_opts* o) {
+    if (!require_tagger(tagger)) return nullptr;
+    try {
+        const pk::SoundOpts so = to_sound_opts(o);
+        const std::string err = pk::validate_sound_opts(so, tagger->tagger->n_classes());
+        if (!err.empty()) { tagger->last_error = "invalid sound options: " + err; return nullptr; }
+        auto* s = new parakeet_sound_stream();
+        s->ctx = tagger;
+        s->ss = std::make_unique<pk::SoundStream>(tagger->tagger->scorer(),
+                                                  tagger->tagger->n_classes(), so);
+        tagger->last_error.clear();
+        return s;
+    } catch (const std::exception& e) {
+        tagger->last_error = e.what();
+    } catch (...) {
+        tagger->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" int parakeet_capi_sound_stream_feed(parakeet_sound_stream* s, const float* pcm, int n,
+                                               int is_last, parakeet_sound_segment** out, int* n_out) {
+    if (!s || !out || !n_out) return 1;
+    *out = nullptr;
+    *n_out = 0;
+    if ((!pcm && n > 0) || n < 0) { s->ctx->last_error = "invalid samples buffer"; return 1; }
+    if (s->ss->finished()) { s->ctx->last_error = "stream already finished"; return 1; }
+    try {
+        auto closed = s->ss->feed(pcm, n, is_last != 0);
+        if (!to_c_sound_segments(closed, *s->ctx->tagger, out, n_out)) {
+            s->ctx->last_error = "out of memory";
+            return 1;
+        }
+        s->ctx->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        s->ctx->last_error = std::string(e.what()) + ": " + s->ctx->tagger->last_error();
+    } catch (...) {
+        s->ctx->last_error = "unknown error";
+    }
+    return 1;
+}
+
+extern "C" int parakeet_capi_sound_stream_active(parakeet_sound_stream* s,
+                                                 parakeet_sound_segment** out, int* n_out) {
+    if (!s || !out || !n_out) return 1;
+    if (!to_c_sound_segments(s->ss->open_segments(), *s->ctx->tagger, out, n_out)) {
+        s->ctx->last_error = "out of memory";
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" char* parakeet_capi_sound_stream_drain_scores_json(parakeet_sound_stream* s) {
+    if (!s) return nullptr;
+    const pk::CedTagger& t = *s->ctx->tagger;
+    return dup_to_c(pk::sound_windows_to_json(s->ss->drain_windows(),
+                                                [&](int i) { return t.label(i); }));
+}
+
+extern "C" void parakeet_capi_free_sound_segments(parakeet_sound_segment* segs) { std::free(segs); }
+
+extern "C" void parakeet_capi_sound_stream_free(parakeet_sound_stream* s) { delete s; }
 
 // ---------------------------------------------------------------------------
 // Sound events (ABI v8): CED tagger introspection
