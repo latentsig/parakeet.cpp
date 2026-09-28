@@ -206,3 +206,214 @@ void tag_stream(const char* ced_gguf, const float* pcm, int n_samples) {
     parakeet_capi_free(tagger);
 }
 ```
+
+## `parakeet-cli scene`
+
+`scene` combines any mix of an ASR model, a diarization model and a CED
+tagger into one time-ordered feed. At least one of `--model`, `--diar`,
+`--sound` is required, plus `--input`:
+
+```
+parakeet-cli scene --model <asr.gguf> --diar <diar.gguf> --sound <ced.gguf> \
+    --input <audio.wav> [--latency model|low|very_low|ultra_low] [--chunk-ms N] \
+    [--show-speech] [--json]
+```
+
+`--latency` picks the diarization streaming mode (see `docs/diarization.md`);
+it has no effect without `--diar`. `--chunk-ms` (default 200, capped at 60000)
+sets how much PCM is fed to the stream per step. `--show-speech` keeps plain
+speech labels (`Speech`, `Speech synthesizer`, `Conversation`, and similar)
+in the sound output; by default they are filtered out since they are
+redundant with the ASR transcript. `--json` prints one
+`parakeet_capi_scene_stream_feed_json` document per step instead of the
+rendered text.
+
+Real output, all three models, `--latency low`, on a demo clip (two
+LibriSpeech speakers, a rooster clip, then a second LibriSpeech excerpt):
+
+```
+$ parakeet-cli scene --model asr.gguf --diar diar.gguf --sound ced-base-q8_0.gguf \
+    --latency low --input scene_demo.wav
+[00:00.4 - 00:03.2]  Speaker 0: mister Quilter is the apostle of the middle classes, and
+[00:03.6 - 00:05.4]  Speaker 0: we're glad to welcome his gospel.
+[00:06.6 - 00:06.7]  Speaker 1: Well,
+[00:07.2 - 00:09.4]  Speaker 1: I don't wish to see it any more, observed Phoebe,
+[00:09.7 - 00:10.8]  Speaker 1: turning away her eyes
+[00:11.4 - 00:12.6]  Speaker 1: it is certainly very like
+[00:12.9 - 00:13.6]  Speaker 1: old portrait.
+[00:14.7 - 00:16.2]  Speaker 0: Nor is Mr Quilter's
+[00:16.4 - 00:18.5]  Speaker 0: manner less interesting than his matter.
+[00:20.0 - 00:21.5]  Speaker 1: Well, I don't wish to see it anymore,
+[00:22.0 - 00:23.6]  Speaker 1: observed Phoebe, turning away her.
+[00:24.0 - 00:30.0]  (Fowl 0.58)
+[00:24.0 - 00:30.0]  (Chicken, rooster 0.86)
+[00:25.0 - 00:27.0]  (Cluck 0.46)
+[00:26.0 - 00:30.0]  (Crowing, cock-a-doodle-doo 0.65)
+[00:30.0 - 00:30.6]  Speaker 1: Well, I don't
+[00:31.1 - 00:34.0]  Speaker 1: wish to see it anymore, observed Phoebe, turning away her eyes.
+[00:34.6 - 00:36.7]  Speaker 1: It is certainly very like the old portrait.
+```
+
+Each line is `[start - end]  <speaker + text | (label peak)>` in stream
+order. `Speech synthesizer` is one of the labels filtered out by default
+(CED tags clean narration with it at moderate confidence; it is treated as a
+plain-speech label alongside `Speech`, `Conversation`, and the rest, so it
+does not show up twice next to the transcript). Pass `--show-speech` to see
+it. With only `--sound`, the output is the sound lines alone; with only
+`--model` (no `--diar`), the utterance lines drop the `Speaker N:` prefix.
+
+## Scene stream C-API
+
+`include/parakeet_capi.h`, additive since ABI v8. One stream carries any mix
+of an ASR context, a diarization context and a tagger context (at least one
+is required); each `_feed_json` call returns everything the stream finalized
+in that call, as one JSON document:
+
+```c
+typedef struct {
+    int size;                    // sizeof(parakeet_scene_opts)
+    int diar_latency;            // PARAKEET_DIAR_LATENCY_*, used only with a diar ctx
+    parakeet_sound_opts sound;   // used only with a tagger ctx
+    int flags;                   // reserved, must be 0
+} parakeet_scene_opts;
+void parakeet_capi_scene_opts_default(parakeet_scene_opts* o);
+
+typedef struct parakeet_scene_stream parakeet_scene_stream;
+
+parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parakeet_ctx* diar,
+                                                         parakeet_ctx* tagger,
+                                                         const parakeet_scene_opts* o);
+char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, const float* pcm, int n,
+                                           int is_last);
+char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s);
+const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stream* s);
+void  parakeet_capi_scene_stream_free(parakeet_scene_stream* s);
+```
+
+The context arguments are borrowed (same lifetime rule as `sas_stream` and
+`sound_stream`): free the scene stream before freeing any of the contexts it
+was given. Passing `NULL` for a context leaves that part out of the stream;
+`diar_latency` and `sound` in `parakeet_scene_opts` are ignored when the
+matching context is `NULL`.
+
+Each `_feed_json` document has the shape:
+
+```json
+{"t":0.600,
+ "utterances":[{"speaker":0,"text":"mister Quilter is","start":0.4,"end":1.6,"conf":0.98}],
+ "words":[{"text":"mister","start":0.4,"end":0.6,"conf":0.99,"speaker":0}],
+ "speakers":[{"speaker":0,"start":0.0,"end":0.6}],
+ "sounds":[{"index":365,"label":"Chicken, rooster","start":24.0,"end":30.0,"peak":0.86}],
+ "active":{"speakers":[{"speaker":0,"start":0.6}],
+           "sounds":[{"index":365,"label":"Chicken, rooster","start":24.0,"end":26.0,"peak":0.7}]}}
+```
+
+`utterances`, `words` and `speakers` are the closed diarized ASR results for
+this call (empty parts if the matching context is `NULL`); `sounds` are
+sound-event segments that closed this call; `active` holds the speaker and
+sound segments still open, with `end`/`peak` as of the current stream time.
+`t` is the stream time consumed so far. `parakeet_capi_scene_stream_drain_scores_json`
+returns the same shape `parakeet_capi_sound_stream_drain_scores_json` does
+(`"[]"` without a tagger).
+
+```c
+#include "parakeet_capi.h"
+#include <stdio.h>
+
+void run_scene(const char* asr_gguf, const char* diar_gguf, const char* ced_gguf,
+               const float* pcm, int n_samples) {
+    parakeet_ctx* asr = parakeet_capi_load(asr_gguf);
+    parakeet_ctx* diar = diar_gguf ? parakeet_capi_load(diar_gguf) : NULL;
+    parakeet_ctx* tagger = ced_gguf ? parakeet_capi_load(ced_gguf) : NULL;
+
+    parakeet_scene_opts o;
+    parakeet_capi_scene_opts_default(&o);
+    o.diar_latency = PARAKEET_DIAR_LATENCY_LOW;
+
+    parakeet_scene_stream* s = parakeet_capi_scene_stream_begin(asr, diar, tagger, &o);
+    if (!s) { fprintf(stderr, "scene_stream_begin failed\n"); return; }
+
+    const int chunk = 3200; // 200 ms at 16 kHz
+    for (int i = 0; i < n_samples; i += chunk) {
+        const int n = (i + chunk <= n_samples) ? chunk : n_samples - i;
+        const int is_last = (i + n >= n_samples);
+
+        char* doc = parakeet_capi_scene_stream_feed_json(s, pcm + i, n, is_last);
+        if (!doc) { fprintf(stderr, "%s\n", parakeet_capi_scene_stream_last_error(s)); break; }
+        printf("%s\n", doc);
+        parakeet_capi_free_string(doc);
+    }
+
+    parakeet_capi_scene_stream_free(s);
+    if (tagger) parakeet_capi_free(tagger);
+    if (diar) parakeet_capi_free(diar);
+    parakeet_capi_free(asr);
+}
+```
+
+## Server: `--sound-model`
+
+`parakeet-server` accepts `--sound-model <ced.gguf>`, a local path to a CED
+GGUF. With it set, a `verbose_json` transcription response gains a
+`sound_events` array (`{"label","start","end","score"}` per event); `json`
+and `text` responses are unchanged, and the sound pass only runs for
+`verbose_json` requests. See `examples/server/README.md` for the full option
+list.
+
+## GPU
+
+`test_ced_parity`, `test_sound_stream`, `test_sound_capi`, `test_scene_stream`,
+`test_combined_offline`, `test_streaming_diarization`, `test_asr_committer`
+and `parakeet-cli scene` (all three models, `--latency low`, on the demo clip
+used above) were run on three GPU backends, staged and built through the `rc`
+fleet (Vulkan on `strix:gpu0`, CUDA on `dgx:gpu0`) and over SSH (Metal on an
+M4 Mac). All three reproduced the CLI transcript above (word for word; sound
+scores and boundaries vary by low single hundredths and by hop-width ordering
+between backends, as expected of independent floating-point runs).
+
+| Device | Backend | `-LE model` | sound/scene ctest set | `test_ced_parity` | Scene demo wall time |
+|---|---|---|---|---|---|
+| strix:gpu0 (AMD Radeon 8060S, Vulkan0) | Vulkan | 21/22 (1 staging artifact, see below) | 8/8 | pass | 2.3 s |
+| dgx:gpu0 (NVIDIA GB10, CUDA0) | CUDA | 21/22 (same artifact) | 5/8 (3 known teardown crashes, see below) | pass | 2.8 s |
+| Apple M4 (MTL0) | Metal | 22/22 | 5/8 (3 known teardown crashes, see below) | pass | 9.5 s |
+
+Two things came out of these runs that are not regressions in this change but
+are worth recording:
+
+- **`server_e2e` "Not Run" / "permission denied" on strix and dgx.** Both
+  jobs stage the worktree over a CIFS-backed rsync/cp, which does not carry
+  the executable bit on `tests/server_e2e.sh`. The test is normally SKIP (77)
+  without the `PARAKEET_SERVER_E2E=1` env this run did not set; here ctest
+  instead reports `BAD_COMMAND` because it cannot exec the script at all.
+  This is an artifact of the staging method, not a build or product issue;
+  the Mac run (rsync over SSH, which preserves permissions) shows the normal
+  `***Skipped`.
+- **`test_combined_offline`, `test_streaming_diarization` and
+  `test_scene_stream` abort on process exit on CUDA and Metal, not Vulkan.**
+  Each of these tests loads more than one GPU-backed context in the same
+  process (ASR + diarization, or ASR + diarization + a CED tagger). The
+  test's own assertions all print PASS before the crash; the abort happens
+  afterward, during static/global teardown. On CUDA the backtrace is
+  `ggml_gallocr_free -> ggml_backend_buffer_free -> cudaFree`, which fails
+  with `CUDA error: driver shutting down` because an earlier context's CUDA
+  backend has already torn down the (global, per-process) CUDA driver state
+  by the time a later context's buffers are freed at exit. Metal hits the
+  analogous case: `ggml_metal_device_free` asserts `[rsets->data count] == 0`
+  in `ggml-metal-device.m`, also during global destructor teardown, also only
+  when more than one Metal device/context existed in the process. Vulkan does
+  not have this problem: all 8 sound/scene tests pass cleanly on strix,
+  including the same three multi-context tests. `parakeet-cli scene`, which
+  also opens up to three contexts, did not crash in any of the three runs
+  above (single-shot CLI processes exit through a different path than the
+  ctest test binaries, and did not hit the same order-of-destruction window
+  in these runs).
+
+  This is a pre-existing gap in how ggml's CUDA and Metal backends handle
+  multiple device/driver instances torn down in one process, not something
+  introduced by the sound-events work; it is only now exercised because
+  these are the first tests that hold more than one GPU-backed
+  `parakeet_ctx` alive at once. No test tolerance or code was changed to make
+  it pass; it is recorded here as a known issue for CUDA/Metal multi-context
+  processes (the offline `parakeet-cli scene` / server paths, which is what
+  LocalAI would actually run, load each context in sequence and are not
+  currently known to hit it, per the CLI runs above).

@@ -32,6 +32,14 @@ jobs:
         # job once a models bundle is published (Phase 4).
         run: ctest --test-dir build --output-on-failure -LE model
 
+      - name: build without ced (PARAKEET_WITH_CED=OFF)
+        # PARAKEET_WITH_CED is on by default, so this is the gate that catches
+        # anything that quietly starts depending on ced.cpp being present.
+        run: |
+          cmake -B build-noced -DPARAKEET_BUILD_TESTS=ON -DGGML_NATIVE=OFF -DPARAKEET_WITH_CED=OFF
+          cmake --build build-noced -j
+          ctest --test-dir build-noced --output-on-failure -LE model
+
   # -------------------------------------------------------------------------
   # server-e2e: drive the real parakeet-server over HTTP.
   #
