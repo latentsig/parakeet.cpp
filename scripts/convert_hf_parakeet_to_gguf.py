@@ -15,11 +15,12 @@ mismatch, so a checkpoint that is not v3-shaped cannot be converted silently.
 
 HF tensor names are mapped back to the verbatim NeMo names the C++ loader
 expects (the inverse of transformers' ``convert_nemo_to_hf.py``). Ternary
-weights are dequantized here (``w = scales[row, col // group] * (code - 1)``),
+weights are dequantized by default (``w = scales[row, col // group] * (code - 1)``),
 so the engine sees ordinary linear weights and needs no new kernel.
 
-The optional ``vad_head.*`` tensors are not written; the engine has no use for
-them yet.
+The optional ``vad_head.*`` tensors are written as F32 together with the
+``parakeet.vad.*`` KVs unless ``--vad drop`` is given. With ``--ternary keep``
+the ternary linears stay packed (see docs/ternary.md) instead of dequantized.
 """
 import argparse
 import json

@@ -104,7 +104,7 @@ WER (word error rate) is measured against the NeMo reference on
 
 Converted with `scripts/convert_hf_parakeet_to_gguf.py --template <v3 gguf>`.
 Neither is published yet; sizes are from local conversions. Transcript on
-`tests/fixtures/speech.wav` matches the reference. Long-form WER is not measured yet.
+`tests/fixtures/speech.wav` matches the reference. A LibriSpeech-100 WER from an ad hoc script is in `docs/ternary.md`; validated long-form WER is still to come.
 
 | Model | Variant | Converter flags | Size | Notes |
 |---|---|---|---:|---|

@@ -394,8 +394,9 @@ heads — and the C++ port reproduces each head exactly, including the second he
 `moondream/parakeet-ultra` (F16) and `moondream/parakeet-redux` (ternary
 encoder) share the v3 architecture and are converted with
 `scripts/convert_hf_parakeet_to_gguf.py` (see `docs/conversion.md`). Only the
-end-to-end transcript on `tests/fixtures/speech.wav` was checked here. WER on
-long-form sets has not been measured yet.
+end-to-end transcript on `tests/fixtures/speech.wav` was checked for parity.
+A LibriSpeech-100 WER from an ad hoc script is in `docs/ternary.md`; validated
+long-form WER and the VAD comparison are still to come.
 
 | Model | GGUF form | Kernel | Transcript equals the reference transcript in AGENTS.md |
 |---|---|---|---|

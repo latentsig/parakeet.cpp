@@ -56,8 +56,10 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
 
 ## Measured speed
 
-Machine: AMD Ryzen 9 9950X3D (16 cores, AVX-512 VNNI), CPU backend, base commit
-c8499e6, 2026-09-29. Ultra has the same architecture and shapes as v3, so
+Machine: AMD Ryzen 9 9950X3D (16 cores, AVX-512 VNNI), CPU backend, 2026-09-29.
+The end-to-end and LibriSpeech numbers were taken at commit c8499e6 (kernel and
+encoder code); the microbench at f7c9e8c, which only adds the ggml rows to
+`bench_ternary`. Ultra has the same architecture and shapes as v3, so
 `ultra-q8_0` (converted from the HF weights with `--dtype q8_0`) stands in for a
 Q8_0 v3. The dequantized Redux was also converted to Q8_0 the same way.
 
@@ -108,26 +110,29 @@ kernel and leave out `ternary_quant_rows`.
 
 | N x K, T | scalar | ternary avx2 | ternary vnni | ggml Q8_0 | ggml F16 |
 |---|---:|---:|---:|---:|---:|
-| 4096 x 1024, T=200 | 1.96 | 79.06 | 82.40 | 87.04 | 117.61 |
-| 1024 x 4096, T=200 | 1.96 | 79.92 | 88.32 | 90.90 | 130.52 |
-| 1024 x 4096, T=1000 | 1.96 | 66.33 | 81.68 | 89.68 | 125.45 |
+| 4096 x 1024, T=200 | 1.97 | 78.14 | 81.91 | 87.23 | 120.46 |
+| 1024 x 4096, T=200 | 1.96 | 78.63 | 87.01 | 87.91 | 120.76 |
+| 1024 x 4096, T=1000 | 1.97 | 66.79 | 82.57 | 89.37 | 125.86 |
 
-All numbers are GMAC/s.
+All numbers are GMAC/s (raw output in the task 8 report; a second run of the
+same command gave values within a few percent of these). Because the ternary
+rows exclude the int8 activation quantization and the ggml rows include their
+own, the true gap of ternary to ggml is somewhat larger than this table shows.
 
 ### What the data say
 
 - The ternary form is 6.8 times smaller than F16 and 4.4 times smaller than
   Q8_0, but on this machine it is not faster. The ternary vnni kernel is slower
-  than ggml's Q8_0 kernel in all three shapes (by 5 percent, 3 percent and 9
-  percent) and 30 to 37 percent slower than ggml's F16 kernel.
+  than ggml's Q8_0 kernel in all three shapes (by 6, 1 and 8 percent) and 28 to
+  34 percent slower than ggml's F16 kernel.
 - End to end, packed ternary is slower than both Q8_0 and F16 of the same
   model: 10.32 s against 9.06 s and 8.98 s on the long clip, and a median RTF
   of 39.3 against 40.4 and 44.9 on LibriSpeech. It is also slower than the
   ternary-free Ultra Q8_0 (41.8 on LibriSpeech). The gap is small and the
-  LibriSpeech passes are noisy (up to 20 percent between passes), so read it
-  as "no speed win", not as a precise ratio.
-- The avx2 kernel is close to the vnni kernel here (79 against 82 GMAC/s at
-  T=200), so the VNNI instruction adds little. The cause was not profiled.
+  LibriSpeech passes are noisy (the Redux F16 passes went from 36.4 to 45.1,
+  about 24 percent), so read it as "no speed win", not as a precise ratio.
+- The avx2 kernel is close to the vnni kernel here (78.14 against 81.91 GMAC/s at
+  N=4096, K=1024, T=200), so the VNNI instruction adds little. The cause was not profiled.
 - The gain of the ternary form on this machine is size (and memory traffic),
   not speed. The speed comparison on other CPUs (NEON, fewer cores, less
   bandwidth) has not been made.
