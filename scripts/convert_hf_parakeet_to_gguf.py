@@ -70,7 +70,7 @@ _QUANTIZABLE = [re.compile(p) for p in (
     r"^joint\.pred\.weight$",
 )]
 
-_SKIP = re.compile(r"^vad_head\.")
+_VAD = re.compile(r"^vad_head\.")
 
 
 def hf_to_nemo(name):
@@ -144,6 +144,10 @@ def main():
     ap.add_argument("--output", required=True)
     ap.add_argument("--dtype", choices=["f32", "f16", "q8_0"], default="f32")
     ap.add_argument("--name", default=None, help="general.name (default: the --hf directory name)")
+    ap.add_argument("--ternary", choices=["dequant", "keep"], default="dequant",
+                    help="keep: store ternary linears packed as <name>.qweight + <name>.scales (needs the native ternary kernel); dequant: ordinary weights")
+    ap.add_argument("--vad", choices=["keep", "drop"], default="keep",
+                    help="keep the vad_head.* tensors and parakeet.vad.* KVs when the checkpoint has them")
     args = ap.parse_args()
 
     src = pathlib.Path(args.hf)
@@ -191,12 +195,20 @@ def main():
             _copy_kv(w, k, f)
 
     # --- tensors ------------------------------------------------------------
-    tens = {}
+    keep_tern = args.ternary == "keep"
+    if keep_tern and not tern:
+        sys.exit("--ternary keep needs ternary.json next to model.safetensors")
+    tens = {}   # float32 tensors; allowlisted linears are quantized per --dtype
+    raw = {}    # written as-is: ternary qweight (int8 view) and scales (f16), vad_head.*
     qmods = {m["name"]: m for m in (tern["quantized_modules"] if tern else [])}
     group = (tern or {}).get("quant", {}).get("group_size", 0)
     pending_q = {}
     for name, arr in read_safetensors(src / "model.safetensors"):
-        if _SKIP.match(name) or arr.ndim == 0:
+        if arr.ndim == 0:
+            continue
+        if _VAD.match(name):
+            if args.vad == "keep":
+                raw[name] = np.ascontiguousarray(arr, dtype=np.float32)
             continue
         if name.endswith(".qweight"):
             pending_q.setdefault(name[:-8], {})["q"] = arr
@@ -208,28 +220,54 @@ def main():
 
     for mod, d in pending_q.items():
         m = qmods[mod]
-        wt = unpack_ternary(d["q"], d["s"], m["in_features"], m["group_size"] or group)
-        if m.get("as_conv1d"):
-            wt = wt[:, :, None]
-        elif mod.rsplit(".", 1)[-1] in ("pointwise_conv1", "pointwise_conv2"):
+        g = m["group_size"] or group
+        base = hf_to_nemo(mod + ".weight")[: -len(".weight")]
+        if keep_tern:
+            if g != 128 or m["in_features"] % g:
+                sys.exit(f"--ternary keep needs group 128 and in_features % 128 == 0 "
+                         f"(got group {g}, in {m['in_features']} for {mod})")
+            raw[base + ".qweight"] = np.ascontiguousarray(d["q"]).view(np.int8)
+            raw[base + ".scales"] = np.ascontiguousarray(d["s"], dtype=np.float16)
+            continue
+        wt = unpack_ternary(d["q"], d["s"], m["in_features"], g)
+        if m.get("as_conv1d") or mod.rsplit(".", 1)[-1] in ("pointwise_conv1", "pointwise_conv2"):
             wt = wt[:, :, None]  # NeMo stores 1x1 convs as [out, in, 1]
-        tens[hf_to_nemo(mod + ".weight")] = np.ascontiguousarray(wt, dtype=np.float32)
+        tens[base + ".weight"] = np.ascontiguousarray(wt, dtype=np.float32)
 
     # mel featurizer buffers are not in the HF repo; lift them from the template
     for k in ("preprocessor.featurizer.fb", "preprocessor.featurizer.window"):
         tens[k] = np.ascontiguousarray(ttensors[k].data, dtype=np.float32)
 
-    # every tensor the template has, minus the CTC head, must be present with
-    # the same shape, and nothing extra may appear
-    expect = {n for n in ttensors if not n.startswith("ctc_decoder.") and not n.startswith("decoder.decoder_layers")}
+    # The tensor set must equal the template's (minus the weights replaced by
+    # qweight/scales), with identical shapes.
+    replaced = {n[: -len(".qweight")] + ".weight" for n in raw if n.endswith(".qweight")}
+    expect = {n for n in ttensors
+              if not n.startswith("ctc_decoder.") and not n.startswith("decoder.decoder_layers")} - replaced
     got = set(tens)
     if expect != got:
         sys.exit(f"tensor set differs from template: missing={sorted(expect - got)[:5]} "
                  f"extra={sorted(got - expect)[:5]}")
     for n, a in tens.items():
         want = tuple(int(x) for x in ttensors[n].shape[::-1])
-        if a.ndim > 1 and a.shape != want and n not in ("preprocessor.featurizer.fb",):
+        if a.ndim > 1 and a.shape != want and n != "preprocessor.featurizer.fb":
             sys.exit(f"shape mismatch {n}: hf={a.shape} template(numpy order)={want}")
+
+    if keep_tern:
+        w.add_bool("parakeet.ternary.present", True)
+        w.add_uint32("parakeet.ternary.group_size", 128)
+    if any(n.startswith("vad_head.") for n in raw):
+        proj, ctxw = raw["vad_head.proj.weight"], raw["vad_head.ctx.weight"]
+        hop, sub, sr = (int(tv["parakeet.preprocessor.hop_length"]),
+                        int(tv["parakeet.encoder.subsampling_factor"]),
+                        int(tv["parakeet.preprocessor.sample_rate"]))
+        w.add_bool("parakeet.vad.present", True)
+        w.add_uint32("parakeet.vad.d_in", int(proj.shape[1]))
+        w.add_uint32("parakeet.vad.hidden", int(proj.shape[0]))
+        w.add_uint32("parakeet.vad.kernel", int(ctxw.shape[2]))
+        w.add_float32("parakeet.vad.frame_sec", hop * sub / sr)
+
+    for n, a in raw.items():
+        w.add_tensor(n, a)
 
     written = quantized = 0
     for n, a in tens.items():
@@ -243,8 +281,8 @@ def main():
         if qt is None:
             w.add_tensor(n, a)
         else:
-            raw = gguf.quantize(a, qt)
-            w.add_tensor(n, raw, raw_shape=raw.shape, raw_dtype=qt)
+            qa = gguf.quantize(a, qt)
+            w.add_tensor(n, qa, raw_shape=qa.shape, raw_dtype=qt)
             quantized += 1
         written += 1
 
@@ -252,7 +290,8 @@ def main():
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
     w.close()
-    print(f"wrote {args.output}: arch=tdt tensors={written} dtype={args.dtype} quantized={quantized}")
+    print(f"wrote {args.output}: arch=tdt tensors={written + len(raw)} dtype={args.dtype} "
+          f"quantized={quantized} ternary={'keep' if keep_tern else 'dequant'} raw={len(raw)}")
 
 
 def _copy_kv(w, key, f):
