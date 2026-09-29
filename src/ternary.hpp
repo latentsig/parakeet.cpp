@@ -58,4 +58,9 @@ bool has_ternary(const ModelLoader& ml, const std::string& base);
 ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std::string& base,
                             ggml_tensor* x);
 
+// Validate and repack every packed linear of the encoder up front, so graph
+// building never throws. Throws std::runtime_error on a malformed or
+// half-converted file.
+void ternary_prepare(const ModelLoader& ml);
+
 }  // namespace pk

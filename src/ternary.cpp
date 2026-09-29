@@ -178,7 +178,8 @@ bool has_ternary(const ModelLoader& ml, const std::string& base) {
 ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std::string& base,
                             ggml_tensor* x) {
     const TernaryWeight& w = weight_for(ml, base);
-    GGML_ASSERT(x->type == GGML_TYPE_F32 && (int)x->ne[0] == w.K);
+    if (x->type != GGML_TYPE_F32 || (int)x->ne[0] != w.K)
+        throw std::runtime_error("ternary: input shape mismatch for " + base);
     if (!ggml_is_contiguous(x)) x = ggml_cont(ctx, x);
     const int64_t T = ggml_nrows(x);
     ggml_tensor* a1[1] = {x};
@@ -187,6 +188,25 @@ ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std:
     ggml_tensor* a2[1] = {act};
     return ggml_custom_4d(ctx, GGML_TYPE_F32, w.N, x->ne[1], x->ne[2], x->ne[3], a2, 1, op_matmul,
                           GGML_N_TASKS_MAX, const_cast<TernaryWeight*>(&w));
+}
+
+void ternary_prepare(const ModelLoader& ml) {
+    static const char* const kLinears[] = {
+        "feed_forward1.linear1", "feed_forward1.linear2", "feed_forward2.linear1",
+        "feed_forward2.linear2", "self_attn.linear_q",    "self_attn.linear_k",
+        "self_attn.linear_v",    "self_attn.linear_out",  "self_attn.linear_pos",
+        "conv.pointwise_conv1",  "conv.pointwise_conv2"};
+    const int n_layers = (int)ml.config().n_layers;
+    for (int i = 0; i < n_layers; ++i) {
+        for (const char* nm : kLinears) {
+            const std::string base = "encoder.layers." + std::to_string(i) + "." + nm;
+            if (has_ternary(ml, base)) {
+                weight_for(ml, base);
+            } else if (!ml.tensor(base + ".weight")) {
+                throw std::runtime_error("ternary: missing weight " + base);
+            }
+        }
+    }
 }
 
 }  // namespace pk

@@ -2,6 +2,7 @@
 
 #include "audio_io.hpp"
 #include "common.hpp"
+#include "ternary.hpp"
 #include "mel.hpp"
 #include "mel_gpu.hpp"
 #include "encoder.hpp"
@@ -22,6 +23,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <exception>
 #include <stdexcept>
 #include <vector>
 
@@ -58,6 +60,15 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
         PK_LOG("this GGUF holds packed ternary weights, which run on the CPU backend only; "
                "re-convert with --ternary dequant to use a GPU backend");
         return nullptr;
+    }
+    // Validate and repack every packed linear now so graph building never throws.
+    if (m->loader_.config().ternary.present) {
+        try {
+            ternary_prepare(m->loader_);
+        } catch (const std::exception& e) {
+            PK_LOG("invalid packed ternary GGUF: %s", e.what());
+            return nullptr;
+        }
     }
     // Give the weights a CPU backend buffer ONCE so graphs reference them
     // directly as leaves (zero per-call copy). Done at load (vs. lazily on first
