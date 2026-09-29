@@ -116,6 +116,7 @@ set(PARAKEET_SRC
     src/joint.cpp
     src/prompt_kernel.cpp
     src/ternary.cpp
+    src/ternary_kernels_x86.cpp
     src/tdt.cpp
     src/rnnt.cpp
     src/transducer_batch.cpp
@@ -143,6 +144,10 @@ if(PARAKEET_SHARED)
   set_target_properties(parakeet PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 else()
   add_library(parakeet STATIC ${PARAKEET_SRC})
+endif()
+if(NOT MSVC)
+  set_source_files_properties(src/ternary.cpp src/ternary_kernels_x86.cpp
+                              PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
 target_include_directories(parakeet PUBLIC include PRIVATE src ${CMAKE_SOURCE_DIR}/third_party)
 target_compile_definitions(parakeet PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>)

@@ -1,6 +1,7 @@
 // Unit test for the ternary core: repack, activation quantization, scalar
 // reference. Model-independent.
 #include "ternary.hpp"
+#include "ternary_kernels.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -92,6 +93,35 @@ static void run_case(const Case& cs, unsigned seed) {
             CHECK(std::fabs((double)y[(size_t)t * N + n] - ref) <= bound);
         }
     }
+    // tight check: scalar reference vs a double product of the dequantized
+    // weights and the dequantized activations (catches a mis-indexed group scale)
+    for (int t = 0; t < T; ++t) {
+        const uint8_t* row = &act[(size_t)t * ternary_act_row_bytes(K)];
+        const int8_t* qa = reinterpret_cast<const int8_t*>(row);
+        const float sa = *reinterpret_cast<const float*>(row + K);
+        for (int n = 0; n < N; ++n) {
+            double ref = 0.0, mag = 0.0;
+            for (int k = 0; k < K; ++k) {
+                const double term = (double)W[(size_t)n * K + k] * ((double)qa[k] * (double)sa);
+                ref += term;
+                mag += std::fabs(term);
+            }
+            CHECK(std::fabs((double)y[(size_t)t * N + n] - ref) <= 1e-4 * (mag + 1e-6));
+        }
+    }
+    // every available kernel equals the reference exactly
+    for (const TernaryKernel* k : ternary_all_kernels()) {
+        std::vector<float> yk((size_t)T * N, -1.0f);
+        // one call over all rows, then a split with an uneven boundary
+        k->fn(w, act.data(), T, yk.data(), 0, N);
+        for (size_t i = 0; i < y.size(); ++i)
+            if (y[i] != yk[i]) { std::fprintf(stderr, "kernel %s differs at %zu: %g vs %g (N=%d K=%d T=%d)\n", k->name, i, y[i], yk[i], N, K, T); ++failures; break; }
+        std::vector<float> ys((size_t)T * N, -1.0f);
+        const int b = N > 2 ? N / 3 : 1;
+        k->fn(w, act.data(), T, ys.data(), 0, b);
+        k->fn(w, act.data(), T, ys.data(), b, N);
+        for (size_t i = 0; i < y.size(); ++i) CHECK(y[i] == ys[i]);
+    }
     // the dispatching entry point equals the reference exactly
     std::vector<float> yd((size_t)T * N, -1.0f);
     ternary_matmul_rows(w, act.data(), T, yd.data(), 0, N);
@@ -119,6 +149,8 @@ int main() {
     for (const Case& c : cases) run_case(c, seed++);
     test_silence_is_zero();
     if (failures) return 1;
-    std::printf("test_ternary: OK (kernel=%s)\n", ternary_kernel_name());
+    std::printf("test_ternary: OK (dispatch=%s; tested:", ternary_kernel_name());
+    for (const TernaryKernel* k : ternary_all_kernels()) std::printf(" %s", k->name);
+    std::printf(")\n");
     return 0;
 }

@@ -2,13 +2,17 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <unordered_map>
 
 #include "ggml.h"
+#include "common.hpp"
 #include "model_loader.hpp"
+#include "ternary_kernels.hpp"
 
 namespace pk {
 
@@ -109,13 +113,43 @@ void ternary_matmul_rows_ref(const TernaryWeight& w, const uint8_t* act, int T, 
         }
 }
 
-// Kernel selection. Later tasks add SIMD kernels here.
-void ternary_matmul_rows(const TernaryWeight& w, const uint8_t* act, int T, float* y,
-                         int r0, int r1) {
-    ternary_matmul_rows_ref(w, act, T, y, r0, r1);
+namespace {
+
+const TernaryKernel kScalarKernel{"scalar", ternary_matmul_rows_ref};
+
+const TernaryKernel* pick_kernel() {
+    static const TernaryKernel* chosen = [] {
+        if (const char* e = std::getenv("PARAKEET_TERNARY_KERNEL")) {
+            const TernaryKernel* want = nullptr;
+            if (!std::strcmp(e, "scalar")) want = &kScalarKernel;
+            else if (!std::strcmp(e, "avx2")) want = ternary_kernel_x86_avx2();
+            else if (!std::strcmp(e, "vnni")) want = ternary_kernel_x86_vnni();
+            else if (!std::strcmp(e, "neon")) want = ternary_kernel_neon();
+            if (want) return want;
+            PK_LOG("PARAKEET_TERNARY_KERNEL=%s is unavailable here; using automatic selection", e);
+        }
+        if (const TernaryKernel* k = ternary_kernel_x86_vnni()) return k;
+        if (const TernaryKernel* k = ternary_kernel_neon()) return k;
+        if (const TernaryKernel* k = ternary_kernel_x86_avx2()) return k;
+        return &kScalarKernel;
+    }();
+    return chosen;
 }
 
-const char* ternary_kernel_name() { return "scalar"; }
+}  // namespace
+
+std::vector<const TernaryKernel*> ternary_all_kernels() {
+    std::vector<const TernaryKernel*> v{&kScalarKernel};
+    for (const TernaryKernel* k : {ternary_kernel_x86_avx2(), ternary_kernel_x86_vnni(), ternary_kernel_neon()})
+        if (k) v.push_back(k);
+    return v;
+}
+
+void ternary_matmul_rows(const TernaryWeight& w, const uint8_t* act, int T, float* y, int r0, int r1) {
+    pick_kernel()->fn(w, act, T, y, r0, r1);
+}
+
+const char* ternary_kernel_name() { return pick_kernel()->name; }
 
 namespace {
 
