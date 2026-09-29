@@ -2,6 +2,7 @@
 // with Q8_0 and F16 weights of the same shape (1 thread, activations F32, so the
 // ggml rows include their per-call activation quantization; the ternary rows do
 // not include ternary_quant_rows). Usage: bench_ternary [N K T reps]
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -64,10 +65,12 @@ int main(int argc, char** argv) {
     ternary_quant_rows(x.data(), K, 0, T, act.data());
     std::vector<float> y((size_t)T * N);
     for (const TernaryKernel* k : ternary_all_kernels()) {
+        // the scalar reference is 50x slower; a few runs are enough for it
+        const int kr = std::strcmp(k->name, "scalar") ? reps : std::max(1, reps / 10);
         k->fn(w, act.data(), T, y.data(), 0, N);  // warm up
         const auto t0 = std::chrono::steady_clock::now();
-        for (int r = 0; r < reps; ++r) k->fn(w, act.data(), T, y.data(), 0, N);
-        const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() / reps;
+        for (int r = 0; r < kr; ++r) k->fn(w, act.data(), T, y.data(), 0, N);
+        const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() / kr;
         std::printf("%-8s N=%d K=%d T=%d  %8.3f ms  %7.2f GMAC/s\n", k->name, N, K, T, sec * 1e3,
                     (double)N * K * T / sec / 1e9);
     }
