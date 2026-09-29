@@ -12,9 +12,19 @@ struct TernaryKernel {
     TernaryRowsFn fn;
 };
 
+using TernaryQuantFn = void (*)(const float* x, int K, int t0, int t1, uint8_t* act);
+struct TernaryQuant {
+    const char* name;
+    TernaryQuantFn fn;
+};
+
 const TernaryKernel* ternary_kernel_x86_vnni();
 const TernaryKernel* ternary_kernel_x86_avx2();
 const TernaryKernel* ternary_kernel_neon();
 std::vector<const TernaryKernel*> ternary_all_kernels();
+
+const TernaryQuant* ternary_quant_x86_avx512();
+const TernaryQuant* ternary_quant_x86_avx2();
+std::vector<const TernaryQuant*> ternary_all_quants();
 
 }  // namespace pk

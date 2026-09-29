@@ -58,7 +58,10 @@ void ternary_dequant(const uint8_t* qweight, const uint16_t* scales_f16, int N, 
 inline size_t ternary_act_row_bytes(int K) {
     return (size_t)K + 4 + 4 * (size_t)(K / kTernaryGroup);
 }
-// x is the full [T][K] float input; writes rows [t0, t1) of act.
+// x is the full [T][K] float input; writes rows [t0, t1) of act. The reference
+// defines the bytes; the dispatching entry point picks a vector version for
+// this CPU that writes identical bytes.
+void ternary_quant_rows_ref(const float* x, int K, int t0, int t1, uint8_t* act);
 void ternary_quant_rows(const float* x, int K, int t0, int t1, uint8_t* act);
 
 // y[t*N + n] for n in [r0, r1) and all t < T. The reference defines correctness;

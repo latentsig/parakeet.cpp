@@ -64,7 +64,7 @@ void ternary_dequant(const uint8_t* q, const uint16_t* s, int N, int K, std::vec
         }
 }
 
-void ternary_quant_rows(const float* x, int K, int t0, int t1, uint8_t* act) {
+void ternary_quant_rows_ref(const float* x, int K, int t0, int t1, uint8_t* act) {
     const int G = K / kTernaryGroup;
     const size_t rb = ternary_act_row_bytes(K);
     for (int t = t0; t < t1; ++t) {
@@ -81,8 +81,10 @@ void ternary_quant_rows(const float* x, int K, int t0, int t1, uint8_t* act) {
         for (int g = 0; g < G; ++g) {
             int32_t sum = 0;
             for (int j = 0; j < kTernaryGroup; ++j) {
-                int v = (int)std::lrintf(xr[g * kTernaryGroup + j] * inv);
-                v = std::min(127, std::max(-127, v));
+                // clamp before rounding (same result, since +-127 are
+                // integers), which also maps a NaN input to -127
+                const float f = std::min(127.0f, std::max(-127.0f, xr[g * kTernaryGroup + j] * inv));
+                const int v = (int)std::lrintf(f);
                 q[g * kTernaryGroup + j] = (int8_t)v;
                 sum += v;
             }
@@ -142,6 +144,19 @@ std::vector<const TernaryKernel*> ternary_all_kernels() {
     for (const TernaryKernel* k : {ternary_kernel_x86_avx2(), ternary_kernel_x86_vnni(), ternary_kernel_neon()})
         if (k) v.push_back(k);
     return v;
+}
+
+std::vector<const TernaryQuant*> ternary_all_quants() {
+    static const TernaryQuant ref{"scalar", ternary_quant_rows_ref};
+    std::vector<const TernaryQuant*> v{&ref};
+    for (const TernaryQuant* q : {ternary_quant_x86_avx2(), ternary_quant_x86_avx512()})
+        if (q) v.push_back(q);
+    return v;
+}
+
+void ternary_quant_rows(const float* x, int K, int t0, int t1, uint8_t* act) {
+    static const TernaryQuantFn fn = ternary_all_quants().back()->fn;
+    fn(x, K, t0, t1, act);
 }
 
 void ternary_matmul_rows(const TernaryWeight& w, const uint8_t* act, int T, float* y, int r0, int r1) {

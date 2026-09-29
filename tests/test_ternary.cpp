@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <random>
 #include <vector>
 
@@ -173,6 +174,45 @@ static void test_silence_is_zero() {
     for (float v : y) CHECK(v == 0.0f && !std::isnan(v));
 }
 
+// Every quantizer writes the same bytes as ternary_quant_rows_ref.
+static void test_quant_identical() {
+    std::mt19937 rng(99);
+    std::uniform_real_distribution<float> u(-3.0f, 3.0f);
+    for (int K : {128, 1024, 4096}) {
+        const int T = 9;
+        std::vector<float> x((size_t)T * K);
+        for (auto& v : x) v = u(rng);
+        for (int k = 0; k < K; ++k) {
+            x[(size_t)1 * K + k] = 0.0f;                                   // all zero
+            x[(size_t)2 * K + k] = (float)(k % 255 - 127) + 0.5f * (k & 1); // amax 127, ties at .5
+            x[(size_t)3 * K + k] = u(rng) * 1e-39f;                        // denormal
+            x[(size_t)4 * K + k] = u(rng) * 3e38f;                         // near FLT_MAX
+            x[(size_t)5 * K + k] = k == 7 ? -0.0f : 0.0f;                  // negative zero only
+        }
+        x[(size_t)2 * K + 5] = 127.0f;
+        x[(size_t)6 * K + 3] = NAN;                                        // one NaN
+        x[(size_t)7 * K + 3] = INFINITY;                                   // one inf
+        x[(size_t)8 * K + K - 1] = -INFINITY;
+        x[(size_t)8 * K + 0] = NAN;
+        const size_t rb = ternary_act_row_bytes(K);
+        std::vector<uint8_t> ref(rb * T, 0xAB);
+        ternary_quant_rows_ref(x.data(), K, 0, T, ref.data());
+        for (const TernaryQuant* q : ternary_all_quants()) {
+            std::vector<uint8_t> a(rb * T, 0xCD);
+            q->fn(x.data(), K, 0, 4, a.data());   // split rows, as the op does
+            q->fn(x.data(), K, 4, T, a.data());
+            for (int t = 0; t < T; ++t)
+                if (std::memcmp(&a[(size_t)t * rb], &ref[(size_t)t * rb], rb) != 0) {
+                    std::fprintf(stderr, "quant %s differs from the reference (K=%d row %d)\n", q->name, K, t);
+                    ++failures;
+                }
+        }
+        std::vector<uint8_t> d(rb * T);
+        ternary_quant_rows(x.data(), K, 0, T, d.data());
+        CHECK(d == ref);
+    }
+}
+
 int main() {
     const Case cases[] = {{8, 128, 1}, {16, 256, 3}, {37, 1024, 5}, {64, 4096, 4}, {5, 384, 7}, {1, 128, 1},
                           {48, 1024, 13}, {80, 512, 200}, {40, 1024, 9, true}, {7, 4096, 3, true}};
@@ -183,9 +223,12 @@ int main() {
     for (int N : {1, 2, 3, 5, 7, 37})
         for (int T : {1, 2, 3, 5, 7, 9}) run_case({N, 256, T}, seed++);
     test_silence_is_zero();
+    test_quant_identical();
     if (failures) return 1;
     std::printf("test_ternary: OK (dispatch=%s; tested:", ternary_kernel_name());
     for (const TernaryKernel* k : ternary_all_kernels()) std::printf(" %s", k->name);
+    std::printf("; quant:");
+    for (const TernaryQuant* q : ternary_all_quants()) std::printf(" %s", q->name);
     std::printf(")\n");
     return 0;
 }

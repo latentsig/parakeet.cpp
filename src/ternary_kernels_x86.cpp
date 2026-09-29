@@ -186,6 +186,89 @@ PK_TGT_AVX2 void rows_avx2(const TernaryWeight& w, const uint8_t* act, int T, fl
     }
 }
 
+// ---------------------------------------------------------------------------
+// Activation quantization, byte-identical to ternary_quant_rows_ref. The max
+// of |x| is exact in any order, and max_ps(v, m) returns m for a NaN v, as
+// std::max(amax, NaN) keeps amax. The scale and its inverse are the same
+// scalar float divisions. The product is the same float multiply; the clamp
+// uses max_ps(f, -127) then min_ps(f, 127), which match std::max(-127.f, f)
+// and std::min(127.f, f) including NaN; cvtps rounds to nearest even like
+// lrintf in the default rounding mode. Group sums are exact integers.
+PK_TGT_512 void quant_avx512(const float* x, int K, int t0, int t1, uint8_t* act) {
+    const int G = K / kTernaryGroup;
+    const size_t rb = ternary_act_row_bytes(K);
+    const __m512 lo = _mm512_set1_ps(-127.0f), hi = _mm512_set1_ps(127.0f);
+    for (int t = t0; t < t1; ++t) {
+        const float* xr = x + (size_t)t * K;
+        uint8_t* row = act + (size_t)t * rb;
+        __m512 m = _mm512_setzero_ps();
+        for (int k = 0; k < K; k += 16) m = _mm512_max_ps(_mm512_abs_ps(_mm512_loadu_ps(xr + k)), m);
+        const float amax = _mm512_reduce_max_ps(m);
+        const float sc = amax > 0.0f ? amax / 127.0f : 0.0f;
+        const float inv = sc > 0.0f ? 1.0f / sc : 0.0f;
+        std::memcpy(row + K, &sc, 4);
+        const __m512 vinv = _mm512_set1_ps(inv);
+        for (int g = 0; g < G; ++g) {
+            __m512i sum = _mm512_setzero_si512();
+            for (int j = 0; j < kTernaryGroup; j += 16) {
+                const int k = g * kTernaryGroup + j;
+                __m512 f = _mm512_mul_ps(_mm512_loadu_ps(xr + k), vinv);
+                f = _mm512_min_ps(_mm512_max_ps(f, lo), hi);
+                const __m512i v = _mm512_cvtps_epi32(f);
+                sum = _mm512_add_epi32(sum, v);
+                _mm_storeu_si128(reinterpret_cast<__m128i*>(row + k), _mm512_cvtepi32_epi8(v));
+            }
+            const int32_t gs = _mm512_reduce_add_epi32(sum);
+            std::memcpy(row + K + 4 + 4 * (size_t)g, &gs, 4);
+        }
+    }
+}
+
+PK_TGT_AVX2 void quant_avx2(const float* x, int K, int t0, int t1, uint8_t* act) {
+    const int G = K / kTernaryGroup;
+    const size_t rb = ternary_act_row_bytes(K);
+    const __m256 lo = _mm256_set1_ps(-127.0f), hi = _mm256_set1_ps(127.0f);
+    const __m256 absm = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
+    const __m256i perm = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+    for (int t = t0; t < t1; ++t) {
+        const float* xr = x + (size_t)t * K;
+        uint8_t* row = act + (size_t)t * rb;
+        __m256 m = _mm256_setzero_ps();
+        for (int k = 0; k < K; k += 8) m = _mm256_max_ps(_mm256_and_ps(_mm256_loadu_ps(xr + k), absm), m);
+        alignas(32) float mv[8];
+        _mm256_store_ps(mv, m);
+        float amax = 0.0f;
+        for (float v : mv) amax = std::max(amax, v);
+        const float sc = amax > 0.0f ? amax / 127.0f : 0.0f;
+        const float inv = sc > 0.0f ? 1.0f / sc : 0.0f;
+        std::memcpy(row + K, &sc, 4);
+        const __m256 vinv = _mm256_set1_ps(inv);
+        for (int g = 0; g < G; ++g) {
+            __m256i sum = _mm256_setzero_si256();
+            for (int j = 0; j < kTernaryGroup; j += 32) {
+                const int k = g * kTernaryGroup + j;
+                __m256i v[4];
+                for (int u = 0; u < 4; ++u) {
+                    __m256 f = _mm256_mul_ps(_mm256_loadu_ps(xr + k + 8 * u), vinv);
+                    f = _mm256_min_ps(_mm256_max_ps(f, lo), hi);
+                    v[u] = _mm256_cvtps_epi32(f);
+                    sum = _mm256_add_epi32(sum, v[u]);
+                }
+                // values are within [-127, 127], so the saturating packs are exact
+                const __m256i p16a = _mm256_packs_epi32(v[0], v[1]);
+                const __m256i p16b = _mm256_packs_epi32(v[2], v[3]);
+                const __m256i p8 = _mm256_permutevar8x32_epi32(_mm256_packs_epi16(p16a, p16b), perm);
+                _mm256_storeu_si256(reinterpret_cast<__m256i*>(row + k), p8);
+            }
+            __m128i s4 = _mm_add_epi32(_mm256_castsi256_si128(sum), _mm256_extracti128_si256(sum, 1));
+            s4 = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(1, 0, 3, 2)));
+            s4 = _mm_add_epi32(s4, _mm_shuffle_epi32(s4, _MM_SHUFFLE(2, 3, 0, 1)));
+            const int32_t gs = _mm_cvtsi128_si32(s4);
+            std::memcpy(row + K + 4 + 4 * (size_t)g, &gs, 4);
+        }
+    }
+}
+
 }  // namespace
 
 const TernaryKernel* ternary_kernel_x86_vnni() {
@@ -202,10 +285,24 @@ const TernaryKernel* ternary_kernel_x86_avx2() {
     return __builtin_cpu_supports("avx2") ? &k : nullptr;
 }
 
+const TernaryQuant* ternary_quant_x86_avx512() {
+    static const TernaryQuant q{"avx512", quant_avx512};
+    __builtin_cpu_init();
+    return __builtin_cpu_supports("avx512f") ? &q : nullptr;
+}
+
+const TernaryQuant* ternary_quant_x86_avx2() {
+    static const TernaryQuant q{"avx2", quant_avx2};
+    __builtin_cpu_init();
+    return __builtin_cpu_supports("avx2") ? &q : nullptr;
+}
+
 }  // namespace pk
 #else
 namespace pk {
 const TernaryKernel* ternary_kernel_x86_vnni() { return nullptr; }
 const TernaryKernel* ternary_kernel_x86_avx2() { return nullptr; }
+const TernaryQuant* ternary_quant_x86_avx512() { return nullptr; }
+const TernaryQuant* ternary_quant_x86_avx2() { return nullptr; }
 }  // namespace pk
 #endif
