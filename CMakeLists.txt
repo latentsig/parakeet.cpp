@@ -117,6 +117,7 @@ set(PARAKEET_SRC
     src/prompt_kernel.cpp
     src/ternary.cpp
     src/ternary_kernels_x86.cpp
+    src/ternary_kernels_neon.cpp
     src/tdt.cpp
     src/rnnt.cpp
     src/transducer_batch.cpp
@@ -148,6 +149,10 @@ endif()
 if(NOT MSVC)
   set_source_files_properties(src/ternary.cpp src/ternary_kernels_x86.cpp
                               PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+set_source_files_properties(src/ternary_kernels_neon.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" AND NOT APPLE AND NOT MSVC)
+  set_property(SOURCE src/ternary_kernels_neon.cpp APPEND PROPERTY COMPILE_OPTIONS "-march=armv8.2-a+dotprod")
 endif()
 target_include_directories(parakeet PUBLIC include PRIVATE src ${CMAKE_SOURCE_DIR}/third_party)
 target_compile_definitions(parakeet PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>)

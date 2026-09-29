@@ -90,7 +90,3 @@ const TernaryKernel* ternary_kernel_x86_vnni() { return nullptr; }
 const TernaryKernel* ternary_kernel_x86_avx2() { return nullptr; }
 }  // namespace pk
 #endif
-
-#if !defined(__aarch64__)
-namespace pk { const TernaryKernel* ternary_kernel_neon() { return nullptr; } }
-#endif
