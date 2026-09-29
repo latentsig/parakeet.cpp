@@ -56,40 +56,88 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
 
 ## Measured speed
 
+Machine: AMD Ryzen 9 9950X3D (16 cores, AVX-512 VNNI), CPU backend, base commit
+c8499e6, 2026-09-29. Ultra has the same architecture and shapes as v3, so
+`ultra-q8_0` (converted from the HF weights with `--dtype q8_0`) stands in for a
+Q8_0 v3. The dequantized Redux was also converted to Q8_0 the same way.
+
+### Long clip, one utterance
+
 `transcribe --decoder tdt` on `benchmarks/audio/diverse/i_have_a_dream.wav`
-(180 s, 16 kHz mono), whole process wall time including model load, median of
-5 runs, serialized with `flock`. Machine: AMD Ryzen 9 9950X3D (16 cores, AVX-512
-VNNI), CPU backend, commit c8499e6 plus these docs, 2026-09-29. RTF is 180 s
-divided by the median.
+(180 s), whole process wall time including model load, median of 5 runs, 8
+threads on cores 0-7, serialized with `flock`. RTF is 180 s divided by the median.
 
-| Model | Form | Size on disk | 8 threads (cores 0-7) | RTF | 16 threads (cores 0-15) | RTF |
-|---|---|---:|---:|---:|---:|---:|
-| parakeet-redux | packed ternary, vnni kernel | 213.3 MB | 10.32 s | 17.4 | 9.73 s | 18.5 |
-| parakeet-redux | packed ternary, avx2 kernel | 213.3 MB | 10.66 s | 16.9 | 9.88 s | 18.2 |
-| parakeet-redux | packed ternary, scalar kernel (1 run) | 213.3 MB | 116.39 s | 1.5 | not run | |
-| parakeet-redux | dequantized F16 | 1441.9 MB | 8.98 s | 20.0 | 8.30 s | 21.7 |
-| parakeet-ultra | F16 | 1441.9 MB | 8.90 s | 20.2 | 8.38 s | 21.5 |
-| parakeet-tdt-0.6b-v3 | F16 | 1441.0 MB | 31.25 s | 5.8 | 35.13 s | 5.1 |
+| Model | Form | Size on disk | Median | RTF |
+|---|---|---:|---:|---:|
+| parakeet-redux | packed ternary, vnni kernel | 213.3 MB | 10.32 s | 17.4 |
+| parakeet-redux | packed ternary, avx2 kernel | 213.3 MB | 10.66 s | 16.9 |
+| parakeet-redux | packed ternary, scalar kernel (1 run) | 213.3 MB | 116.39 s | 1.5 |
+| parakeet-redux | dequantized Q8_0 | 941.5 MB | 9.06 s | 19.9 |
+| parakeet-redux | dequantized F16 | 1441.9 MB | 8.98 s | 20.0 |
+| parakeet-ultra | Q8_0 | 941.5 MB | 8.97 s | 20.1 |
+| parakeet-ultra | F16 | 1441.9 MB | 8.90 s | 20.2 |
+| parakeet-tdt-0.6b-v3 | F16 | 1441.0 MB | 31.25 s | 5.8 |
 
-Notes on reading the table:
+With 16 threads (cores 0-15) the F16 and ternary rows move to: ternary vnni
+9.73 s, ternary avx2 9.88 s, Redux F16 8.30 s, Ultra F16 8.38 s, v3 F16 35.13 s.
 
-- The ternary form is 6.8 times smaller than F16, but on this machine it is
-  not faster than the dequantized F16 Redux (about 15 percent slower at 8
-  threads). The ggml F16 matmul is already fast on AVX-512 here. The win of the
-  ternary form is size and memory traffic, and it should matter more on
-  machines with fewer cores or less memory bandwidth (NEON is untested here).
-- The v3 F16 row is slower than the Ultra and Redux rows although the shapes
-  are identical. That gap was not investigated in this task. No Q8_0 v3 row is
-  included: `parakeet-cli quantize` only quantizes F32 inputs, and the
-  available v3 GGUF is F16.
-- Single-thread kernel throughput from `build/tests/bench_ternary` (N=4096,
-  K=1024, T=200): scalar 1.68 GMAC/s, avx2 78.45 GMAC/s, vnni 80.81 GMAC/s.
-- Raw per-run times are in the task report; the first run after a model is
-  first read from disk can be several seconds slower than the rest.
+### Per utterance, LibriSpeech
+
+`parakeet-cli bench --manifest benchmarks/librispeech_manifest.tsv --decoder tdt
+--threads 8` under `taskset -c 0-7`: 100 utterances, 901.1 s of audio, one
+utterance at a time. RTF is total audio over the summed per-utterance processing
+time, median of 3 full passes (the first pass after a model is read from disk
+was the slowest for every model). WER is against the manifest text after
+lowercasing and stripping punctuation; it is from a quick script, not
+`validate_vs_nemo.py`, and is identical across passes.
+
+| Model | Form | RTF pass 1 / 2 / 3 | Median RTF | WER |
+|---|---|---|---:|---:|
+| parakeet-ultra | Q8_0 | 38.1 / 44.3 / 41.8 | 41.8 | 1.71% |
+| parakeet-redux | dequantized F16 | 36.4 / 45.1 / 44.9 | 44.9 | 1.92% |
+| parakeet-redux | dequantized Q8_0 | 35.1 / 43.2 / 40.4 | 40.4 | 1.96% |
+| parakeet-redux | packed ternary, vnni | 32.1 / 39.8 / 39.3 | 39.3 | 1.96% |
+| parakeet-redux | packed ternary, avx2 | 36.2 / 37.7 / 38.7 | 37.7 | 1.96% |
+
+### Single-thread kernel ceiling
+
+`build/tests/bench_ternary N K T 10`, pinned to one core. The ggml rows are
+`ggml_mul_mat` with an F32 activation matrix on one thread, so they include
+ggml's own activation quantization; the ternary rows time only the matmul
+kernel and leave out `ternary_quant_rows`.
+
+| N x K, T | scalar | ternary avx2 | ternary vnni | ggml Q8_0 | ggml F16 |
+|---|---:|---:|---:|---:|---:|
+| 4096 x 1024, T=200 | 1.96 | 79.06 | 82.40 | 87.04 | 117.61 |
+| 1024 x 4096, T=200 | 1.96 | 79.92 | 88.32 | 90.90 | 130.52 |
+| 1024 x 4096, T=1000 | 1.96 | 66.33 | 81.68 | 89.68 | 125.45 |
+
+All numbers are GMAC/s.
+
+### What the data say
+
+- The ternary form is 6.8 times smaller than F16 and 4.4 times smaller than
+  Q8_0, but on this machine it is not faster. The ternary vnni kernel is slower
+  than ggml's Q8_0 kernel in all three shapes (by 5 percent, 3 percent and 9
+  percent) and 30 to 37 percent slower than ggml's F16 kernel.
+- End to end, packed ternary is slower than both Q8_0 and F16 of the same
+  model: 10.32 s against 9.06 s and 8.98 s on the long clip, and a median RTF
+  of 39.3 against 40.4 and 44.9 on LibriSpeech. It is also slower than the
+  ternary-free Ultra Q8_0 (41.8 on LibriSpeech). The gap is small and the
+  LibriSpeech passes are noisy (up to 20 percent between passes), so read it
+  as "no speed win", not as a precise ratio.
+- The avx2 kernel is close to the vnni kernel here (79 against 82 GMAC/s at
+  T=200), so the VNNI instruction adds little. The cause was not profiled.
+- The gain of the ternary form on this machine is size (and memory traffic),
+  not speed. The speed comparison on other CPUs (NEON, fewer cores, less
+  bandwidth) has not been made.
+- The v3 F16 row is 3.5 times slower than Ultra and Redux F16 with identical
+  shapes on the long clip. That gap was not investigated.
+- The scalar kernel is a reference only.
 
 Transcripts on `tests/fixtures/speech.wav` are identical across the scalar,
-avx2 and vnni kernels and the dequantized F16 Redux, and equal the reference
-transcript in `AGENTS.md`.
+avx2 and vnni kernels and the dequantized F16 and Q8_0 Redux, and equal the
+reference transcript in `AGENTS.md`.
 
 ## Tests
 
@@ -100,5 +148,5 @@ PARAKEET_TEST_GGUF_REDUX_KEEP=<redux --ternary keep gguf> \
 PARAKEET_TEST_GGUF_REDUX_DEQ=<redux --ternary dequant gguf> \
     ctest --test-dir build -R test_ternary_model --output-on-failure
 
-build/tests/bench_ternary [N K T reps]                        # per-kernel single thread throughput
+build/tests/bench_ternary [N K T reps]                        # per-kernel single thread throughput, plus ggml Q8_0 and F16 mul_mat
 ```
