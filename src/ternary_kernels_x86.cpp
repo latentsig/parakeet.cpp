@@ -11,6 +11,7 @@ namespace {
 
 #define PK_TGT_AVX2 __attribute__((target("avx2")))
 #define PK_TGT_512 __attribute__((target("avx2,avx512f,avx512vl,avx512vnni")))
+#define PK_TGT_512F __attribute__((target("avx2,avx512f")))
 
 // Both kernels compute the same math as ternary_matmul_rows_ref. One vector
 // lane holds one output row of a 16-row block (see TernaryWeight), so the
@@ -194,7 +195,7 @@ PK_TGT_AVX2 void rows_avx2(const TernaryWeight& w, const uint8_t* act, int T, fl
 // uses max_ps(f, -127) then min_ps(f, 127), which match std::max(-127.f, f)
 // and std::min(127.f, f) including NaN; cvtps rounds to nearest even like
 // lrintf in the default rounding mode. Group sums are exact integers.
-PK_TGT_512 void quant_avx512(const float* x, int K, int t0, int t1, uint8_t* act) {
+PK_TGT_512F void quant_avx512(const float* x, int K, int t0, int t1, uint8_t* act) {
     const int G = K / kTernaryGroup;
     const size_t rb = ternary_act_row_bytes(K);
     const __m512 lo = _mm512_set1_ps(-127.0f), hi = _mm512_set1_ps(127.0f);
