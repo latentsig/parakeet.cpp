@@ -116,6 +116,7 @@ cmake --build build-shared -j
 | `PARAKEET_GGML_METAL`    | OFF     | Forward GGML_METAL to the submodule        |
 | `PARAKEET_GGML_VULKAN`   | OFF     | Forward GGML_VULKAN to the submodule       |
 | `PARAKEET_GGML_HIP`      | OFF     | Forward GGML_HIP (ROCm) to the submodule   |
+| `PARAKEET_WITH_CED`      | ON      | Sound-event detection through ced.cpp      |
 
 To build for a GPU backend, forward its flag, e.g. Apple Metal:
 
@@ -314,6 +315,27 @@ To batch from code, use the batched entry points (single-clip B=1 is just N=1):
 
 - C++ (`src/model.hpp`): `Model::transcribe_16k_batch(pcms16k, decoder)` and `transcribe_16k_batch_with_timestamps(...)` take N clips of 16 kHz mono float PCM and return N results.
 - C-API (`include/parakeet_capi.h`): `parakeet_capi_transcribe_pcm_batch(...)` (N transcripts) and `parakeet_capi_transcribe_pcm_batch_json(...)` (one JSON array of N `{text,words,tokens}` objects). These are what LocalAI's `parakeet-cpp` backend calls to coalesce concurrent requests; it leaves batching off by default and exposes a `batch_max_size` option to opt in.
+
+---
+
+## Sound events
+
+parakeet.cpp can also tag everyday sounds (dog bark, glass breaking, applause,
+alarms, music, and the rest of the 527-class AudioSet ontology) with
+[CED](https://github.com/RicherMans/CED), through the
+[ced.cpp](https://github.com/localai-org/ced.cpp) submodule (`PARAKEET_WITH_CED`,
+on by default). `parakeet-cli scene` combines it with ASR and diarization into
+one time-ordered feed:
+
+```sh
+parakeet-cli scene --model asr.gguf --diar diar.gguf --sound ced-base-q8_0.gguf \
+  --latency low --input audio.wav
+[00:00.4 - 00:03.2]  Speaker 0: mister Quilter is the apostle of the middle classes, and
+[00:24.0 - 00:30.0]  (Chicken, rooster 0.86)
+```
+
+See [`docs/sound.md`](docs/sound.md) for the CED GGUFs, the sound and scene
+stream C-API (ABI v8), and the `--sound-model` server option.
 
 ---
 

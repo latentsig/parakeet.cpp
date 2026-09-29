@@ -4,8 +4,12 @@
 #include "diarization.hpp" // pk::DiarizationModel
 #include "diarization_streaming.hpp" // pk::StreamingDiarization
 #include "streaming.hpp"  // pk::StreamingSession
+#include "ced_tagger.hpp" // pk::CedTagger
+#include "sound_stream.hpp" // pk::SoundStream
 #include "mel.hpp"        // pk::MelFrontend
 #include "sas_merge.hpp"  // pk::merge_asr_diarization, pk::group_speaker_words
+#include "diar_pcm_stream.hpp" // pk::DiarPcmStream
+#include "scene_stream.hpp" // pk::SceneStream
 
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
@@ -13,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -44,14 +49,17 @@
 // v7: speaker diarization (diarize_*), speaker-attributed ASR
 //     (transcribe_and_diarize*, sas_stream_*) and streaming diarization
 //     (diarize_stream_*). A context holds either an ASR or a diarization model.
-#define PARAKEET_CAPI_ABI_VERSION 7
+// v8: sound-event detection (CED), sound_stream_*, scene_stream_*; additive.
+#define PARAKEET_CAPI_ABI_VERSION 8
 
 // The opaque context: a loaded model plus a buffer for the last error message.
-// Exactly one of `model` / `diar` is non-null: ASR models use `model`,
-// diarization models (Sortformer) use `diar`.
+// Exactly one of `model` / `diar` / `tagger` is non-null: ASR models use
+// `model`, diarization models (Sortformer) use `diar`, CED sound-event
+// taggers use `tagger`.
 struct parakeet_ctx {
     std::unique_ptr<pk::Model> model;
     std::unique_ptr<pk::DiarizationModel> diar;
+    std::unique_ptr<pk::CedTagger> tagger;
     std::string last_error;
 };
 
@@ -186,6 +194,15 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
     try {
         auto* ctx = new (std::nothrow) parakeet_ctx();
         if (!ctx) return nullptr;
+
+        // A CED GGUF (general.architecture "ced") is a sound tagger. Check the
+        // header first: the ASR loader would misread it.
+        if (pk::gguf_is_ced(gguf_path)) {
+            ctx->tagger = pk::CedTagger::load(gguf_path);
+            if (ctx->tagger) return ctx;
+            delete ctx;
+            return nullptr;
+        }
 
         // Try ASR first. Model::load returns nullptr if the GGUF is not a
         // valid ASR model (bad/missing file, or arch=="diarization" which
@@ -921,9 +938,9 @@ namespace {
 bool require_diar(parakeet_ctx* ctx) {
     if (!ctx) return false;
     if (!ctx->diar) {
-        ctx->last_error = ctx->model
-            ? "context holds an ASR model; diarize_* needs a diarization model"
-            : "context has no loaded model";
+        ctx->last_error = ctx->model  ? "context holds an ASR model; diarize_* needs a diarization model"
+                         : ctx->tagger ? "context holds a CED sound model; diarize_* needs a diarization model"
+                                       : "context has no loaded model";
         return false;
     }
     return true;
@@ -932,9 +949,23 @@ bool require_diar(parakeet_ctx* ctx) {
 bool require_asr(parakeet_ctx* ctx) {
     if (!ctx) return false;
     if (!ctx->model) {
-        ctx->last_error = ctx->diar
-            ? "context holds a diarization model; an ASR model is needed here"
-            : "context has no loaded model";
+        ctx->last_error = ctx->diar   ? "context holds a diarization model; an ASR model is needed here"
+                         : ctx->tagger ? "context holds a CED sound model; an ASR model is needed here"
+                                       : "context has no loaded model";
+        return false;
+    }
+    return true;
+}
+
+constexpr const char* kNoCed = "built without sound tagging (PARAKEET_WITH_CED=OFF)";
+
+bool require_tagger(parakeet_ctx* ctx) {
+    if (!ctx) return false;
+    if (!pk::CedTagger::available()) { ctx->last_error = kNoCed; return false; }
+    if (!ctx->tagger) {
+        ctx->last_error = ctx->model ? "context holds an ASR model; a CED sound model is needed here"
+                        : ctx->diar  ? "context holds a diarization model; a CED sound model is needed here"
+                                     : "context has no loaded model";
         return false;
     }
     return true;
@@ -1122,47 +1153,10 @@ extern "C" char* parakeet_capi_transcribe_and_diarize_json(parakeet_ctx* asr_ctx
 
 struct parakeet_diar_stream {
     parakeet_ctx* ctx = nullptr;
-    std::unique_ptr<pk::StreamingDiarization> sd;
-    std::unique_ptr<pk::StreamingMel> mel;
-    long long samples_in = 0;     // PCM samples fed so far
-    bool finished = false;
+    std::unique_ptr<pk::DiarPcmStream> ds;
 };
 
 namespace {
-
-// Feed PCM to the stream's mel front end and the diarizer, which runs every
-// chunk whose look-ahead has arrived (and, with is_last, the rest). Closed
-// segments are appended to `segs`. Returns the mel frames diarized by this call.
-long long diar_stream_advance(parakeet_diar_stream* s, const float* pcm, int n, bool is_last,
-                              std::vector<pk::StreamingSpeakerSegment>& segs) {
-    const int n_mels = s->sd->n_mels();
-    const long long done_before = s->sd->frames_done();
-    std::vector<float> mel;
-    int nf = 0;
-    if (n > 0) {
-        mel = s->mel->feed(pcm, n, nf);
-        s->samples_in += n;
-    }
-    if (is_last) {
-        int nt = 0;
-        std::vector<float> tail = s->mel->finalize(nt);
-        // Join the two feat-major blocks, then keep floor(S / hop) frames in
-        // total like NeMo (the centered STFT emits one more).
-        const long long valid = s->samples_in / (long long)s->ctx->diar->config().hop_length;
-        const int keep = (int)std::max(0LL, std::min<long long>(nf + nt, valid - s->sd->frames_in()));
-        std::vector<float> joined((size_t)n_mels * keep);
-        for (int m = 0; m < n_mels; ++m)
-            for (int t = 0; t < keep; ++t)
-                joined[(size_t)m * keep + t] = t < nf ? mel[(size_t)m * nf + t]
-                                                      : tail[(size_t)m * nt + (t - nf)];
-        mel.swap(joined);
-        nf = keep;
-        s->finished = true;
-    }
-    auto closed = s->sd->feed_mel(mel, n_mels, nf, is_last);
-    segs.insert(segs.end(), closed.begin(), closed.end());
-    return s->sd->frames_done() - done_before;
-}
 
 pk::DiarLatency latency_from_int(int latency) {
     switch (latency) {
@@ -1197,12 +1191,10 @@ extern "C" parakeet_diar_stream* parakeet_capi_diarize_stream_begin_latency(para
         return nullptr;
     }
     try {
-        const pk::ModelLoader& ml = diar_ctx->diar->loader();
+        auto ds = std::make_unique<pk::DiarPcmStream>(*diar_ctx->diar, latency_from_int(latency));
         auto* s = new parakeet_diar_stream();
         s->ctx = diar_ctx;
-        s->sd  = std::make_unique<pk::StreamingDiarization>(
-            ml, pk::diar_stream_config(latency_from_int(latency), ml.config()));
-        s->mel = std::make_unique<pk::StreamingMel>(ml);
+        s->ds = std::move(ds);
         diar_ctx->last_error.clear();
         return s;
     } catch (const std::exception& e) {
@@ -1219,18 +1211,18 @@ extern "C" parakeet_diar_stream* parakeet_capi_diarize_stream_begin(parakeet_ctx
 
 extern "C" int parakeet_capi_diarize_stream_chunk_samples(parakeet_diar_stream* s) {
     if (!s) return 0;
-    return s->sd->latency_mel_frames() * (int)s->ctx->diar->config().hop_length;
+    return s->ds->chunk_samples();
 }
 
 extern "C" float parakeet_capi_diarize_stream_time(parakeet_diar_stream* s) {
     if (!s) return 0.0f;
-    return (float)(s->sd->frames_done() * s->sd->frame_sec());
+    return (float)(s->ds->sd().frames_done() * s->ds->sd().frame_sec());
 }
 
 extern "C" int parakeet_capi_diarize_stream_active(parakeet_diar_stream* s,
                                                    parakeet_diar_segment** out, int* n_out) {
     if (!s || !out || !n_out) return 1;
-    if (!to_c_segments(s->sd->open_segments(), out, n_out)) {
+    if (!to_c_segments(s->ds->open_segments(), out, n_out)) {
         s->ctx->last_error = "out of memory";
         return 1;
     }
@@ -1244,10 +1236,10 @@ extern "C" int parakeet_capi_diarize_stream_feed(parakeet_diar_stream* s, const 
     *out = nullptr;
     *n_out = 0;
     if ((!pcm && n_samples > 0) || n_samples < 0) { s->ctx->last_error = "invalid samples buffer"; return 1; }
-    if (s->finished) { s->ctx->last_error = "stream already finished"; return 1; }
+    if (s->ds->finished()) { s->ctx->last_error = "stream already finished"; return 1; }
     try {
         std::vector<pk::StreamingSpeakerSegment> segs;
-        diar_stream_advance(s, pcm, n_samples, is_last != 0, segs);
+        s->ds->feed(pcm, n_samples, is_last != 0, segs);
         if (!to_c_segments(segs, out, n_out)) { s->ctx->last_error = "out of memory"; return 1; }
         s->ctx->last_error.clear();
         return 0;
@@ -1269,39 +1261,39 @@ extern "C" void parakeet_capi_diarize_stream_free(parakeet_diar_stream* s) {
 
 // --- Streaming speaker-attributed ASR ---------------------------------------
 
+// A pk::SceneStream over an ASR and a diarization context (no sound part).
 struct parakeet_sas_stream {
     parakeet_ctx* asr = nullptr;
-    parakeet_diar_stream* diar = nullptr;
-    std::vector<float> audio;     // uncommitted PCM, starting at commit_sec
-    double commit_sec = 0.0;      // stream time of audio[0]
-    std::vector<pk::SpeakerSegment> segs;   // closed diarization segments
-    pk::Word last_word;           // last committed word (absolute times)
-    bool have_last_word = false;
+    parakeet_ctx* diar = nullptr;
+    std::unique_ptr<pk::SceneStream> scene;
 };
-
-namespace {
-
-// Lowercase letters and digits only, for comparing a word heard twice.
-std::string word_key(const std::string& w) {
-    std::string k;
-    for (unsigned char c : w)
-        if (std::isalnum(c) || c >= 0x80) k += (char)std::tolower(c);
-    return k;
-}
-
-}  // namespace
 
 extern "C" parakeet_sas_stream* parakeet_capi_sas_stream_begin_latency(parakeet_ctx* asr_ctx,
                                                                        parakeet_ctx* diar_ctx,
                                                                        int latency) {
     if (!require_asr(asr_ctx) || !require_diar(diar_ctx)) return nullptr;
-    parakeet_diar_stream* d = parakeet_capi_diarize_stream_begin_latency(diar_ctx, latency);
-    if (!d) return nullptr;
-    auto* s = new (std::nothrow) parakeet_sas_stream();
-    if (!s) { parakeet_capi_diarize_stream_free(d); return nullptr; }
-    s->asr = asr_ctx;
-    s->diar = d;
-    return s;
+    if (latency < PARAKEET_DIAR_LATENCY_MODEL || latency > PARAKEET_DIAR_LATENCY_ULTRA_LOW) {
+        diar_ctx->last_error = "unknown diarization latency mode";
+        return nullptr;
+    }
+    try {
+        pk::SceneParts parts;
+        parts.asr = asr_ctx->model.get();
+        parts.diar = diar_ctx->diar.get();
+        parts.diar_latency = latency_from_int(latency);
+        auto scene = std::make_unique<pk::SceneStream>(parts);
+        auto* s = new parakeet_sas_stream();
+        s->asr = asr_ctx;
+        s->diar = diar_ctx;
+        s->scene = std::move(scene);
+        diar_ctx->last_error.clear();
+        return s;
+    } catch (const std::exception& e) {
+        diar_ctx->last_error = e.what();
+    } catch (...) {
+        diar_ctx->last_error = "unknown error";
+    }
+    return nullptr;
 }
 
 extern "C" parakeet_sas_stream* parakeet_capi_sas_stream_begin(parakeet_ctx* asr_ctx,
@@ -1316,88 +1308,307 @@ extern "C" int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float
     *out = nullptr;
     *n_out = 0;
     if ((!pcm && n_samples > 0) || n_samples < 0) { s->asr->last_error = "invalid samples buffer"; return 1; }
-    if (s->diar->finished) { s->asr->last_error = "stream already finished"; return 1; }
-    parakeet_ctx* failed = s->diar->ctx;
+    if (s->scene->finished()) { s->asr->last_error = "stream already finished"; return 1; }
     try {
-        std::vector<pk::StreamingSpeakerSegment> closed;
-        const long long advanced = diar_stream_advance(s->diar, pcm, n_samples, is_last != 0, closed);
-        for (const auto& c : closed) s->segs.push_back({c.speaker, c.start, c.end});
-        if (n_samples > 0) s->audio.insert(s->audio.end(), pcm, pcm + n_samples);
-        if (advanced == 0 && !is_last) return 0;
-
-        // Offline ASR on a short window loses words, so wait until enough
-        // uncommitted, diarized audio has built up (it bounds how often the
-        // text commits, not the speaker latency).
-        constexpr double kSasMinWindowSec = 4.0;
-
-        // Diarized audio ends at frames_done; transcribe the uncommitted span.
-        const double hop_sec = (double)s->diar->ctx->diar->config().hop_length / 16000.0;
-        const double diar_end = s->diar->sd->frames_done() * hop_sec;
-        size_t span = is_last ? s->audio.size()
-                              : std::min(s->audio.size(),
-                                         (size_t)std::max(0.0, (diar_end - s->commit_sec) * 16000.0));
-        if (!is_last && span < (size_t)(kSasMinWindowSec * 16000.0)) return 0;
-        failed = s->asr;
-        std::vector<pk::Word> words;
-        if (span > 0) {
-            const std::vector<float> seg(s->audio.begin(), s->audio.begin() + span);
-            words = s->asr->model->transcribe_with_timestamps(seg, 16000).words;
-        }
-        // Commit only words that end kSasRightContextSec before the cut: the
-        // ASR needs right context, and a word at the edge may be cut in half.
-        // The rest is transcribed again with the next chunk.
-        constexpr double kSasRightContextSec = 1.0;
-        size_t keep = words.size();
-        double next_commit = s->commit_sec + (double)span / 16000.0;
-        if (!is_last) {
-            const double limit = (double)span / 16000.0 - kSasRightContextSec;
-            keep = 0;
-            while (keep < words.size() && words[keep].end <= limit) ++keep;
-            // Resume right after the last committed word: audio the ASR
-            // skipped this time is heard again with more context.
-            next_commit = s->commit_sec + (keep > 0 ? words[keep - 1].end : 0.0);
-        }
-        std::vector<pk::Word> committed(words.begin(), words.begin() + keep);
-        for (auto& w : committed) { w.start += (float)s->commit_sec; w.end += (float)s->commit_sec; }
-        // ASR timestamps are only accurate to a frame or two, so the tail of the
-        // previously committed word can be heard again at the new start.
-        if (s->have_last_word && !committed.empty() &&
-            word_key(committed.front().text) == word_key(s->last_word.text) &&
-            committed.front().start - s->last_word.start < 0.5f) {
-            committed.erase(committed.begin());
-        }
-        if (!committed.empty()) {
-            s->last_word = committed.back();
-            s->have_last_word = true;
-        }
-
-        // Speaker segments known so far: closed ones plus those still open.
-        std::vector<pk::SpeakerSegment> segs = s->segs;
-        for (const auto& o : s->diar->sd->open_segments()) segs.push_back({o.speaker, o.start, o.end});
-        const auto utts = pk::group_speaker_words(pk::merge_asr_diarization(committed, segs));
-
-        const size_t drop = std::min(s->audio.size(),
-                                     (size_t)std::llround((next_commit - s->commit_sec) * 16000.0));
-        s->audio.erase(s->audio.begin(), s->audio.begin() + drop);
-        s->commit_sec += (double)drop / 16000.0;
-        // Segments that ended before the commit point can no longer match a word.
-        s->segs.erase(std::remove_if(s->segs.begin(), s->segs.end(),
-                                     [&](const pk::SpeakerSegment& g) { return g.end < s->commit_sec; }),
-                      s->segs.end());
-
-        if (!to_c_results(utts, out, n_out)) { s->asr->last_error = "out of memory"; return 1; }
+        const pk::SceneUpdate u = s->scene->feed(pcm, n_samples, is_last != 0);
+        if (!to_c_results(u.utterances, out, n_out)) { s->asr->last_error = "out of memory"; return 1; }
+        // Any successful feed clears the ASR ctx's last error, also one
+        // that commits nothing.
         s->asr->last_error.clear();
         return 0;
     } catch (const std::exception& e) {
-        failed->last_error = e.what();
+        (s->scene->failed_part() == pk::ScenePart::Asr ? s->asr : s->diar)->last_error = e.what();
     } catch (...) {
-        failed->last_error = "unknown error";
+        (s->scene->failed_part() == pk::ScenePart::Asr ? s->asr : s->diar)->last_error = "unknown error";
     }
     return 1;
 }
 
 extern "C" void parakeet_capi_sas_stream_free(parakeet_sas_stream* s) {
-    if (!s) return;
-    parakeet_capi_diarize_stream_free(s->diar);
     delete s;
 }
+
+// ---------------------------------------------------------------------------
+// Sound events (ABI v8)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+pk::SoundOpts to_sound_opts(const parakeet_sound_opts* o) {
+    pk::SoundOpts s;
+    if (!o) return s;
+    // Only read fields the caller's struct has (size versioning).
+    auto has = [&](size_t end) { return o->size >= (int)end; };
+    if (has(offsetof(parakeet_sound_opts, hop_sec) + sizeof(float))) {
+        s.window_sec = o->window_sec;
+        s.hop_sec = o->hop_sec;
+    }
+    if (has(offsetof(parakeet_sound_opts, min_duration_sec) + sizeof(float))) {
+        s.on_threshold = o->on_threshold;
+        s.off_threshold = o->off_threshold;
+        s.min_duration_sec = o->min_duration_sec;
+    }
+    if (has(offsetof(parakeet_sound_opts, top_k) + sizeof(int))) s.top_k = o->top_k;
+    return s;
+}
+
+bool to_c_sound_segments(const std::vector<pk::SoundSegment>& in, const pk::CedTagger& t,
+                         parakeet_sound_segment** out, int* n_out) {
+    *out = nullptr;
+    *n_out = 0;
+    if (in.empty()) return true;
+    auto* a = static_cast<parakeet_sound_segment*>(std::malloc(in.size() * sizeof(parakeet_sound_segment)));
+    if (!a) return false;
+    for (size_t i = 0; i < in.size(); ++i) {
+        const char* l = t.label(in[i].cls);
+        a[i] = {in[i].cls, l ? l : "", in[i].start, in[i].end, in[i].peak};
+    }
+    *out = a;
+    *n_out = (int)in.size();
+    return true;
+}
+
+} // namespace
+
+struct parakeet_sound_stream {
+    parakeet_ctx* ctx = nullptr;
+    std::unique_ptr<pk::SoundStream> ss;
+};
+
+extern "C" void parakeet_capi_sound_opts_default(parakeet_sound_opts* o) {
+    if (!o) return;
+    const pk::SoundOpts d;
+    *o = {(int)sizeof(*o), d.window_sec, d.hop_sec, d.on_threshold, d.off_threshold,
+          d.min_duration_sec, d.top_k};
+}
+
+extern "C" parakeet_sound_stream* parakeet_capi_sound_stream_begin(parakeet_ctx* tagger,
+                                                                   const parakeet_sound_opts* o) {
+    if (!require_tagger(tagger)) return nullptr;
+    try {
+        const pk::SoundOpts so = to_sound_opts(o);
+        const std::string err = pk::validate_sound_opts(so, tagger->tagger->n_classes());
+        if (!err.empty()) { tagger->last_error = "invalid sound options: " + err; return nullptr; }
+        auto* s = new parakeet_sound_stream();
+        s->ctx = tagger;
+        s->ss = std::make_unique<pk::SoundStream>(tagger->tagger->scorer(),
+                                                  tagger->tagger->n_classes(), so);
+        tagger->last_error.clear();
+        return s;
+    } catch (const std::exception& e) {
+        tagger->last_error = e.what();
+    } catch (...) {
+        tagger->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" int parakeet_capi_sound_stream_feed(parakeet_sound_stream* s, const float* pcm, int n,
+                                               int is_last, parakeet_sound_segment** out, int* n_out) {
+    if (!s || !out || !n_out) return 1;
+    *out = nullptr;
+    *n_out = 0;
+    if ((!pcm && n > 0) || n < 0) { s->ctx->last_error = "invalid samples buffer"; return 1; }
+    if (s->ss->finished()) { s->ctx->last_error = "stream already finished"; return 1; }
+    try {
+        auto closed = s->ss->feed(pcm, n, is_last != 0);
+        if (!to_c_sound_segments(closed, *s->ctx->tagger, out, n_out)) {
+            s->ctx->last_error = "out of memory";
+            return 1;
+        }
+        s->ctx->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        s->ctx->last_error = e.what();
+        const std::string& detail = s->ctx->tagger->last_error();
+        if (!detail.empty()) s->ctx->last_error += ": " + detail;
+    } catch (...) {
+        s->ctx->last_error = "unknown error";
+    }
+    return 1;
+}
+
+extern "C" int parakeet_capi_sound_stream_active(parakeet_sound_stream* s,
+                                                 parakeet_sound_segment** out, int* n_out) {
+    if (!s || !out || !n_out) return 1;
+    *out = nullptr;
+    *n_out = 0;
+    try {
+        if (!to_c_sound_segments(s->ss->open_segments(), *s->ctx->tagger, out, n_out)) {
+            s->ctx->last_error = "out of memory";
+            return 1;
+        }
+        s->ctx->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        s->ctx->last_error = e.what();
+    } catch (...) {
+        s->ctx->last_error = "unknown error";
+    }
+    return 1;
+}
+
+extern "C" char* parakeet_capi_sound_stream_drain_scores_json(parakeet_sound_stream* s) {
+    if (!s) return nullptr;
+    try {
+        const pk::CedTagger& t = *s->ctx->tagger;
+        char* out = dup_to_c(pk::sound_windows_to_json(s->ss->drain_windows(),
+                                                        [&](int i) { return t.label(i); }));
+        s->ctx->last_error.clear();
+        return out;
+    } catch (const std::exception& e) {
+        s->ctx->last_error = e.what();
+    } catch (...) {
+        s->ctx->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" void parakeet_capi_free_sound_segments(parakeet_sound_segment* segs) { std::free(segs); }
+
+extern "C" void parakeet_capi_sound_stream_free(parakeet_sound_stream* s) { delete s; }
+
+// ---------------------------------------------------------------------------
+// Sound events (ABI v8): CED tagger introspection
+// ---------------------------------------------------------------------------
+
+extern "C" int parakeet_capi_num_classes(const parakeet_ctx* ctx) {
+    return (ctx && ctx->tagger) ? ctx->tagger->n_classes() : -1;
+}
+
+extern "C" const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index) {
+    return (ctx && ctx->tagger) ? ctx->tagger->label(index) : nullptr;
+}
+
+extern "C" int parakeet_capi_model_kind(const parakeet_ctx* ctx) {
+    if (!ctx) return PARAKEET_MODEL_KIND_NONE;
+    if (ctx->model) return PARAKEET_MODEL_KIND_ASR;
+    if (ctx->diar) return PARAKEET_MODEL_KIND_DIARIZATION;
+    if (ctx->tagger) return PARAKEET_MODEL_KIND_SOUND;
+    return PARAKEET_MODEL_KIND_NONE;
+}
+
+// ---------------------------------------------------------------------------
+// Combined scene stream (ABI v8)
+// ---------------------------------------------------------------------------
+
+// A pk::SceneStream over up to three contexts (ASR, diarization, tagger).
+struct parakeet_scene_stream {
+    parakeet_ctx* asr_ctx = nullptr;
+    parakeet_ctx* diar_ctx = nullptr;
+    parakeet_ctx* tagger_ctx = nullptr;
+    std::unique_ptr<pk::SceneStream> scene;
+    std::string last_error;
+};
+
+namespace {
+
+// Which context was running when the scene stream last threw, mirroring the
+// sas_stream wrapper's diar/asr attribution, extended with the tagger.
+parakeet_ctx* scene_failed_ctx(parakeet_scene_stream* s) {
+    switch (s->scene->failed_part()) {
+        case pk::ScenePart::Diarization: return s->diar_ctx ? s->diar_ctx : s->asr_ctx;
+        case pk::ScenePart::Asr:         return s->asr_ctx ? s->asr_ctx : s->diar_ctx;
+        case pk::ScenePart::Sound:       return s->tagger_ctx;
+        default:                         return s->asr_ctx ? s->asr_ctx
+                                                : s->diar_ctx ? s->diar_ctx : s->tagger_ctx;
+    }
+}
+
+}  // namespace
+
+extern "C" void parakeet_capi_scene_opts_default(parakeet_scene_opts* o) {
+    if (!o) return;
+    o->size = (int)sizeof(*o);
+    o->diar_latency = PARAKEET_DIAR_LATENCY_MODEL;
+    parakeet_capi_sound_opts_default(&o->sound);
+    o->flags = 0;
+}
+
+extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parakeet_ctx* diar,
+                                                                    parakeet_ctx* tagger,
+                                                                    const parakeet_scene_opts* o) {
+    if (!asr && !diar && !tagger) return nullptr;
+    if ((asr && !require_asr(asr)) || (diar && !require_diar(diar)) || (tagger && !require_tagger(tagger)))
+        return nullptr;
+    parakeet_scene_opts def;
+    parakeet_capi_scene_opts_default(&def);
+    if (!o) o = &def;
+    if (o->size >= (int)(offsetof(parakeet_scene_opts, flags) + sizeof(int)) && o->flags != 0) {
+        (asr ? asr : diar ? diar : tagger)->last_error = "scene flags must be 0";
+        return nullptr;
+    }
+    if (diar && (o->diar_latency < PARAKEET_DIAR_LATENCY_MODEL ||
+                 o->diar_latency > PARAKEET_DIAR_LATENCY_ULTRA_LOW)) {
+        diar->last_error = "unknown diarization latency mode";
+        return nullptr;
+    }
+    try {
+        pk::SceneParts p;
+        p.asr = asr ? asr->model.get() : nullptr;
+        p.diar = diar ? diar->diar.get() : nullptr;
+        p.diar_latency = latency_from_int(o->diar_latency);
+        p.tagger = tagger ? tagger->tagger.get() : nullptr;
+        p.sound = to_sound_opts(&o->sound);
+        if (tagger) {
+            const std::string err = pk::validate_sound_opts(p.sound, tagger->tagger->n_classes());
+            if (!err.empty()) { tagger->last_error = "invalid sound options: " + err; return nullptr; }
+        }
+        auto* s = new parakeet_scene_stream();
+        s->asr_ctx = asr;
+        s->diar_ctx = diar;
+        s->tagger_ctx = tagger;
+        s->scene = std::make_unique<pk::SceneStream>(p);
+        if (asr) asr->last_error.clear();
+        if (diar) diar->last_error.clear();
+        if (tagger) tagger->last_error.clear();
+        return s;
+    } catch (const std::exception& e) {
+        (asr ? asr : diar ? diar : tagger)->last_error = e.what();
+    } catch (...) {
+        (asr ? asr : diar ? diar : tagger)->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, const float* pcm,
+                                                       int n, int is_last) {
+    if (!s) return nullptr;
+    if ((!pcm && n > 0) || n < 0) { s->last_error = "invalid samples buffer"; return nullptr; }
+    if (s->scene->finished()) { s->last_error = "stream already finished"; return nullptr; }
+    try {
+        const pk::SceneUpdate u = s->scene->feed(pcm, n, is_last != 0);
+        const pk::CedTagger* t = s->tagger_ctx ? s->tagger_ctx->tagger.get() : nullptr;
+        s->last_error.clear();
+        return dup_to_c(pk::scene_update_to_json(u, [t](int i) { return t ? t->label(i) : nullptr; }));
+    } catch (const std::exception& e) {
+        s->last_error = e.what();
+        if (parakeet_ctx* c = scene_failed_ctx(s)) c->last_error = e.what();
+    } catch (...) {
+        s->last_error = "unknown error";
+        if (parakeet_ctx* c = scene_failed_ctx(s)) c->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s) {
+    if (!s) return nullptr;
+    try {
+        const pk::CedTagger* t = s->tagger_ctx ? s->tagger_ctx->tagger.get() : nullptr;
+        char* out = dup_to_c(pk::sound_windows_to_json(s->scene->drain_windows(),
+                                                        [t](int i) { return t ? t->label(i) : nullptr; }));
+        s->last_error.clear();
+        return out;
+    } catch (const std::exception& e) {
+        s->last_error = e.what();
+    } catch (...) {
+        s->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stream* s) {
+    return s ? s->last_error.c_str() : "";
+}
+
+extern "C" void parakeet_capi_scene_stream_free(parakeet_scene_stream* s) { delete s; }

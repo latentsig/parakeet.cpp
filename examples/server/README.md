@@ -88,10 +88,21 @@ with open("audio.wav", "rb") as f:
     print(client.audio.transcriptions.create(model="parakeet", file=f).text)
 ```
 
+## Sound events
+
+Pass `--sound-model <ced.gguf>` with a local path to a ced.cpp sound-event
+tagger GGUF. When set, a `verbose_json` response gains a `sound_events` array,
+one entry per detected event: `{"label","start","end","score"}`. `json` and
+`text` responses are unchanged, and the sound pass only runs for
+`verbose_json` requests, so other requests never pay for it. `--sound-model`
+takes a local path only, it is not resolved through the alias/URL model
+fetcher used by `--model`.
+
 ## Supported
 
 - `response_format`: `json` (default), `text`, `verbose_json`.
 - `timestamp_granularities[]=word` adds a `words` array to `verbose_json`.
+- `--sound-model` adds a `sound_events` array to `verbose_json`.
 
 ## Known simplifications
 

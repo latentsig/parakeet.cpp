@@ -8,7 +8,6 @@
 #include <cstdint>
 
 // dr_wav writer is only needed in the test; include without implementation
-// (DR_WAV_IMPLEMENTATION lives in audio_io.cpp, linked via parakeet)
 #include "dr_wav.h"
 
 static void write_sine(const char* path, int sr, int n, float freq) {

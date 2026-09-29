@@ -80,8 +80,14 @@ src/                 libparakeet implementation
                        diarization_encoder/head.*, RoPE Transformer encoder + speaker head
                        diarization_streaming.*, NeMo cache-aware streaming diarization (speaker cache + FIFO)
                        sas_merge.hpp/cpp  , ASR words x speaker segments -> speaker-attributed utterances
+                       asr_committer.hpp/cpp, shared "finalize a word/utterance once" logic used by SAS and SceneStream
+                       ced_tagger.hpp/cpp , pk::CedTagger: loads a CED GGUF (ced.cpp) into a tagger context, pk::SoundScorer
+                       sound_stream.hpp/cpp, pk::SoundStream: sliding-window sound-event detection over live PCM
+                       scene_stream.hpp/cpp, pk::SceneStream: combined ASR + diarization + sound-event stream
+                       scene_render.hpp/cpp, pk::SceneRenderer + format_span/is_speech_label: `parakeet-cli scene` text rendering
 examples/cli/        parakeet-cli binary
-                       subcommands: info, transcribe (+ --stream), quantize
+                       subcommands: info, transcribe (+ --stream), quantize, scene (ASR + diar + sound, one time-ordered feed)
+                       sound-window-eval: measures CED short-window accuracy vs whole-clip top-1
                      diarize binary: diarize <diar.gguf> <wav> [--stream]
 scripts/             Python tooling
                        convert_parakeet_to_gguf.py, .nemo/.hf -> GGUF (--dtype f32|f16|q8_0)
@@ -111,6 +117,12 @@ tests/               ctest targets
                        test_streaming_diarization.cpp, streaming diarization == NeMo streaming, every latency mode (same baseline)
                        test_combined_offline.cpp, SAS + streaming diarization/SAS through the C-API
                        test_sas_merge.cpp      , SAS merge/grouping (model-independent)
+                       test_asr_committer.cpp  , shared word/utterance finalize logic (model-independent)
+                       test_ced_parity.cpp     , CedTagger scores == ced.cpp PyTorch baseline (PARAKEET_TEST_CED_GGUF f32 + PARAKEET_TEST_CED_BASELINE)
+                       test_sound_stream.cpp   , pk::SoundStream windowing/on-off-min_duration logic (model-independent)
+                       test_sound_capi.cpp     , sound_stream_* C-API (PARAKEET_TEST_CED_GGUF)
+                       test_scene_stream.cpp   , pk::SceneStream / scene_stream_* C-API, all three models together (PARAKEET_TEST_GGUF + PARAKEET_TEST_DIAR_GGUF + PARAKEET_TEST_CED_GGUF)
+                       test_scene_render.cpp   , SceneRenderer / format_span / is_speech_label (model-independent)
                        python/check_convert.py , converter round-trip (model-dependent)
                        python/check_baseline.py, baseline dumper (model-dependent)
                        fixtures/clip.wav       , 2 s 16 kHz mono WAV for stage parity tests
@@ -118,6 +130,10 @@ tests/               ctest targets
                        fixtures/two_speakers.wav, LibriSpeech 1272 + 2086 alternating A-B-A-B, 23.6 s
 third_party/         vendored deps
                        ggml/     , submodule pinned at v0.13.0
+                       ced.cpp/  , submodule, CED sound-event tagger (PARAKEET_WITH_CED, on by default);
+                                   built as a static `ced` target linked into libparakeet, not a separate
+                                   process; dr_wav is shared via CED_EXTERNAL_DR_WAV so there is one
+                                   DR_WAV_IMPLEMENTATION in the whole build
                        dr_wav.h  , vendored single header
 models/              output dir for converted GGUFs (gitignored;
                        MANIFEST.md tracks the expected published set)
@@ -147,6 +163,7 @@ cmake -B build -DPARAKEET_BUILD_TESTS=ON -DGGML_NATIVE=ON && cmake --build build
 | `PARAKEET_GGML_METAL`    | OFF     | Forward GGML_METAL to the submodule        |
 | `PARAKEET_GGML_VULKAN`   | OFF     | Forward GGML_VULKAN to the submodule       |
 | `PARAKEET_GGML_HIPBLAS`  | OFF     | Forward GGML_HIPBLAS to the submodule      |
+| `PARAKEET_WITH_CED`      | ON      | Sound-event detection through ced.cpp      |
 
 Use `-DGGML_NATIVE=OFF` when building for CI or portable binaries.
 
@@ -238,6 +255,7 @@ The binary is at `build/examples/cli/parakeet-cli`.
 parakeet-cli info <model.gguf>
 parakeet-cli transcribe --model <model.gguf> --input <audio.wav> [--decoder ctc|tdt] [--stream] [--timestamps] [--json]
 parakeet-cli quantize <in.gguf> <out.gguf> <type>
+parakeet-cli scene [--model <asr.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>] --input <audio.wav> [--latency model|low|very_low|ultra_low] [--chunk-ms N] [--show-speech] [--json]
 ```
 
 `--timestamps` prints one `<start>-<end>  <word>  (<conf>)` line per word (also
@@ -280,6 +298,33 @@ parakeet_capi_free_sas_results                 # frees the array and every .text
 parakeet_capi_diarize_stream_begin / _begin_latency / _feed / _active / _time / _free / _chunk_samples
 parakeet_capi_free_diar_segments
 parakeet_capi_sas_stream_begin / _begin_latency / _feed / _free
+```
+
+Sound-event detection (ABI v8, additive; not used by LocalAI yet). A CED GGUF
+(ced.cpp) loads into its own `parakeet_ctx` kind (a "tagger") through the same
+`parakeet_capi_load`; see `docs/sound.md`:
+
+```
+parakeet_capi_sound_opts_default
+parakeet_capi_sound_stream_begin / _feed / _active / _drain_scores_json / _free
+parakeet_capi_free_sound_segments
+parakeet_capi_num_classes
+parakeet_capi_class_label
+parakeet_capi_model_kind        # which kind of ctx (NONE/ASR/DIARIZATION/SOUND)
+```
+
+Combined scene stream (ABI v8, additive; not used by LocalAI yet). One stream
+that carries any mix of an ASR context, a diarization context, and a tagger
+context, and emits speaker-attributed words/utterances plus sound-event
+segments in one time-ordered JSON document per feed; see `docs/sound.md`:
+
+```
+parakeet_capi_scene_opts_default
+parakeet_capi_scene_stream_begin
+parakeet_capi_scene_stream_feed_json
+parakeet_capi_scene_stream_drain_scores_json
+parakeet_capi_scene_stream_last_error
+parakeet_capi_scene_stream_free
 ```
 
 `parakeet_capi_transcribe_path_json(ctx, wav, decoder)` returns malloc'd UTF-8

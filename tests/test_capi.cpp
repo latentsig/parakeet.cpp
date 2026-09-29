@@ -38,6 +38,12 @@ int main() {
         return 1;
     }
 
+    // A NULL context reports PARAKEET_MODEL_KIND_NONE.
+    if (parakeet_capi_model_kind(nullptr) != PARAKEET_MODEL_KIND_NONE) {
+        std::fprintf(stderr, "test_capi: model_kind(NULL) != NONE\n");
+        return 1;
+    }
+
     // The 110m anchor (PARAKEET_TEST_GGUF) and the prompt/multilingual model
     // (PARAKEET_TEST_GGUF_NEMOTRON) are independent: each block runs only when
     // its env var is set. If NEITHER is set the test skips (77).
@@ -49,6 +55,12 @@ int main() {
         parakeet_ctx* ctx = parakeet_capi_load(gguf);
         if (!ctx) {
             std::fprintf(stderr, "test_capi: parakeet_capi_load failed for %s\n", gguf);
+            return 1;
+        }
+
+        if (parakeet_capi_model_kind(ctx) != PARAKEET_MODEL_KIND_ASR) {
+            std::fprintf(stderr, "test_capi: model_kind(ASR ctx) != ASR\n");
+            parakeet_capi_free(ctx);
             return 1;
         }
 

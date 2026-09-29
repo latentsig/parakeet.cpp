@@ -63,6 +63,17 @@ int main() {
     check(contains(e, "\"message\":\"bad\""), "error message");
     check(contains(e, "\"type\":\"invalid_request_error\""), "error type");
 
+    {
+        std::vector<SoundEventOut> se = {{"Knock", 9.0, 10.0, 0.81}};
+        Response v = format_transcription(tr, Format::kVerboseJson, 12.0, false, &se);
+        check(contains(v.body, "\"sound_events\":[{\"label\":\"Knock\",\"start\":9.000,\"end\":10.000,\"score\":0.8100}]"),
+              "verbose_json sound_events");
+        Response j = format_transcription(tr, Format::kJson, 12.0, false, &se);
+        check(!contains(j.body, "sound_events"), "json has no sound_events");
+        Response none = format_transcription(tr, Format::kVerboseJson, 12.0, false);
+        check(!contains(none.body, "sound_events"), "no sounds -> no field");
+    }
+
     if (fails) { std::fprintf(stderr, "%d checks failed\n", fails); return 1; }
     std::printf("test_server_format: OK\n");
     return 0;

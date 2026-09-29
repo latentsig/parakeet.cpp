@@ -1,6 +1,7 @@
 #pragma once
 #include "transcription.hpp"   // pk::Transcription, pk::Word
 #include <string>
+#include <vector>
 
 namespace pkserver {
 
@@ -15,12 +16,21 @@ struct Response {
     std::string content_type;
 };
 
+// One closed sound event, ready for JSON formatting. Mirrors pk::SoundSegment
+// but with the class index already resolved to a label string.
+struct SoundEventOut {
+    std::string label;
+    double start, end, score;
+};
+
 // Build the response body and content type for a finished transcription.
 // duration_sec is the decoded audio length in seconds. include_words controls
 // whether the verbose_json "words" array is emitted (OpenAI gates it on
-// timestamp_granularities[] containing "word").
+// timestamp_granularities[] containing "word"). When sounds is non-null and
+// fmt is kVerboseJson, a "sound_events" array is appended to the body.
 Response format_transcription(const pk::Transcription& tr, Format fmt,
-                              double duration_sec, bool include_words);
+                              double duration_sec, bool include_words,
+                              const std::vector<SoundEventOut>* sounds = nullptr);
 
 // JSON-escape a UTF-8 string (quote, backslash, control chars). Exposed for the
 // error envelope and tests.

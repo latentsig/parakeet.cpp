@@ -17,6 +17,7 @@ option(PARAKEET_GGML_CUDA   "Forward GGML_CUDA" OFF)
 option(PARAKEET_GGML_METAL  "Forward GGML_METAL" OFF)
 option(PARAKEET_GGML_VULKAN "Forward GGML_VULKAN" OFF)
 option(PARAKEET_GGML_HIP "Forward GGML_HIP (ROCm)" OFF)
+option(PARAKEET_WITH_CED "Sound-event detection through ced.cpp" ON)
 
 set(GGML_CUDA    ${PARAKEET_GGML_CUDA}   CACHE BOOL "" FORCE)
 set(GGML_METAL   ${PARAKEET_GGML_METAL}  CACHE BOOL "" FORCE)
@@ -63,6 +64,33 @@ endif()
 
 add_subdirectory(third_party/ggml)
 
+# Single dr_wav implementation for the whole build. src/audio_io.cpp only
+# declares dr_wav's functions (#include "dr_wav.h", no DR_WAV_IMPLEMENTATION);
+# this object library is the one translation unit that defines them, so both
+# libparakeet and, when PARAKEET_WITH_CED is on, ced.cpp (built with
+# CED_EXTERNAL_DR_WAV, which likewise only declares them) link against the
+# same symbols instead of each pulling in its own copy (a second
+# DR_WAV_IMPLEMENTATION define would be a multiple-definition link error).
+# An OBJECT library's objects are linked directly into each consumer rather
+# than referenced as a separate archive dependency, so this does not create a
+# link-time cycle between the parakeet and ced targets.
+add_library(dr_wav_impl OBJECT src/dr_wav_impl.cpp)
+target_include_directories(dr_wav_impl PRIVATE ${CMAKE_SOURCE_DIR}/third_party)
+set_target_properties(dr_wav_impl PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+if(PARAKEET_WITH_CED)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ced.cpp/CMakeLists.txt")
+    message(FATAL_ERROR "third_party/ced.cpp is missing: run `git submodule update --init --recursive`, or configure with -DPARAKEET_WITH_CED=OFF")
+  endif()
+  set(CED_BUILD_CLI OFF CACHE BOOL "" FORCE)
+  set(CED_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(CED_SHARED OFF CACHE BOOL "" FORCE)
+  set(CED_EXTERNAL_DR_WAV ON CACHE BOOL "" FORCE)   # dr_wav_impl provides it
+  add_subdirectory(third_party/ced.cpp EXCLUDE_FROM_ALL)
+  set_target_properties(ced PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_link_libraries(ced PRIVATE dr_wav_impl)
+endif()
+
 set(PARAKEET_SRC
     src/parakeet.cpp
     src/model.cpp
@@ -97,7 +125,13 @@ set(PARAKEET_SRC
     src/diarization_encoder.cpp
     src/diarization_head.cpp
     src/sas_merge.cpp
-    src/diarization_streaming.cpp)
+    src/asr_committer.cpp
+    src/diar_pcm_stream.cpp
+    src/scene_stream.cpp
+    src/diarization_streaming.cpp
+    src/ced_tagger.cpp
+    src/sound_stream.cpp
+    src/scene_render.cpp)
 
 if(PARAKEET_SHARED)
   add_library(parakeet SHARED ${PARAKEET_SRC})
@@ -113,6 +147,12 @@ target_include_directories(parakeet PUBLIC include PRIVATE src ${CMAKE_SOURCE_DI
 target_compile_definitions(parakeet PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>)
 target_compile_definitions(parakeet PRIVATE PARAKEET_VERSION="${PARAKEET_VERSION}")
 target_link_libraries(parakeet PUBLIC ggml)
+target_link_libraries(parakeet PRIVATE dr_wav_impl)
+
+if(PARAKEET_WITH_CED)
+  target_link_libraries(parakeet PRIVATE ced)
+  target_compile_definitions(parakeet PRIVATE PARAKEET_WITH_CED=1)
+endif()
 
 if(PARAKEET_BUILD_CLI)
   add_subdirectory(examples/cli)

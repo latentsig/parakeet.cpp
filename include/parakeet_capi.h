@@ -55,6 +55,9 @@ typedef struct parakeet_ctx parakeet_ctx;
 //     Additive, same ABI: parakeet_capi_diarize_stream_begin_latency /
 //     _time / _active and parakeet_capi_sas_stream_begin_latency (the model
 //     card's 1.04 / 0.64 / 0.32 s streaming modes).
+// v8: sound-event detection (CED), sound_stream_*, scene_stream_*; additive.
+//     A CED GGUF loads into a third parakeet_ctx kind (a "tagger"); no
+//     existing signatures changed.
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -478,6 +481,96 @@ int parakeet_capi_sas_stream_feed(parakeet_sas_stream* s, const float* pcm,
                                   parakeet_sas_result** out, int* n_out);
 
 void parakeet_capi_sas_stream_free(parakeet_sas_stream* s);
+
+// --- Sound events (ABI v8) --------------------------------------------------
+// A CED GGUF (ced.cpp) loads with parakeet_capi_load into a "tagger" context.
+
+typedef struct {
+    int   size;                    // sizeof(parakeet_sound_opts), for versioning
+    float window_sec, hop_sec;
+    float on_threshold, off_threshold, min_duration_sec;
+    int   top_k;                   // per-window scores kept for the drain
+} parakeet_sound_opts;
+void parakeet_capi_sound_opts_default(parakeet_sound_opts* o);
+
+typedef struct {
+    int         class_index;
+    const char* label;             // borrowed from the tagger ctx
+    float       start, end, peak;  // seconds from stream start
+} parakeet_sound_segment;
+
+typedef struct parakeet_sound_stream parakeet_sound_stream;
+
+// NULL opts = defaults. NULL on error (last_error on tagger).
+parakeet_sound_stream* parakeet_capi_sound_stream_begin(parakeet_ctx* tagger,
+                                                        const parakeet_sound_opts* o);
+// Segments that closed since the previous call; is_last closes all.
+int   parakeet_capi_sound_stream_feed(parakeet_sound_stream* s, const float* pcm, int n,
+                                      int is_last, parakeet_sound_segment** out, int* n_out);
+// Still-open segments, end = current stream time.
+int   parakeet_capi_sound_stream_active(parakeet_sound_stream* s,
+                                        parakeet_sound_segment** out, int* n_out);
+// [{"start":..,"end":..,"tags":[{"index":..,"label":..,"score":..}]}], windows
+// since the previous drain. Free with parakeet_capi_free_string. The stream
+// keeps one entry per hop until drained: drain regularly, or set top_k = 0
+// to keep no scores.
+char* parakeet_capi_sound_stream_drain_scores_json(parakeet_sound_stream* s);
+void  parakeet_capi_free_sound_segments(parakeet_sound_segment* segs);
+void  parakeet_capi_sound_stream_free(parakeet_sound_stream* s);
+
+// Tagger introspection: -1 / NULL on a context that is not a tagger.
+int         parakeet_capi_num_classes(const parakeet_ctx* ctx);
+const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);
+
+// Which kind of model a context holds, so a caller loading through the same
+// parakeet_capi_load can dispatch without probing individual entry points.
+#define PARAKEET_MODEL_KIND_NONE        0
+#define PARAKEET_MODEL_KIND_ASR         1
+#define PARAKEET_MODEL_KIND_DIARIZATION 2
+#define PARAKEET_MODEL_KIND_SOUND       3
+int parakeet_capi_model_kind(const parakeet_ctx* ctx);
+
+// --- Combined scene stream (ABI v8) -----------------------------------------
+// ASR, diarization and sound-event tagging over one live 16 kHz mono PCM
+// stream. Any of the three contexts may be NULL; at least one is required.
+// Borrows the contexts it is given (same lifetime rule as sas_stream /
+// sound_stream): free the scene stream first.
+
+typedef struct {
+    int size;                    // sizeof(parakeet_scene_opts), for versioning
+    int diar_latency;            // PARAKEET_DIAR_LATENCY_*, used only with a diar ctx
+    parakeet_sound_opts sound;   // used only with a tagger ctx
+    int flags;                   // reserved, must be 0
+} parakeet_scene_opts;
+void parakeet_capi_scene_opts_default(parakeet_scene_opts* o);
+
+typedef struct parakeet_scene_stream parakeet_scene_stream;
+
+// Any context may be NULL; at least one must be given. NULL opts = defaults.
+// NULL on error: with an all-NULL call there is no context to report on, so
+// nothing is set; otherwise last_error is set on the context of the wrong
+// kind, on the diar ctx for an unknown diar_latency ("unknown diarization
+// latency mode"), or, on an internal failure, on the part that failed.
+parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parakeet_ctx* diar,
+                                                         parakeet_ctx* tagger,
+                                                         const parakeet_scene_opts* o);
+
+// Everything finalized by this call, as one JSON document (see docs/sound.md
+// for the shape: "t", "utterances", "words", "speakers", "sounds", "active").
+// NULL on error. Free with parakeet_capi_free_string. After an error, later
+// timestamps may be misaligned (the parts that did not see the failed chunk
+// lag behind), so end the stream instead of feeding it more.
+char* parakeet_capi_scene_stream_feed_json(parakeet_scene_stream* s, const float* pcm, int n,
+                                           int is_last);
+
+// Same shape as parakeet_capi_sound_stream_drain_scores_json; "[]" without a
+// tagger. Free with parakeet_capi_free_string. Scores are kept until drained:
+// drain regularly, or set sound.top_k = 0 to keep no scores.
+char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s);
+
+// Last error of this stream, "" if none. Borrowed.
+const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stream* s);
+void  parakeet_capi_scene_stream_free(parakeet_scene_stream* s);
 
 #ifdef __cplusplus
 } // extern "C"
