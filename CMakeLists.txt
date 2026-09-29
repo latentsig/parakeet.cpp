@@ -115,6 +115,7 @@ set(PARAKEET_SRC
     src/prediction.cpp
     src/joint.cpp
     src/prompt_kernel.cpp
+    src/ternary.cpp
     src/tdt.cpp
     src/rnnt.cpp
     src/transducer_batch.cpp
