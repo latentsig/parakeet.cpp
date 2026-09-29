@@ -32,11 +32,18 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
 ## Runtime path
 
 1. At load time `ternary_prepare` repacks every `qweight` once into a
-   kernel layout: per row, 32 bytes per 128 columns, with the 2-bit codes of
-   elements j, j+32, j+64 and j+96 in one byte. The packed bytes stay in the
-   GGUF as they are; nothing is dequantized per call.
+   kernel layout with 2 bits per weight (the same size as the upstream
+   bytes). Rows are grouped in blocks of 16, padded with zeros at the end.
+   For each block and each run of 16 columns there are 64 bytes: byte
+   4*i + j holds the codes of row i at columns 4p + j of the run, for
+   p = 0..3, in its four bit pairs. The kernels keep one output row per
+   vector lane, so a group sum for 16 rows comes out in one vector with no
+   horizontal reduction. The exact layout is in `TernaryWeight` in
+   `src/ternary.hpp`. Nothing is dequantized per call.
 2. At run time the activations of each ternary linear are quantized to int8
-   per token (one float scale and one int32 sum per 128-column group).
+   per token (one float scale and one int32 sum per 128-column group). The
+   scalar version defines the bytes; the AVX-512 and AVX2 versions write the
+   same bytes.
 3. The layer is a pair of ggml custom ops: one quantizes the activations, one
    runs the integer matmul and applies the scales. The dot product uses
    `code * int8` sums with the constant offset removed through the group sums.
@@ -44,6 +51,7 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
    then AVX2, then a scalar reference. All kernels are bit-identical to the
    scalar reference. `PARAKEET_TERNARY_KERNEL=scalar|avx2|vnni|neon` forces one
    (an unavailable name falls back to automatic selection with a log line).
+   The activation quantizer is picked by CPU features only.
 
 ## Limits
 
@@ -56,89 +64,120 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
 
 ## Measured speed
 
-Machine: AMD Ryzen 9 9950X3D (16 cores, AVX-512 VNNI), CPU backend, 2026-09-29.
-The end-to-end and LibriSpeech numbers were taken at commit c8499e6 (kernel and
-encoder code); the microbench at f7c9e8c, which only adds the ggml rows to
-`bench_ternary`. Ultra has the same architecture and shapes as v3, so
-`ultra-q8_0` (converted from the HF weights with `--dtype q8_0`) stands in for a
-Q8_0 v3. The dequantized Redux was also converted to Q8_0 the same way.
+Machine: AMD Ryzen 9 9950X3D (16 cores, Zen 5, AVX-512 VNNI), CPU backend,
+2026-09-29. The end-to-end numbers were taken at commit f228376, the microbench
+at 8b66c63 (which only changes the compile target of the activation
+quantizer). Ultra has the same architecture and shapes as v3, so `ultra-q8_0`
+(converted from the HF weights with `--dtype q8_0`) stands in for a Q8_0 v3.
+The dequantized Redux was also converted to Q8_0 the same way. Every timed
+command was serialized with `flock /tmp/pk-bench.lock`.
+
+### Per utterance, LibriSpeech
+
+```
+taskset -c 0-7 build/examples/cli/parakeet-cli bench --model <gguf> \
+    --manifest benchmarks/librispeech_manifest.tsv --decoder tdt --threads 8 --json <out.json>
+```
+
+100 utterances, 901.1 s of audio, one utterance at a time. RTF is total audio
+over the summed per-utterance `proc_ms` of the JSON, median of 3 full passes.
+WER is against the manifest text after lowercasing and replacing every
+character other than a-z and the apostrophe with a space; it is from a quick
+script, not `validate_vs_nemo.py`, and is identical across passes. The kernel
+rows set `PARAKEET_TERNARY_KERNEL`; "automatic" leaves it unset, which picks
+vnni here.
+
+| Model | Form | RTF pass 1 / 2 / 3 | Median RTF | WER |
+|---|---|---|---:|---:|
+| parakeet-redux | packed ternary, automatic (vnni) | 74.8 / 75.6 / 78.0 | 75.6 | 1.96% |
+| parakeet-redux | packed ternary, avx2 | 59.6 / 59.0 / 58.8 | 59.0 | 1.96% |
+| parakeet-redux | dequantized F16 | 46.6 / 46.1 / 45.6 | 46.1 | 1.92% |
+| parakeet-redux | dequantized Q8_0 | 42.7 / 42.3 / 42.7 | 42.7 | 1.96% |
+| parakeet-ultra | Q8_0 | 42.5 / 43.1 / 44.2 | 43.1 | 1.71% |
+| parakeet-redux | packed ternary, previous kernel (b4164da) | 40.3 / 40.2 / 40.1 | 40.2 | 1.96% |
+
+The last row is the kernel before the current one (one row per call, 256-bit
+vectors, scalar activation quantization), built from commit b4164da and run in
+the same session. The transcripts of the old and the new kernel are identical
+for all 100 utterances, as expected from bit-identical kernels.
 
 ### Long clip, one utterance
 
 `transcribe --decoder tdt` on `benchmarks/audio/diverse/i_have_a_dream.wav`
-(180 s), whole process wall time including model load, median of 5 runs, 8
-threads on cores 0-7, serialized with `flock`. RTF is 180 s divided by the median.
+(180 s), whole process wall time including model load, median of 5 runs:
 
-| Model | Form | Size on disk | Median | RTF |
-|---|---|---:|---:|---:|
-| parakeet-redux | packed ternary, vnni kernel | 213.3 MB | 10.32 s | 17.4 |
-| parakeet-redux | packed ternary, avx2 kernel | 213.3 MB | 10.66 s | 16.9 |
-| parakeet-redux | packed ternary, scalar kernel (1 run) | 213.3 MB | 116.39 s | 1.5 |
-| parakeet-redux | dequantized Q8_0 | 941.5 MB | 9.06 s | 19.9 |
-| parakeet-redux | dequantized F16 | 1441.9 MB | 8.98 s | 20.0 |
-| parakeet-ultra | Q8_0 | 941.5 MB | 8.97 s | 20.1 |
-| parakeet-ultra | F16 | 1441.9 MB | 8.90 s | 20.2 |
-| parakeet-tdt-0.6b-v3 | F16 | 1441.0 MB | 31.25 s | 5.8 |
+```
+taskset -c 0-7 build/examples/cli/parakeet-cli transcribe --model <gguf> \
+    --input benchmarks/audio/diverse/i_have_a_dream.wav --decoder tdt --threads 8
+```
 
-With 16 threads (cores 0-15) the F16 and ternary rows move to: ternary vnni
-9.73 s, ternary avx2 9.88 s, Redux F16 8.30 s, Ultra F16 8.38 s, v3 F16 35.13 s.
+RTF is 180 s divided by the median.
 
-### Per utterance, LibriSpeech
+| Model | Form | Size on disk | 8 threads (cores 0-7) | RTF | 16 threads (cores 0-15) |
+|---|---|---:|---:|---:|---:|
+| parakeet-redux | packed ternary, vnni kernel | 213.3 MB | 7.93 s | 22.7 | 7.45 s |
+| parakeet-redux | packed ternary, avx2 kernel | 213.3 MB | 8.52 s | 21.1 | 8.01 s |
+| parakeet-redux | dequantized F16 | 1441.9 MB | 8.73 s | 20.6 | 7.75 s |
+| parakeet-redux | dequantized Q8_0 | 941.5 MB | 9.04 s | 19.9 | 8.11 s |
+| parakeet-ultra | Q8_0 | 941.5 MB | 9.04 s | 19.9 | 8.29 s |
+| parakeet-ultra | F16 | 1441.9 MB | 8.63 s | 20.9 | 7.83 s |
+| parakeet-tdt-0.6b-v3 | F16 | 1441.0 MB | 32.79 s | 5.5 | 29.29 s |
 
-`parakeet-cli bench --manifest benchmarks/librispeech_manifest.tsv --decoder tdt
---threads 8` under `taskset -c 0-7`: 100 utterances, 901.1 s of audio, one
-utterance at a time. RTF is total audio over the summed per-utterance processing
-time, median of 3 full passes (the first pass after a model is read from disk
-was the slowest for every model). WER is against the manifest text after
-lowercasing and stripping punctuation; it is from a quick script, not
-`validate_vs_nemo.py`, and is identical across passes.
+The scalar kernel is a reference only (116.39 s for this clip in one run at
+commit c8499e6, with an earlier and faster form of the reference).
 
-| Model | Form | RTF pass 1 / 2 / 3 | Median RTF | WER |
-|---|---|---|---:|---:|
-| parakeet-ultra | Q8_0 | 38.1 / 44.3 / 41.8 | 41.8 | 1.71% |
-| parakeet-redux | dequantized F16 | 36.4 / 45.1 / 44.9 | 44.9 | 1.92% |
-| parakeet-redux | dequantized Q8_0 | 35.1 / 43.2 / 40.4 | 40.4 | 1.96% |
-| parakeet-redux | packed ternary, vnni | 32.1 / 39.8 / 39.3 | 39.3 | 1.96% |
-| parakeet-redux | packed ternary, avx2 | 36.2 / 37.7 / 38.7 | 37.7 | 1.96% |
+### Single-thread kernel throughput
 
-### Single-thread kernel ceiling
+```
+taskset -c 2 build/tests/bench_ternary 4096 1024 200 10
+taskset -c 2 build/tests/bench_ternary 1024 4096 200 10
+taskset -c 2 build/tests/bench_ternary 1024 4096 1000 10
+```
 
-`build/tests/bench_ternary N K T 10`, pinned to one core. The ggml rows are
-`ggml_mul_mat` with an F32 activation matrix on one thread, so they include
-ggml's own activation quantization; the ternary rows time only the matmul
-kernel and leave out `ternary_quant_rows`.
+The ggml rows are `ggml_mul_mat` with an F32 activation matrix on one thread,
+so they include ggml's own activation quantization; the ternary rows time only
+the matmul kernel. `bench_ternary` times `ternary_quant_rows` on its own line.
 
-| N x K, T | scalar | ternary avx2 | ternary vnni | ggml Q8_0 | ggml F16 |
-|---|---:|---:|---:|---:|---:|
-| 4096 x 1024, T=200 | 1.97 | 78.14 | 81.91 | 87.23 | 120.46 |
-| 1024 x 4096, T=200 | 1.96 | 78.63 | 87.01 | 87.91 | 120.76 |
-| 1024 x 4096, T=1000 | 1.97 | 66.79 | 82.57 | 89.37 | 125.86 |
+| N x K, T | scalar | ternary avx2 | ternary vnni | ggml Q8_0 | ggml F16 | ternary quant |
+|---|---:|---:|---:|---:|---:|---:|
+| 4096 x 1024, T=200 | 1.04 | 184.12 | 546.86 | 87.51 | 121.21 | 0.014 ms |
+| 1024 x 4096, T=200 | 1.05 | 184.38 | 553.21 | 91.28 | 129.36 | 0.060 ms |
+| 1024 x 4096, T=1000 | 1.05 | 183.27 | 492.23 | 89.85 | 125.12 | 0.408 ms |
 
-All numbers are GMAC/s (raw output in the task 8 report; a second run of the
-same command gave values within a few percent of these). Because the ternary
-rows exclude the int8 activation quantization and the ggml rows include their
-own, the true gap of ternary to ggml is somewhat larger than this table shows.
+Kernel columns are GMAC/s. For comparison, the previous kernel (b4164da)
+measured 81.91, 87.01 and 82.57 GMAC/s (vnni) and 78.14, 78.63 and 66.79
+(avx2) with the same commands. The quantization of the activations took 1.405 ms
+for K=4096, T=200 before it was vectorized, about as long as the new matmul.
+Repeated runs of the same commands moved the vnni numbers by up to about 10
+percent (the T=1000 shape measured between 492 and 542 over five runs).
 
 ### What the data say
 
-- The ternary form is 6.8 times smaller than F16 and 4.4 times smaller than
-  Q8_0, but on this machine it is not faster. The ternary vnni kernel is slower
-  than ggml's Q8_0 kernel in all three shapes (by 6, 1 and 8 percent) and 28 to
-  34 percent slower than ggml's F16 kernel.
-- End to end, packed ternary is slower than both Q8_0 and F16 of the same
-  model: 10.32 s against 9.06 s and 8.98 s on the long clip, and a median RTF
-  of 39.3 against 40.4 and 44.9 on LibriSpeech. It is also slower than the
-  ternary-free Ultra Q8_0 (41.8 on LibriSpeech). The gap is small and the
-  LibriSpeech passes are noisy (the Redux F16 passes went from 36.4 to 45.1,
-  about 24 percent), so read it as "no speed win", not as a precise ratio.
-- The avx2 kernel is close to the vnni kernel here (78.14 against 81.91 GMAC/s at
-  N=4096, K=1024, T=200), so the VNNI instruction adds little. The cause was not profiled.
-- The gain of the ternary form on this machine is size (and memory traffic),
-  not speed. The speed comparison on other CPUs (NEON, fewer cores, less
-  bandwidth) has not been made.
-- The v3 F16 row is 3.5 times slower than Ultra and Redux F16 with identical
+- The vnni kernel does 490 to 550 GMAC/s on one core, 6.0 to 6.7 times the
+  previous kernel and 3.9 to 6.1 times ggml's Q8_0 and F16 mul_mat. At a
+  clock of about 5 GHz (not measured) that is about 110 int8 multiply-adds
+  per cycle, close to two 512-bit `vpdpbusd` per cycle. The gain comes from
+  keeping one output row per vector lane (no horizontal reduction per group),
+  512-bit vectors, 12 independent int32 accumulators, and unpacking the 2-bit
+  weights once per 4 activation rows.
+- Per utterance on LibriSpeech, packed ternary is now the fastest form: median
+  RTF 75.6 against 46.1 for the same model in F16 and 43.1 for Ultra Q8_0,
+  1.6 to 1.8 times faster. The three passes of each row are within 5 percent
+  of each other, well inside that margin. WER is unchanged at 1.96 percent.
+- On the 180 s clip the gain is small: 7.93 s against 8.73 s (F16) and
+  9.04 s (Q8_0), 9 to 12 percent less time. The linears are a smaller share of this run,
+  which includes model load and attention over a long sequence.
+- The avx2 kernel (184 GMAC/s, 59.0 RTF) is also faster than the ggml F16 and
+  Q8_0 paths. It accumulates a whole group in int16, which is exact here.
+- Moondream reports 113x for its own Photon runtime with these ternary weights
+  on 8 Zen 5 cores, against 45x for parakeet.cpp Q8_0. We did not run Photon;
+  our 75.6 is not measured under the same conditions and is not a comparison
+  with that number.
+- The NEON kernel uses the same layout and is bit-identical to the scalar
+  reference under `qemu-aarch64`; its speed on real ARM hardware has not been
+  measured.
+- The v3 F16 row is 3.8 times slower than Ultra and Redux F16 with identical
   shapes on the long clip. That gap was not investigated.
-- The scalar kernel is a reference only.
 
 Transcripts on `tests/fixtures/speech.wav` are identical across the scalar,
 avx2 and vnni kernels and the dequantized F16 and Q8_0 Redux, and equal the
@@ -153,5 +192,5 @@ PARAKEET_TEST_GGUF_REDUX_KEEP=<redux --ternary keep gguf> \
 PARAKEET_TEST_GGUF_REDUX_DEQ=<redux --ternary dequant gguf> \
     ctest --test-dir build -R test_ternary_model --output-on-failure
 
-build/tests/bench_ternary [N K T reps]                        # per-kernel single thread throughput, plus ggml Q8_0 and F16 mul_mat
+build/tests/bench_ternary [N K T reps]                        # single thread: each kernel, the quantizer, ggml Q8_0 and F16 mul_mat
 ```
