@@ -1,6 +1,7 @@
 #include "relpos_attention.hpp"
 #include "ggml_graph.hpp"
 #include "backend.hpp"
+#include "ternary.hpp"
 #include "ggml.h"
 #include <cassert>
 #include <cmath>
@@ -59,8 +60,11 @@ ggml_tensor* RelPosAttention::build_graph(ggml_context* ctx, ggml_tensor* xt,
     // attention linears with bias=False in some checkpoints
     // (parakeet-tdt-0.6b-v2/-v3) and bias=True in others (110m).
     auto linear = [&](const char* w, const char* b, ggml_tensor* in) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + w);
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);  // [out, *]
+        std::string base = pre + w;   // e.g. "...self_attn.linear_q.weight"
+        base.resize(base.size() - 7); // drop ".weight"
+        ggml_tensor* y = has_ternary(ml, base)
+            ? ternary_linear(ctx, ml, base, in)  // [out, *]
+            : ggml_mul_mat(ctx, clone_weight(ctx, ml, pre + w), in);  // [out, *]
         if (b && ml.tensor(pre + b)) {
             ggml_tensor* B = clone_weight(ctx, ml, pre + b);
             y = ggml_add(ctx, y, B);                // broadcast [out] over cols
@@ -194,8 +198,11 @@ ggml_tensor* RelPosAttention::build_graph_batched(
     // attention linears with bias=False in some checkpoints
     // (parakeet-tdt-0.6b-v2/-v3) and bias=True in others (110m).
     auto linear = [&](const char* w, const char* b, ggml_tensor* in) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + w);
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);  // [out, *]
+        std::string base = pre + w;   // e.g. "...self_attn.linear_q.weight"
+        base.resize(base.size() - 7); // drop ".weight"
+        ggml_tensor* y = has_ternary(ml, base)
+            ? ternary_linear(ctx, ml, base, in)  // [out, *]
+            : ggml_mul_mat(ctx, clone_weight(ctx, ml, pre + w), in);  // [out, *]
         if (b && ml.tensor(pre + b)) {
             ggml_tensor* B = clone_weight(ctx, ml, pre + b);
             y = ggml_add(ctx, y, B);                // broadcast [out] over cols

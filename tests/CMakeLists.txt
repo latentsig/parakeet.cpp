@@ -42,6 +42,7 @@ pk_add_test(test_joint)
 pk_add_test(test_joint_step_batch)
 pk_add_test(test_prompt_kernel)
 pk_add_test(test_ternary)
+pk_add_test(test_ternary_model)
 pk_add_test(test_transducer_core)
 pk_add_test(test_tdt_greedy)
 pk_add_test(test_tdt_beam)
@@ -164,7 +165,7 @@ set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_bat
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
                      test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_stream test_capi_stream_json
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
-                     test_combined_offline test_streaming_diarization test_diarization_accuracy
+                     test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model
                      PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Python converter check (skips with exit 77 when the venv/model are absent).

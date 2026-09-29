@@ -1,4 +1,5 @@
 #pragma once
+#include <memory>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -143,7 +144,12 @@ public:
     // the same CPU backend the compute path uses. Returns false on failure.
     bool realize_weights(ggml_backend_t backend);
     bool weights_realized() const { return weights_buf_ != nullptr; }
+    // Opaque per-loader slot for the ternary weight cache (see ternary.cpp).
+    // Owned here so cached repacked weights die with the loader that owns the
+    // tensors they were built from.
+    std::shared_ptr<void>& ternary_store() const { return ternary_store_; }
 private:
+    mutable std::shared_ptr<void> ternary_store_;
     ParakeetConfig cfg_;
     gguf_context* gguf_ = nullptr;
     ggml_context* ctx_ = nullptr;

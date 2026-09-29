@@ -51,4 +51,11 @@ void ternary_matmul_rows(const TernaryWeight& w, const uint8_t* act, int T, floa
                          int r0, int r1);
 const char* ternary_kernel_name();
 
+// True iff the GGUF holds <base>.qweight (a packed ternary linear).
+bool has_ternary(const ModelLoader& ml, const std::string& base);
+// nn.Linear over x (f32, ne = [K, ...]) with the packed weight <base>.qweight /
+// <base>.scales. Returns f32 with ne = [N, ...]. Bias is the caller's job.
+ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std::string& base,
+                            ggml_tensor* x);
+
 }  // namespace pk

@@ -1,6 +1,7 @@
 #include "model.hpp"
 
 #include "audio_io.hpp"
+#include "common.hpp"
 #include "mel.hpp"
 #include "mel_gpu.hpp"
 #include "encoder.hpp"
@@ -48,6 +49,14 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     // Model is the ASR entry point — reject diarization models so the C-API
     // can fall through to DiarizationModel::load.
     if (m->loader_.config().arch == "diarization") {
+        return nullptr;
+    }
+    // Packed ternary weights run on the CPU kernel only. Fail at load with a
+    // clear message instead of crashing inside a GPU graph.
+    if (m->loader_.config().ternary.present &&
+        std::string(pk::global_backend().device_name()) != "cpu") {
+        PK_LOG("this GGUF holds packed ternary weights, which run on the CPU backend only; "
+               "re-convert with --ternary dequant to use a GPU backend");
         return nullptr;
     }
     // Give the weights a CPU backend buffer ONCE so graphs reference them

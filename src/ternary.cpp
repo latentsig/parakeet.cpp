@@ -2,8 +2,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <unordered_map>
 
 #include "ggml.h"
+#include "model_loader.hpp"
 
 namespace pk {
 
@@ -111,5 +116,77 @@ void ternary_matmul_rows(const TernaryWeight& w, const uint8_t* act, int T, floa
 }
 
 const char* ternary_kernel_name() { return "scalar"; }
+
+namespace {
+
+struct TernaryStore {
+    std::mutex mu;
+    std::unordered_map<std::string, std::unique_ptr<TernaryWeight>> weights;
+};
+
+const TernaryWeight& weight_for(const ModelLoader& ml, const std::string& base) {
+    static std::mutex init_mu;
+    TernaryStore* store;
+    {
+        std::lock_guard<std::mutex> lk(init_mu);
+        auto& slot = ml.ternary_store();
+        if (!slot) slot = std::make_shared<TernaryStore>();
+        store = static_cast<TernaryStore*>(slot.get());
+    }
+    std::lock_guard<std::mutex> lk(store->mu);
+    auto it = store->weights.find(base);
+    if (it != store->weights.end()) return *it->second;
+    const ggml_tensor* q = ml.tensor(base + ".qweight");
+    const ggml_tensor* s = ml.tensor(base + ".scales");
+    if (!q || !s) throw std::runtime_error("ternary: missing " + base + ".qweight/.scales");
+    const int N = (int)q->ne[1];
+    const int K = (int)s->ne[0] * kTernaryGroup;
+    if ((int)q->ne[0] != (K + 4) / 5 || (int)s->ne[1] != N)
+        throw std::runtime_error("ternary: inconsistent shapes for " + base);
+    auto w = std::make_unique<TernaryWeight>();
+    ternary_repack(static_cast<const uint8_t*>(q->data), static_cast<const uint16_t*>(s->data), N, K, *w);
+    return *store->weights.emplace(base, std::move(w)).first->second;
+}
+
+// Op 1: per-row int8 quantization of the activations. dst is I8, ne0 = row bytes.
+void op_quant(ggml_tensor* dst, int ith, int nth, void*) {
+    const ggml_tensor* x = dst->src[0];
+    const int K = (int)x->ne[0];
+    const int T = (int)ggml_nrows(x);
+    const int t0 = (int)((int64_t)T * ith / nth);
+    const int t1 = (int)((int64_t)T * (ith + 1) / nth);
+    ternary_quant_rows(static_cast<const float*>(x->data), K, t0, t1, static_cast<uint8_t*>(dst->data));
+}
+
+// Op 2: ternary matmul. src0 is the quantized activation tensor from op 1,
+// userdata is the TernaryWeight. Threads split the output rows.
+void op_matmul(ggml_tensor* dst, int ith, int nth, void* ud) {
+    const TernaryWeight& w = *static_cast<const TernaryWeight*>(ud);
+    const int T = (int)ggml_nrows(dst);
+    const int r0 = (int)((int64_t)w.N * ith / nth);
+    const int r1 = (int)((int64_t)w.N * (ith + 1) / nth);
+    ternary_matmul_rows(w, static_cast<const uint8_t*>(dst->src[0]->data), T,
+                        static_cast<float*>(dst->data), r0, r1);
+}
+
+}  // namespace
+
+bool has_ternary(const ModelLoader& ml, const std::string& base) {
+    return ml.tensor(base + ".qweight") != nullptr;
+}
+
+ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std::string& base,
+                            ggml_tensor* x) {
+    const TernaryWeight& w = weight_for(ml, base);
+    GGML_ASSERT(x->type == GGML_TYPE_F32 && (int)x->ne[0] == w.K);
+    if (!ggml_is_contiguous(x)) x = ggml_cont(ctx, x);
+    const int64_t T = ggml_nrows(x);
+    ggml_tensor* a1[1] = {x};
+    ggml_tensor* act = ggml_custom_4d(ctx, GGML_TYPE_I8, (int64_t)ternary_act_row_bytes(w.K), T, 1, 1,
+                                      a1, 1, op_quant, GGML_N_TASKS_MAX, nullptr);
+    ggml_tensor* a2[1] = {act};
+    return ggml_custom_4d(ctx, GGML_TYPE_F32, w.N, x->ne[1], x->ne[2], x->ne[3], a2, 1, op_matmul,
+                          GGML_N_TASKS_MAX, const_cast<TernaryWeight*>(&w));
+}
 
 }  // namespace pk
