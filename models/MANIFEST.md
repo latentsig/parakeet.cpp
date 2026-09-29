@@ -100,6 +100,21 @@ WER (word error rate) is measured against the NeMo reference on
 | Q8_0 | `mudler/parakeet.cpp-parakeet-rnnt-1.1b-q8_0` | ~400 MB | **0.0** | PASS |
 | Q4_K | `mudler/parakeet.cpp-parakeet-rnnt-1.1b-q4_k` | ~300 MB | not yet measured | — |
 
+### `moondream/parakeet-ultra` and `moondream/parakeet-redux` (HF safetensors, v3 shape)
+
+Converted with `scripts/convert_hf_parakeet_to_gguf.py --template <v3 gguf>`.
+Neither is published yet; sizes are from local conversions. Transcript on
+`tests/fixtures/speech.wav` matches the reference. Long-form WER is not measured yet.
+
+| Model | Variant | Converter flags | Size | Notes |
+|---|---|---|---:|---|
+| parakeet-ultra | F16 | `--dtype f16` | 1441.9 MB | ordinary v3-shaped GGUF |
+| parakeet-redux | packed ternary | `--ternary keep` | 213.3 MB | CPU only, no streaming, see `docs/ternary.md` |
+| parakeet-redux | dequantized F16 | `--ternary dequant --dtype f16` | 1441.9 MB | runs on any backend |
+
+Both carry the `parakeet.vad.*` KVs and `vad_head.*` tensors unless converted
+with `--vad drop`.
+
 ---
 
 ## Notes

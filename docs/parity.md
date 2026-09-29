@@ -389,6 +389,24 @@ heads — and the C++ port reproduces each head exactly, including the second he
 # -> MODEL nvidia/parakeet-tdt_ctc-1.1b HEAD rnnt arch=hybrid_tdt_ctc xscaling=false WER 0.0000 ... PASS
 ```
 
+## Ultra and Redux (moondream, HF safetensors)
+
+`moondream/parakeet-ultra` (F16) and `moondream/parakeet-redux` (ternary
+encoder) share the v3 architecture and are converted with
+`scripts/convert_hf_parakeet_to_gguf.py` (see `docs/conversion.md`). Only the
+end-to-end transcript on `tests/fixtures/speech.wav` was checked here. WER on
+long-form sets has not been measured yet.
+
+| Model | GGUF form | Kernel | Transcript equals the reference transcript in AGENTS.md |
+|---|---|---|---|
+| parakeet-ultra | F16 | n/a | yes |
+| parakeet-redux | packed ternary (`--ternary keep`) | scalar | yes |
+| parakeet-redux | packed ternary (`--ternary keep`) | avx2 | yes |
+| parakeet-redux | packed ternary (`--ternary keep`) | vnni | yes |
+| parakeet-redux | dequantized F16 | n/a | yes |
+
+Speed numbers are in `docs/ternary.md`.
+
 ## Test suite status
 
 `ctest --test-dir build --output-on-failure` (with `PARAKEET_TEST_GGUF`,

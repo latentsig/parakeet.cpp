@@ -133,6 +133,12 @@ remain in place as a safety net — those tensors are never quantized.
 
 ---
 
+### Ternary tensors
+
+Packed ternary GGUFs (`--ternary keep`, see `docs/ternary.md`) store their
+linears as `.qweight` (I8) and `.scales` (F16). `parakeet-cli quantize` never
+re-quantizes them; it copies both tensors verbatim.
+
 ## Measured size + WER
 
 WER is word-level vs NeMo (`scripts/validate_vs_nemo.py` on

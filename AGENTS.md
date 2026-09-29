@@ -52,6 +52,9 @@ before, so do not change them without an A/B benchmark that proves parity.
   (so the unsupported op can run on CPU); when every op is supported, the fast
   gallocr path runs. If you think gallocr can go, you are about to reintroduce
   that regression.
+- **Ternary weights stay packed in the GGUF and are repacked once per loader; do not dequantize per call.**
+  The packed Redux form is what makes it 6.8x smaller than F16 and what the
+  CPU kernels in `src/ternary*.cpp` read.
 - **Zero-copy weights.** `clone_weight` returns loader tensors directly so the
   same device buffer is reused every utterance; do not copy weights per call.
 
@@ -84,6 +87,8 @@ src/                 libparakeet implementation
                        ced_tagger.hpp/cpp , pk::CedTagger: loads a CED GGUF (ced.cpp) into a tagger context, pk::SoundScorer
                        sound_stream.hpp/cpp, pk::SoundStream: sliding-window sound-event detection over live PCM
                        scene_stream.hpp/cpp, pk::SceneStream: combined ASR + diarization + sound-event stream
+                       ternary.hpp/cpp    , packed ternary (moondream/parakeet-redux) linears: repack once, int8 activations, scalar ref + two-op ggml custom op
+                       ternary_kernels.hpp, ternary_kernels_x86.cpp (AVX-512 VNNI / AVX2), ternary_kernels_neon.cpp
                        scene_render.hpp/cpp, pk::SceneRenderer + format_span/is_speech_label: `parakeet-cli scene` text rendering
 examples/cli/        parakeet-cli binary
                        subcommands: info, transcribe (+ --stream), quantize, scene (ASR + diar + sound, one time-ordered feed)
@@ -91,6 +96,7 @@ examples/cli/        parakeet-cli binary
                      diarize binary: diarize <diar.gguf> <wav> [--stream]
 scripts/             Python tooling
                        convert_parakeet_to_gguf.py, .nemo/.hf -> GGUF (--dtype f32|f16|q8_0)
+                       convert_hf_parakeet_to_gguf.py, HF safetensors (moondream/parakeet-ultra, -redux) to GGUF (--template, --ternary keep|dequant, --vad keep|drop)
                        gen_nemo_baseline.py        , NeMo intermediates -> baseline.gguf
                        gen_stream_baseline.py      , NeMo cache-aware streaming encode+decode -> stream baseline.gguf
                        gen_diar_baseline.py        , NeMo offline + streaming diarization -> diar baseline.gguf
@@ -117,6 +123,10 @@ tests/               ctest targets
                        test_streaming_diarization.cpp, streaming diarization == NeMo streaming, every latency mode (same baseline)
                        test_combined_offline.cpp, SAS + streaming diarization/SAS through the C-API
                        test_sas_merge.cpp      , SAS merge/grouping (model-independent)
+                       test_ternary.cpp        , ternary repack, int8 quant, every kernel == scalar (model-independent)
+                       test_ternary_model.cpp  , packed Redux == dequantized Redux transcript (PARAKEET_TEST_GGUF_REDUX_KEEP + _DEQ)
+                       test_model_loader_ternary.cpp, ternary + VAD flags from GGUF KVs
+                       bench_ternary.cpp       , single-thread throughput of each ternary kernel (not a ctest)
                        test_asr_committer.cpp  , shared word/utterance finalize logic (model-independent)
                        test_ced_parity.cpp     , CedTagger scores == ced.cpp PyTorch baseline (PARAKEET_TEST_CED_GGUF f32 + PARAKEET_TEST_CED_BASELINE)
                        test_sound_stream.cpp   , pk::SoundStream windowing/on-off-min_duration logic (model-independent)
@@ -141,6 +151,7 @@ docs/
   conversion.md     , GGUF schema reference
   quantization.md   , quantization allowlist, policy, measured size + WER per type
   parity.md         , full model coverage matrix + per-stage tensor parity
+  ternary.md        , packed ternary Redux: GGUF form, kernels, limits, measured speed
   diarization.md    , speaker diarization + speaker-attributed ASR: parity, C-API, speed
 .github/workflows/
   ci.yml            , build job (per-push) + closed-loop job (pull_request + dispatch)
@@ -220,6 +231,17 @@ Convert (HuggingFace id or local `.nemo`):
 
 Featurizer window and filterbank are lifted from the checkpoint at runtime;
 mel/fft parameters do not need to be specified manually.
+
+## Ternary GGUF flags
+
+Two optional GGUF flags, both read into `ParakeetConfig`:
+
+- `parakeet.ternary.present` (with `parakeet.ternary.group_size` = 128): the
+  encoder linears are stored as `<name>.qweight` (I8) + `<name>.scales` (F16).
+  CPU only, offline only (no streaming). `PARAKEET_TERNARY_KERNEL=scalar|avx2|vnni|neon`
+  forces a kernel. See `docs/ternary.md`.
+- `parakeet.vad.present` (with `parakeet.vad.d_in/hidden/kernel/frame_sec`): the
+  file carries `vad_head.*` tensors.
 
 ## Quantization policy
 
