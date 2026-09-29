@@ -147,10 +147,9 @@ else()
   add_library(parakeet STATIC ${PARAKEET_SRC})
 endif()
 if(NOT MSVC)
-  set_source_files_properties(src/ternary.cpp src/ternary_kernels_x86.cpp
+  set_source_files_properties(src/ternary.cpp src/ternary_kernels_x86.cpp src/ternary_kernels_neon.cpp
                               PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
-set_source_files_properties(src/ternary_kernels_neon.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" AND NOT APPLE AND NOT MSVC)
   set_property(SOURCE src/ternary_kernels_neon.cpp APPEND PROPERTY COMPILE_OPTIONS "-march=armv8.2-a+dotprod")
 endif()
