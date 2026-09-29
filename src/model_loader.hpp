@@ -44,6 +44,20 @@ struct PromptCfg {
     // paths so both reject typos identically (matches the C-API contract).
     int resolve_index_or_throw(const std::string& target_lang) const;
 };
+// Packed ternary encoder linears (moondream/parakeet-redux). present=false for
+// every other model; the encoder then uses ordinary <name>.weight tensors.
+struct TernaryCfg {
+    bool present = false;
+    uint32_t group_size = 128;   // scales are per (row, 128 columns)
+};
+// Voice-activity head on the subsampler output (moondream ultra/redux).
+struct VadCfg {
+    bool present = false;
+    uint32_t d_in = 0;           // input channels (subsampler d_model)
+    uint32_t hidden = 0;
+    uint32_t kernel = 0;
+    float frame_sec = 0.08f;     // seconds per head output frame
+};
 struct ParakeetConfig {
     std::string arch;
     // encoder
@@ -59,6 +73,8 @@ struct ParakeetConfig {
     bool use_bias=true;     // false for nemotron (encoder linears have no bias)
     StreamingCfg streaming;
     PromptCfg prompt;       // prompt conditioning (present=false for non-prompt)
+    TernaryCfg ternary;     // present=false unless parakeet.ternary.present
+    VadCfg vad;             // present=false unless parakeet.vad.present
     // preprocessor
     uint32_t sample_rate=16000, n_mels=0, n_fft=0, win_length=0, hop_length=0;
     float preemph=0.0f, mag_power=2.0f, log_zero_guard=0.0f;

@@ -170,6 +170,17 @@ bool ModelLoader::load(const std::string& path){
         cfg_.prompt.dict_keys = kv_str_arr(gguf_, "parakeet.prompt.dictionary.keys");
         cfg_.prompt.dict_vals = kv_i32_arr(gguf_, "parakeet.prompt.dictionary.values");
     }
+    cfg_.ternary.present = kv_bool(gguf_, "parakeet.ternary.present", false);
+    if(cfg_.ternary.present){
+        cfg_.ternary.group_size = kv_u32(gguf_, "parakeet.ternary.group_size", 128);
+    }
+    cfg_.vad.present = kv_bool(gguf_, "parakeet.vad.present", false);
+    if(cfg_.vad.present){
+        cfg_.vad.d_in      = kv_u32(gguf_, "parakeet.vad.d_in", 0);
+        cfg_.vad.hidden    = kv_u32(gguf_, "parakeet.vad.hidden", 0);
+        cfg_.vad.kernel    = kv_u32(gguf_, "parakeet.vad.kernel", 0);
+        cfg_.vad.frame_sec = kv_f32(gguf_, "parakeet.vad.frame_sec", 0.08f);
+    }
     if(cfg_.att_context_style != "regular"){
         StreamingCfg& s = cfg_.streaming;
         s.chunk_size = kv_i32_arr(gguf_, "parakeet.streaming.chunk_size");
