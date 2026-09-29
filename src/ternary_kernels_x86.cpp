@@ -98,20 +98,19 @@ PK_TGT_512 void cols_512(const TernaryWeight& w, const uint8_t* act, size_t rb, 
 
 PK_TGT_512 void rows_512(const TernaryWeight& w, const uint8_t* act, int T, float* y, int r0, int r1) {
     if (r0 >= r1 || T <= 0) return;
-    constexpr int RB = 2, C = 4;
+    // 3 row blocks by 4 activation rows measured best on Zen 5 (12 int32 and
+    // 12 float accumulators); 2 by 6 and 4 by 4 are within a few percent.
+    constexpr int C = 4;
     const size_t rb = ternary_act_row_bytes(w.K);
     const int bl = (r1 - 1) / kTernaryRowBlock;
     for (int b = r0 / kTernaryRowBlock; b <= bl;) {
-        unsigned mk[RB];
-        if (b + RB - 1 <= bl) {
-            for (int i = 0; i < RB; ++i) mk[i] = block_mask(b + i, r0, r1);
-            cols_512<RB, C>(w, act, rb, T, y, b, mk);
-            b += RB;
-        } else {
-            mk[0] = block_mask(b, r0, r1);
-            cols_512<1, C>(w, act, rb, T, y, b, mk);
-            b += 1;
-        }
+        unsigned mk[3];
+        const int nb = std::min(3, bl - b + 1);
+        for (int i = 0; i < nb; ++i) mk[i] = block_mask(b + i, r0, r1);
+        if (nb == 3) cols_512<3, C>(w, act, rb, T, y, b, mk);
+        else if (nb == 2) cols_512<2, C>(w, act, rb, T, y, b, mk);
+        else cols_512<1, C>(w, act, rb, T, y, b, mk);
+        b += nb;
     }
 }
 
@@ -176,7 +175,7 @@ PK_TGT_AVX2 void tile_avx2(const TernaryWeight& w, const uint8_t* act, size_t rb
 
 PK_TGT_AVX2 void rows_avx2(const TernaryWeight& w, const uint8_t* act, int T, float* y, int r0, int r1) {
     if (r0 >= r1 || T <= 0) return;
-    constexpr int C = 4;
+    constexpr int C = 2;
     const size_t rb = ternary_act_row_bytes(w.K);
     const int bl = (r1 - 1) / kTernaryRowBlock;
     for (int b = r0 / kTernaryRowBlock; b <= bl; ++b) {
