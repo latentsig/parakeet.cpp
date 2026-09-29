@@ -14,17 +14,35 @@ namespace pk {
 class ModelLoader;
 
 constexpr int kTernaryGroup = 128;
+constexpr int kTernaryRowBlock = 16;
 
-// Repacked weight, N output rows by K input columns (K % 128 == 0).
-// planes: per row, K/128 groups of 32 bytes. Byte j of a group holds the codes
-// (0,1,2) of elements j, j+32, j+64, j+96 in bit pairs 0-1, 2-3, 4-5, 6-7.
-// w[n][k] = scales[n][k/128] * (code - 1).
+// Repacked weight, N output rows by K input columns (K % 128 == 0). Rows are
+// padded to a multiple of 16 with zero codes and zero scales, and stored in
+// blocks of 16 rows so that a kernel can keep one output row per vector lane.
+// planes: per row block b, per group g, per step s (0..7, 16 elements each),
+// 64 bytes. Byte 4*i + j of a step holds, in bit pairs 0-1, 2-3, 4-5, 6-7
+// (plane p = 0..3), the code (0,1,2) of row 16*b + i at element
+// 128*g + 16*s + 4*p + j. scales: per row block, per group, 16 floats (one per
+// row of the block). w[n][k] = scale(n, k/128) * (code(n, k) - 1).
 struct TernaryWeight {
     int N = 0;
     int K = 0;
-    std::vector<uint8_t> planes;
-    std::vector<float>   scales;   // N * groups(), row-major
+    std::vector<uint8_t> planes;   // row_blocks() * groups() * 512 bytes
+    std::vector<float>   scales;   // row_blocks() * groups() * 16
     int groups() const { return K / kTernaryGroup; }
+    int row_blocks() const { return (N + kTernaryRowBlock - 1) / kTernaryRowBlock; }
+    // The layout above, spelled out. The scalar reference uses these.
+    int code(int n, int k) const {
+        const int b = n / kTernaryRowBlock, i = n % kTernaryRowBlock;
+        const int g = k / kTernaryGroup, r = k % kTernaryGroup;
+        const int s = r / 16, p = (r % 16) / 4, j = r % 4;
+        const uint8_t byte = planes[((size_t)b * groups() + g) * 512 + (size_t)s * 64 + 4 * i + j];
+        return (byte >> (2 * p)) & 3;
+    }
+    float scale(int n, int g) const {
+        const int b = n / kTernaryRowBlock, i = n % kTernaryRowBlock;
+        return scales[((size_t)b * groups() + g) * kTernaryRowBlock + i];
+    }
 };
 
 // Upstream packing (5 trits per byte, base 3, LSD first) plus F16 group scales

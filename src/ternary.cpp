@@ -22,25 +22,27 @@ void ternary_repack(const uint8_t* q, const uint16_t* s, int N, int K, TernaryWe
     const int nb = (K + 4) / 5;
     out.N = N;
     out.K = K;
-    out.planes.assign((size_t)N * G * 32, 0);
-    out.scales.resize((size_t)N * G);
-    for (size_t i = 0; i < out.scales.size(); ++i) out.scales[i] = ggml_fp16_to_fp32(s[i]);
+    const int B = out.row_blocks();
+    out.planes.assign((size_t)B * G * 512, 0);
+    out.scales.assign((size_t)B * G * kTernaryRowBlock, 0.0f);
     std::vector<uint8_t> row(K);
     for (int n = 0; n < N; ++n) {
+        const int b = n / kTernaryRowBlock, i = n % kTernaryRowBlock;
+        for (int g = 0; g < G; ++g)
+            out.scales[((size_t)b * G + g) * kTernaryRowBlock + i] = ggml_fp16_to_fp32(s[(size_t)n * G + g]);
         const uint8_t* qr = q + (size_t)n * nb;
-        for (int b = 0; b < nb; ++b) {
-            int v = qr[b];
+        for (int bb = 0; bb < nb; ++bb) {
+            int v = qr[bb];
             for (int d = 0; d < 5; ++d) {
-                const int i = b * 5 + d;
-                if (i < K) row[i] = (uint8_t)(v % 3);
+                const int k = bb * 5 + d;
+                if (k < K) row[k] = (uint8_t)(v % 3);
                 v /= 3;
             }
         }
-        for (int g = 0; g < G; ++g) {
-            uint8_t* p = &out.planes[((size_t)n * G + g) * 32];
-            const uint8_t* c = &row[(size_t)g * kTernaryGroup];
-            for (int j = 0; j < 32; ++j)
-                p[j] = (uint8_t)(c[j] | (c[j + 32] << 2) | (c[j + 64] << 4) | (c[j + 96] << 6));
+        for (int k = 0; k < K; ++k) {
+            const int g = k / kTernaryGroup, r = k % kTernaryGroup;
+            const int st = r / 16, p = (r % 16) / 4, j = r % 4;
+            out.planes[((size_t)b * G + g) * 512 + (size_t)st * 64 + 4 * i + j] |= (uint8_t)(row[k] << (2 * p));
         }
     }
 }
@@ -101,13 +103,10 @@ void ternary_matmul_rows_ref(const TernaryWeight& w, const uint8_t* act, int T, 
             const int32_t* gs = reinterpret_cast<const int32_t*>(row + K + 4);
             float acc = 0.0f;
             for (int g = 0; g < G; ++g) {
-                const uint8_t* p = &w.planes[((size_t)n * G + g) * 32];
                 int32_t s = 0;
-                for (int j = 0; j < kTernaryGroup; ++j) {
-                    const int code = (p[j & 31] >> (2 * (j >> 5))) & 3;
-                    s += code * (int32_t)q[g * kTernaryGroup + j];
-                }
-                acc += w.scales[(size_t)n * G + g] * (float)(s - gs[g]);
+                for (int j = 0; j < kTernaryGroup; ++j)
+                    s += w.code(n, g * kTernaryGroup + j) * (int32_t)q[g * kTernaryGroup + j];
+                acc += w.scale(n, g) * (float)(s - gs[g]);
             }
             y[(size_t)t * N + n] = acc * sa;
         }

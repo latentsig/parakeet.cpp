@@ -34,7 +34,10 @@ static std::vector<uint8_t> pack_trits(const std::vector<int>& codes, int N, int
     return q;
 }
 
-struct Case { int N, K, T; };
+// wide: codes mostly 2 and positive activations, so group sums reach 14 bits
+// and scale * sum no longer fits a float mantissa exactly. Only then does a
+// fused multiply-add round differently from the reference's multiply and add.
+struct Case { int N, K, T; bool wide = false; };
 
 static void run_case(const Case& cs, unsigned seed) {
     std::mt19937 rng(seed);
@@ -43,7 +46,8 @@ static void run_case(const Case& cs, unsigned seed) {
     const int N = cs.N, K = cs.K, T = cs.T, G = K / kTernaryGroup;
 
     std::vector<int> codes((size_t)N * K);
-    for (auto& c : codes) c = code(rng);
+    std::uniform_int_distribution<int> pct(0, 99);
+    for (auto& c : codes) c = cs.wide ? (pct(rng) < 90 ? 2 : code(rng)) : code(rng);
     std::vector<uint16_t> scales_f16((size_t)N * G);
     std::vector<float> scales_f((size_t)N * G);
     for (size_t i = 0; i < scales_f16.size(); ++i) {
@@ -63,10 +67,17 @@ static void run_case(const Case& cs, unsigned seed) {
     TernaryWeight w;
     ternary_repack(q.data(), scales_f16.data(), N, K, w);
     CHECK(w.N == N && w.K == K && w.groups() == G);
-    CHECK(w.planes.size() == (size_t)N * G * 32);
+    CHECK(w.planes.size() == (size_t)w.row_blocks() * G * 512);
+    CHECK(w.scales.size() == (size_t)w.row_blocks() * G * kTernaryRowBlock);
+    // the repacked layout holds exactly the input codes and scales
+    for (int n = 0; n < N; ++n) {
+        for (int k = 0; k < K; ++k) CHECK(w.code(n, k) == codes[(size_t)n * K + k]);
+        for (int g = 0; g < G; ++g) CHECK(w.scale(n, g) == scales_f[(size_t)n * G + g]);
+    }
 
     std::vector<float> x((size_t)T * K);
-    for (auto& v : x) v = xr(rng);
+    std::uniform_real_distribution<float> xw(1.0f, 3.0f);
+    for (auto& v : x) v = cs.wide ? xw(rng) : xr(rng);
     std::vector<uint8_t> act(ternary_act_row_bytes(K) * T);
     ternary_quant_rows(x.data(), K, 0, T, act.data());
 
@@ -121,6 +132,25 @@ static void run_case(const Case& cs, unsigned seed) {
         k->fn(w, act.data(), T, ys.data(), 0, b);
         k->fn(w, act.data(), T, ys.data(), b, N);
         for (size_t i = 0; i < y.size(); ++i) CHECK(y[i] == ys[i]);
+        // the op's split by thread count, including more threads than rows:
+        // every output written exactly by its own range, nothing else touched
+        for (int nth : {2, 3, 5, 7, 16, 40}) {
+            std::vector<float> yt((size_t)T * N, -1.0f);
+            for (int ith = 0; ith < nth; ++ith)
+                k->fn(w, act.data(), T, yt.data(), (int)((int64_t)N * ith / nth), (int)((int64_t)N * (ith + 1) / nth));
+            for (size_t i = 0; i < y.size(); ++i) CHECK(y[i] == yt[i]);
+        }
+        // a single inner range leaves everything outside it untouched
+        if (N >= 3) {
+            const int lo = 1, hi = N - 1;
+            std::vector<float> yr((size_t)T * N, -2.0f);
+            k->fn(w, act.data(), T, yr.data(), lo, hi);
+            for (int t = 0; t < T; ++t)
+                for (int n = 0; n < N; ++n) {
+                    const size_t i = (size_t)t * N + n;
+                    CHECK(n >= lo && n < hi ? yr[i] == y[i] : yr[i] == -2.0f);
+                }
+        }
     }
     // the dispatching entry point equals the reference exactly
     std::vector<float> yd((size_t)T * N, -1.0f);
@@ -144,9 +174,14 @@ static void test_silence_is_zero() {
 }
 
 int main() {
-    const Case cases[] = {{8, 128, 1}, {16, 256, 3}, {37, 1024, 5}, {64, 4096, 4}, {5, 384, 7}, {1, 128, 1}};
+    const Case cases[] = {{8, 128, 1}, {16, 256, 3}, {37, 1024, 5}, {64, 4096, 4}, {5, 384, 7}, {1, 128, 1},
+                          {48, 1024, 13}, {80, 512, 200}, {40, 1024, 9, true}, {7, 4096, 3, true}};
     unsigned seed = 1;
     for (const Case& c : cases) run_case(c, seed++);
+    // remainder coverage: rows not a multiple of any row tile, columns not a
+    // multiple of any column tile
+    for (int N : {1, 2, 3, 5, 7, 37})
+        for (int T : {1, 2, 3, 5, 7, 9}) run_case({N, 256, T}, seed++);
     test_silence_is_zero();
     if (failures) return 1;
     std::printf("test_ternary: OK (dispatch=%s; tested:", ternary_kernel_name());
