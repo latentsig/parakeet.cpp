@@ -63,6 +63,10 @@ typedef struct parakeet_ctx parakeet_ctx;
 //     parakeet_speaker_registry holds enrolled voices; the scene stream and
 //     speaker-attributed ASR can name diarized speakers. Additive: no
 //     existing signature changed.
+// v10: raw-embedding enroll (parakeet_capi_speaker_registry_add_embedding)
+//      and diarize-only naming (parakeet_capi_diarize_named_pcm_json), for
+//      callers that keep speaker embeddings themselves. Additive: no
+//      existing signature changed.
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -612,6 +616,16 @@ const char* parakeet_capi_speaker_registry_last_error(const parakeet_speaker_reg
 int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, parakeet_ctx* speaker,
                                  const char* name, const float* pcm, int n, int sample_rate);
 
+// Add one already-computed speaker embedding to `reg` under `name`, without a
+// speaker model. `dim` must equal the registry's embedding size once it has
+// one (the first successful call fixes it); the values must be finite and not
+// all zero. Calling it again with the same name averages the vectors, like
+// enrolling more clips. Returns 0 on success; nonzero on error, with the
+// message on the registry (parakeet_capi_speaker_registry_last_error). A NULL
+// `reg` returns nonzero with no message. ABI v10.
+int parakeet_capi_speaker_registry_add_embedding(parakeet_speaker_registry* reg, const char* name,
+                                                 const float* embedding, int dim);
+
 // Binary file. 0 on success; nonzero on error (message on the registry).
 int parakeet_capi_speaker_registry_save(const parakeet_speaker_registry* reg, const char* path);
 // NULL when the file is missing or is not a valid registry. Free with _free.
@@ -643,6 +657,27 @@ char* parakeet_capi_transcribe_and_diarize_named_json(parakeet_ctx* asr, parakee
                                                       parakeet_speaker_registry* registry,
                                                       const float* samples, int n_samples,
                                                       int sample_rate);
+
+// Diarization with speaker names and no ASR model: the parakeet_capi_diarize_pcm
+// document plus a "names" key, {"0":{"name":"ada","score":0.93},...}, one entry
+// per diarization slot that has a segment ("name":"" with score 0 means no
+// voice matched, or too little clean speech: under the identifier's 2 s
+// minimum, or overlapped by another speaker). `accept_threshold` is a cosine in
+// [-1, 1] and `margin` how far the best match must beat the runner-up; it must
+// be 0 or more. 0 for either keeps its default (0.5 and 0.05). Any sample rate
+// (resampled to 16 kHz like the other PCM entry points). Returns NULL on error,
+// with the message on `diar` (a wrong kind, bad samples) or on `speaker` (a
+// wrong kind, a NULL or wrong-sized registry, invalid options); both messages
+// are cleared on entry, so only the ctx the failure belongs to has one. NULL
+// `diar` or `speaker` returns NULL with no message. An empty buffer
+// (`n_samples == 0`) is an error here, unlike parakeet_capi_diarize_pcm which
+// returns an empty document. An empty registry gives every slot an empty name.
+// `reg` is only read; it may be shared by concurrent calls as long as nothing
+// adds to it meanwhile. Free with parakeet_capi_free_string. ABI v10.
+char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
+                                           parakeet_speaker_registry* reg, const float* samples,
+                                           int n_samples, int sample_rate, float accept_threshold,
+                                           float margin);
 
 #ifdef __cplusplus
 } // extern "C"

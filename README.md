@@ -345,7 +345,7 @@ default) the scene stream can say who is talking instead of `Speaker 0`.
 Enroll each person from a short clip with `parakeet-cli enroll`, then pass
 `--speakers <speaker.gguf> --registry <file>` to `scene`. Only one two-voice
 fixture has been measured so far. See [`docs/speaker.md`](docs/speaker.md) for
-the models, the commands, the C-API (ABI v9) and what is still untested.
+the models, the commands, the C-API (ABI v9 and v10) and what is still untested.
 
 ---
 

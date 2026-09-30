@@ -169,7 +169,7 @@ command line with `--speaker-threshold` (only `accept_threshold`).
 encoder: see the starting threshold column in "Which GGUFs work" and the
 numbers below.
 
-## C-API (ABI v9)
+## C-API (ABI v9 and v10)
 
 Additive: no earlier signature changed, LocalAI does not use these yet. A
 speaker GGUF loads through `parakeet_capi_load` into a context of kind
@@ -196,6 +196,71 @@ speaker part these fields are there from the first document on: `"names"` is
 `{}` until diarization has seen a slot, so the shape of the document does not
 change during the stream. Without a speaker part none of them appear. The
 offline named document is the SAS document plus those fields.
+
+### v10: embeddings from the host, diarize-only naming
+
+Two more functions for a host that keeps speaker embeddings itself (LocalAI
+stores them in its own voice registry) instead of keeping enrollment audio.
+
+```
+int parakeet_capi_speaker_registry_add_embedding(parakeet_speaker_registry* reg, const char* name,
+                                                 const float* embedding, int dim);
+
+char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
+                                           parakeet_speaker_registry* reg, const float* samples,
+                                           int n_samples, int sample_rate, float accept_threshold,
+                                           float margin);
+```
+
+`add_embedding` adds an embedding that was computed elsewhere, so it needs no
+speaker model. The first successful call fixes the registry's size; after that
+`dim` must match it. The values must be finite and not all zero, and the name
+must not be empty. Adding the same name again averages the vectors, like
+enrolling more clips. It returns 0 on success and nonzero on error, with the
+message on the registry (`parakeet_capi_speaker_registry_last_error`), for
+example `speaker embedding has 192 values, registry expects 256`. A NULL
+registry returns nonzero with no message.
+
+`diarize_named_pcm_json` diarizes the clip and names the speakers, with no ASR
+model. The result is the `parakeet_capi_diarize_pcm` document plus a `"names"`
+key, for example `{"0":{"name":"ada","score":0.93}}`. `names` has one entry per
+diarization slot that has a segment. `"name":""` (score 0) means no voice
+matched, or the slot had too little clean speech (under the identifier's 2 s
+minimum, or the audio overlapped another speaker). `accept_threshold` is a
+cosine in [-1, 1] and `margin` is how far the best match must beat the
+runner-up; it must be 0 or more (a negative value is rejected with "invalid
+speaker options"). A value of 0 for either keeps the default (0.5 and 0.05), so
+exactly 0 cannot be requested. Any sample rate works; the audio is resampled
+to 16 kHz. It returns NULL on error. The message is on `diar` for a wrong
+context kind or bad samples, and on `speaker` for a wrong context kind, a NULL
+registry, bad options, or a registry whose embedding size differs from the
+encoder's (`registry holds N-value embeddings, this model produces M`). The
+registry must come from the same kind of encoder as `speaker`. An empty buffer
+(`n_samples == 0`) is an error here, unlike `parakeet_capi_diarize_pcm`, which
+returns an empty document. The call keeps a copy of the whole recording, so
+memory grows with clip length (about 230 MB per hour of 16 kHz audio), the same
+order as the speaker-attributed ASR call. Free the result with
+`parakeet_capi_free_string`.
+
+```c
+parakeet_speaker_registry* reg = parakeet_capi_speaker_registry_new();
+if (parakeet_capi_speaker_registry_add_embedding(reg, "ada", ada_emb, dim) ||
+    parakeet_capi_speaker_registry_add_embedding(reg, "bob", bob_emb, dim)) {
+    fprintf(stderr, "%s\n", parakeet_capi_speaker_registry_last_error(reg));
+    parakeet_capi_speaker_registry_free(reg);
+    return 1;
+}
+char* json = parakeet_capi_diarize_named_pcm_json(diar, speaker, reg, pcm, n_pcm,
+                                                  16000, 0.0f, 0.0f);
+if (json) {
+    puts(json);
+    parakeet_capi_free_string(json);
+} else {
+    fprintf(stderr, "%s / %s\n", parakeet_capi_last_error(speaker),
+            parakeet_capi_last_error(diar));
+}
+parakeet_capi_speaker_registry_free(reg);
+```
 
 ## Devices and threads
 

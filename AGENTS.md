@@ -154,7 +154,7 @@ docs/
   parity.md         , full model coverage matrix + per-stage tensor parity
   diarization.md    , speaker diarization + speaker-attributed ASR: parity, C-API, speed
   sound.md          , sound-event detection (CED) and the combined scene stream
-  speaker.md        , speaker identification: enroll, scene naming, C-API v9, measured numbers
+  speaker.md        , speaker identification: enroll, scene naming, C-API v9 and v10, measured numbers
 .github/workflows/
   ci.yml            , build job (per-push) + closed-loop job (pull_request + dispatch)
 ```
@@ -342,6 +342,12 @@ parakeet_capi_speaker_registry_save / _load
 parakeet_capi_speaker_identify_pcm_json
 parakeet_capi_scene_stream_begin_speaker
 parakeet_capi_transcribe_and_diarize_named_json
+```
+
+```
+# v10 (additive; not used by LocalAI yet)
+parakeet_capi_speaker_registry_add_embedding   # add an embedding computed by the host
+parakeet_capi_diarize_named_pcm_json           # diarization + "names", no ASR model
 ```
 
 Combined scene stream (ABI v8, additive; not used by LocalAI yet). One stream
