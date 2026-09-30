@@ -17,7 +17,7 @@ struct VadWeights {
 };
 
 // The three choices the checkpoint does not document. Fixed from evidence in
-// docs/ternary.md (see Task 9, Step 6).
+// docs/ternary.md (section "VAD head wiring").
 struct VadVariant {
     bool relu_after_proj = true;
     bool residual = false;

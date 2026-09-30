@@ -154,7 +154,7 @@ percent (the T=1000 shape measured between 492 and 542 over five runs).
 ### What the data say
 
 - The vnni kernel does 490 to 550 GMAC/s on one core, 6.0 to 6.7 times the
-  previous kernel and 3.9 to 6.1 times ggml's Q8_0 and F16 mul_mat. At a
+  previous kernel and 3.9 to 6.3 times ggml's Q8_0 and F16 mul_mat (546.86/87.51 = 6.25 at the top, 492.23/125.12 = 3.93 at the bottom). At a
   clock of about 5 GHz (not measured) that is about 110 int8 multiply-adds
   per cycle, close to two 512-bit `vpdpbusd` per cycle. The gain comes from
   keeping one output row per vector lane (no horizontal reduction per group),
@@ -232,8 +232,73 @@ Caveats:
   (AUC 0.959 against 0.948).
 - The wiring is inferred, not documented by Moondream. Something may still differ from training.
 - The default threshold is 0.5. Per-model thresholds may differ (Ultra about 0.5 to 0.7, Redux about 0.3).
-- Validation is by long-form WER with and without the VAD plus a threshold sweep (Task 12). The segmenter falls back to
-  hard cuts when it finds no pause, so a weak pause response degrades gracefully.
+- Long-form validation is in the next section. The segmenter falls back to hard cuts when it finds no pause, so a weak
+  pause response degrades gracefully.
+
+## Long-form WER with and without the VAD
+
+`--vad` cuts long audio at pauses found by the VAD head and transcribes each segment on its own
+(`segment_by_vad`, defaults: threshold 0.5, min pause 0.32 s, max segment 30 s, min segment 8 s). Without it, the model
+sees the whole clip in one pass.
+
+How it was measured. `scripts/make_longform.py` joins the first 90 utterances of `benchmarks/librispeech_manifest.tsv`
+into three clips of 30 utterances each (218 to 354 s each), with a known reference
+(the joined manifest texts). Utterances are separated by Gaussian noise at about -55 dBFS (fixed seed) rather than
+digital zeros, because digital silence distorts the per-feature mel normalization. Three sets: a 0.45 s gap, a 0.16 s gap
+(below the 0.32 s minimum pause on purpose), and no inserted gap (only the natural utterance edges). These are synthetic
+long-form clips built from LibriSpeech read speech, not TED-LIUM or other real long recordings.
+`scripts/eval_vad_longform.py` runs `parakeet-cli transcribe --decoder tdt --threads 8` under `taskset -c 0-7` with and
+without `--vad` and scores with `scripts/asr_metrics.py` `wer` (case and punctuation normalized). The models are the
+Ultra F16 GGUF and the packed ternary Redux GGUF (`--ternary keep`, native kernel).
+
+WER per clip, plain single pass vs `--vad` (percent, three clips per set, then the mean):
+
+| Model | Gap | Clip 0 | Clip 1 | Clip 2 | Mean |
+|---|---|---:|---:|---:|---:|
+| Ultra F16, plain | 0.45 s | 0.47 | 2.39 | 2.29 | 1.71 |
+| Ultra F16, `--vad` | 0.45 s | 0.47 | 2.21 | 2.39 | 1.69 |
+| Ultra F16, plain | 0.16 s | 0.31 | 2.58 | 2.18 | 1.69 |
+| Ultra F16, `--vad` | 0.16 s | 0.62 | 2.21 | 2.50 | 1.78 |
+| Ultra F16, plain | none | 0.31 | 2.39 | 2.18 | 1.63 |
+| Ultra F16, `--vad` | none | 0.62 | 2.39 | 2.50 | 1.84 |
+| Redux packed, plain | 0.45 s | 0.62 | 2.58 | 2.72 | 1.97 |
+| Redux packed, `--vad` | 0.45 s | 0.47 | 2.58 | 2.72 | 1.92 |
+| Redux packed, plain | 0.16 s | 0.62 | 2.39 | 2.83 | 1.95 |
+| Redux packed, `--vad` | 0.16 s | 0.31 | 2.03 | 2.72 | 1.69 |
+| Redux packed, plain | none | 0.62 | 2.03 | 2.83 | 1.83 |
+| Redux packed, `--vad` | none | 0.62 | 2.21 | 2.29 | 1.71 |
+
+Reading. VAD segmentation keeps WER where the single pass has it: the largest mean difference is +0.21 points for Ultra
+on the no-gap set (1.63 to 1.84), and Redux improves in all three sets. One clip is 645 to 919 words, so 0.1 point is
+about one word. Inspecting the worst Ultra clip (no gap, clip 0, 10 segments) shows every cut lands between words, none
+inside one, and the differing words are spelling variants (`tail`/`tale`, `honour`/`honor`) and rare names that flip
+between the two runs. The segment boundaries there were 20.32, 48.48, 70.00, 98.48, 127.12, 156.56, 179.92, 204.16 and
+229.28 s. The result is a wash, not a win: on these clips VAD does not measurably help or hurt accuracy. Its benefit is
+bounded memory and time on audio of any length (the 30 s cap), not a lower WER.
+
+Parameter sweep on Ultra F16 (mean `--vad` WER, percent, one variable at a time from the defaults):
+
+| Setting | 0.45 s gap | 0.16 s gap | no gap | mean of the three |
+|---|---:|---:|---:|---:|
+| threshold 0.3 | 1.69 | 1.67 | 1.89 | 1.75 |
+| threshold 0.5 (default) | 1.69 | 1.78 | 1.84 | 1.77 |
+| threshold 0.7 | 1.69 | 1.83 | 1.89 | 1.80 |
+| min pause 0.16 s | 1.69 | 1.78 | 1.84 | 1.77 |
+| min pause 0.32 s (default) | 1.69 | 1.78 | 1.84 | 1.77 |
+| min pause 0.64 s | 1.95 | 1.79 | 1.85 | 1.86 |
+
+Threshold 0.3 is the only setting ahead of the default. On Redux packed it gives 1.97, 1.65 and 1.63 (mean 1.75)
+against 1.92, 1.69 and 1.71 (mean 1.77) for the default. Both gains are 0.02 points, under half a word per clip set, and
+Redux gets worse on the 0.45 s gap set, so the defaults stay. A min pause of 0.64 s is worse on the 0.45 s gap set for
+Ultra (1.95): with a longer required pause the segmenter more often falls back to hard cuts. A min pause of 0.16 s
+changes nothing here.
+
+Known limits:
+- A 30 s window with no pause of 0.32 s makes a hard cut, which can land inside a word.
+- Offline only: no streaming with `--vad`.
+- The VAD head detects pauses weakly (see the caveats above), so many cuts are hard cuts or land at the model's best guess.
+- Ternary kernels are CPU only.
+- All figures are from synthetic LibriSpeech clips.
 
 ## Tests
 

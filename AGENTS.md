@@ -89,6 +89,8 @@ src/                 libparakeet implementation
                        scene_stream.hpp/cpp, pk::SceneStream: combined ASR + diarization + sound-event stream
                        ternary.hpp/cpp    , packed ternary (moondream/parakeet-redux) linears: repack once, int8 activations, scalar ref + two-op ggml custom op
                        ternary_kernels.hpp, ternary_kernels_x86.cpp (AVX-512 VNNI / AVX2), ternary_kernels_neon.cpp
+                       vad_head.hpp/cpp   , voice-activity head of Ultra/Redux (plain C++ loops), Model::vad_probabilities
+                       vad_segmenter.hpp/cpp, pk::segment_by_vad: cut long audio at VAD pauses (SegmenterOpts), used by `transcribe --vad`
                        scene_render.hpp/cpp, pk::SceneRenderer + format_span/is_speech_label: `parakeet-cli scene` text rendering
 examples/cli/        parakeet-cli binary
                        subcommands: info, transcribe (+ --stream), quantize, scene (ASR + diar + sound, one time-ordered feed)
@@ -127,6 +129,9 @@ tests/               ctest targets
                        test_ternary_model.cpp  , packed Redux == dequantized Redux transcript (PARAKEET_TEST_GGUF_REDUX_KEEP + _DEQ)
                        test_model_loader_ternary.cpp, ternary + VAD flags from GGUF KVs
                        bench_ternary.cpp       , single-thread throughput of each ternary kernel (not a ctest)
+                       test_vad_head.cpp       , VAD head probabilities (PARAKEET_TEST_GGUF_ULTRA)
+                       test_vad_segmenter.cpp  , segmenter cut rules (model-independent)
+                       test_transcribe_vad.cpp , --vad path vs plain pass on long audio (PARAKEET_TEST_GGUF_ULTRA, PARAKEET_TEST_GGUF)
                        test_asr_committer.cpp  , shared word/utterance finalize logic (model-independent)
                        test_ced_parity.cpp     , CedTagger scores == ced.cpp PyTorch baseline (PARAKEET_TEST_CED_GGUF f32 + PARAKEET_TEST_CED_BASELINE)
                        test_sound_stream.cpp   , pk::SoundStream windowing/on-off-min_duration logic (model-independent)
@@ -199,6 +204,10 @@ ctest --test-dir build --output-on-failure
 
 Tests return exit code 77 (ctest SKIP) when the venv or checkpoint is absent,
 so they never break a CI environment that lacks them.
+
+Ultra/Redux tests read `PARAKEET_TEST_GGUF_ULTRA` (F16 Ultra),
+`PARAKEET_TEST_GGUF_REDUX_KEEP` (packed ternary) and `PARAKEET_TEST_GGUF_REDUX_DEQ`
+(dequantized Redux); they skip (77) when unset.
 
 ### Test labels
 
@@ -277,6 +286,8 @@ The binary is at `build/examples/cli/parakeet-cli`.
 parakeet-cli info <model.gguf>
 parakeet-cli transcribe --model <model.gguf> --input <audio.wav> [--decoder ctc|tdt] [--stream] [--timestamps] [--json]
 parakeet-cli quantize <in.gguf> <out.gguf> <type>
+parakeet-cli transcribe --model <ultra-or-redux.gguf> --input <long.wav> --vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]
+parakeet-cli vad-probe ...      # dump VAD head probabilities (--variant N picks the head wiring)
 parakeet-cli scene [--model <asr.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>] --input <audio.wav> [--latency model|low|very_low|ultra_low] [--chunk-ms N] [--show-speech] [--json]
 ```
 
@@ -303,6 +314,7 @@ parakeet_capi_transcribe_pcm
 parakeet_capi_transcribe_path_json   # text + per-word/per-token timestamps + confidence as JSON
 parakeet_capi_free_string
 parakeet_capi_last_error
+parakeet_capi_transcribe_path_json_vad   # additive (ABI unchanged): same JSON, long audio cut at VAD pauses; needs a GGUF with a VAD head
 # streaming (cache-aware EOU model parakeet_realtime_eou_120m-v1):
 parakeet_capi_stream_begin
 parakeet_capi_stream_feed       # 16k mono f32 PCM -> newly-finalized text; *eou_out = event bitmask (ABI v5)

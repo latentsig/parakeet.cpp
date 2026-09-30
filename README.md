@@ -42,6 +42,8 @@ Every model below is validated at WER 0 against NeMo and published as GGUF (f16,
 | [parakeet-tdt_ctc-1.1b](https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b) | hybrid TDT+CTC | 1.1B | English | NVIDIA |
 | [parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) | RNNT, streaming | 120M | cache-aware streaming with end-of-utterance detection (`--stream`) | NVIDIA |
 | [nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) | RNNT, streaming | 0.6B | multilingual (40+ locales), prompt-conditioned, offline and cache-aware streaming, pick a language with `--lang` (default `auto`). OpenMDW-1.1 | NVIDIA |
+| [parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) | TDT, v3 shape | 0.6B | multilingual, F16 GGUF, carries a VAD head for `--vad` | Moondream |
+| [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | TDT, v3 shape, ternary encoder | 0.6B | 213 MB packed GGUF (6.8x smaller than F16), CPU only, offline only. On x86 with AVX-512 VNNI it runs at median RTF 75.6 against 46.1 for the same model in F16; WER on LibriSpeech-100 is 1.96 percent. See [`docs/ternary.md`](docs/ternary.md) | Moondream |
 
 ---
 
@@ -241,6 +243,10 @@ parakeet-cli transcribe --model m.gguf --input audio.wav --decoder tdt \
 
 # Read WAV bytes from stdin (useful with ffmpeg/curl pipelines)
 ffmpeg -i input.mp3 -f wav - | parakeet-cli transcribe --model m.gguf --input -
+
+# Long audio on Ultra/Redux: cut at VAD pauses, transcribe each piece (offline only).
+# Tune with --vad-threshold F, --vad-min-pause SEC, --vad-max-seg SEC
+parakeet-cli transcribe --model ultra.gguf --input long.wav --vad
 
 # Print model metadata (arch, dims, mel params, vocab size, TDT durations)
 parakeet-cli info m.gguf

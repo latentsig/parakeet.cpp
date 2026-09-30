@@ -393,10 +393,10 @@ heads — and the C++ port reproduces each head exactly, including the second he
 
 `moondream/parakeet-ultra` (F16) and `moondream/parakeet-redux` (ternary
 encoder) share the v3 architecture and are converted with
-`scripts/convert_hf_parakeet_to_gguf.py` (see `docs/conversion.md`). Only the
-end-to-end transcript on `tests/fixtures/speech.wav` was checked for parity.
-A LibriSpeech-100 WER from an ad hoc script is in `docs/ternary.md`; validated
-long-form WER and the VAD comparison are still to come.
+`scripts/convert_hf_parakeet_to_gguf.py` (see `docs/conversion.md`). There is no
+NeMo baseline for these checkpoints, so parity means the transcript on
+`tests/fixtures/speech.wav` equals the reference transcript in `AGENTS.md`,
+and the packed ternary kernels agree with the dequantized model.
 
 | Model | GGUF form | Kernel | Transcript equals the reference transcript in AGENTS.md |
 |---|---|---|---|
@@ -405,6 +405,26 @@ long-form WER and the VAD comparison are still to come.
 | parakeet-redux | packed ternary (`--ternary keep`) | avx2 | yes |
 | parakeet-redux | packed ternary (`--ternary keep`) | vnni | yes |
 | parakeet-redux | dequantized F16 | n/a | yes |
+
+WER on long audio. Measured on three synthetic long-form clips per set, built from
+LibriSpeech utterances of `benchmarks/librispeech_manifest.tsv` (30 utterances,
+218 to 354 s each, gaps of low-level noise), not on TED-LIUM or other real long
+recordings. Reference = the joined manifest texts; WER from `scripts/asr_metrics.py`
+(case and punctuation normalized); `parakeet-cli transcribe --decoder tdt`, plain
+single pass and `--vad`. Mean over three clips, percent. Details, per-clip values and the
+parameter sweep are in `docs/ternary.md`.
+
+| Model | Gap between utterances | Plain WER | `--vad` WER |
+|---|---|---:|---:|
+| parakeet-ultra F16 | 0.45 s | 1.71 | 1.69 |
+| parakeet-ultra F16 | 0.16 s | 1.69 | 1.78 |
+| parakeet-ultra F16 | none | 1.63 | 1.84 |
+| parakeet-redux packed ternary | 0.45 s | 1.97 | 1.92 |
+| parakeet-redux packed ternary | 0.16 s | 1.95 | 1.69 |
+| parakeet-redux packed ternary | none | 1.83 | 1.71 |
+
+Ultra Q8_0 and dequantized Redux were not measured on the long-form sets. On the 100 LibriSpeech
+utterances (`docs/ternary.md`) Ultra Q8_0 has 1.71 percent and Redux packed 1.96 percent.
 
 Speed numbers are in `docs/ternary.md`.
 
