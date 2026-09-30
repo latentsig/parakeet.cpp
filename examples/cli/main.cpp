@@ -238,6 +238,12 @@ static int cmd_transcribe(int argc, char** argv) {
     bool json = false;
     bool vad = false;
     pk::SegmenterOpts vad_opts;
+    double d = 0.0;
+    auto parse_pos = [](const char* str, double& out) {
+        char* end = nullptr;
+        out = std::strtod(str, &end);
+        return end != str && *end == '\0' && out > 0.0;
+    };
     bool score_norm = true;
     int beam_size = 0;
     int nbest = 0;
@@ -268,11 +274,14 @@ static int cmd_transcribe(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--vad") == 0) {
             vad = true;
         } else if (std::strcmp(argv[i], "--vad-threshold") == 0 && i + 1 < argc) {
-            vad_opts.threshold = (float)std::atof(argv[++i]);
+            if (!parse_pos(argv[++i], d) || d > 1.0) { std::fprintf(stderr, "parakeet-cli: --vad-threshold must be in (0,1]\n"); return 2; }
+            vad_opts.threshold = (float)d;
         } else if (std::strcmp(argv[i], "--vad-min-pause") == 0 && i + 1 < argc) {
-            vad_opts.min_pause_sec = std::atof(argv[++i]);
+            if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-min-pause must be > 0\n"); return 2; }
+            vad_opts.min_pause_sec = d;
         } else if (std::strcmp(argv[i], "--vad-max-seg") == 0 && i + 1 < argc) {
-            vad_opts.max_seg_sec = std::atof(argv[++i]);
+            if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-max-seg must be > 0\n"); return 2; }
+            vad_opts.max_seg_sec = d;
         }
     }
     if (model.empty() || input.empty()) {

@@ -3,6 +3,7 @@
 // Env: PARAKEET_TEST_GGUF_ULTRA (has a VAD head), PARAKEET_TEST_GGUF (does not; optional).
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
@@ -55,29 +56,81 @@ int main() {
     const std::string b = m->transcribe_pcm_vad(shortclip.samples, 16000, Decoder::kTDT);
     CHECK(a == b);
 
-    // 2. long audio (180 s): VAD transcript close to the single-pass one
-    Audio longclip;
-    CHECK(load_audio_16k_mono("benchmarks/audio/diverse/i_have_a_dream.wav", longclip));
-    const std::string full = m->transcribe_pcm(longclip.samples, 16000, Decoder::kTDT);
-    const std::string seg = m->transcribe_pcm_vad(longclip.samples, 16000, Decoder::kTDT);
-    const auto wf = words_of(full), ws = words_of(seg);
-    const double diff = (double)edit_distance(wf, ws) / (double)std::max<size_t>(1, wf.size());
-    std::printf("long clip: %zu vs %zu words, word diff %.3f\n", wf.size(), ws.size(), diff);
-    CHECK(!ws.empty());
-    CHECK(diff < 0.08);
-
-    // 3. timestamps: monotonic, inside the clip, word count consistent
-    const Transcription tr = m->transcribe_pcm_vad_with_timestamps(longclip.samples, 16000, Decoder::kTDT);
-    const float dur = (float)longclip.samples.size() / 16000.0f;
-    CHECK(!tr.words.empty());
-    float prev = -1.0f;
-    for (const Word& w : tr.words) {
-        CHECK(w.start >= prev - 1e-3f);
-        CHECK(w.end >= w.start);
-        CHECK(w.end <= dur + 0.5f);
-        prev = w.start;
+    // 2. self-contained long clip (~62 s) from tracked fixtures
+    Audio clip;
+    {
+        const char* parts[] = {"tests/fixtures/two_speakers.wav", "tests/fixtures/speech.wav",
+                               "tests/fixtures/two_speakers.wav", "tests/fixtures/speech.wav"};
+        for (const char* f : parts) {
+            Audio x;
+            CHECK(load_audio_16k_mono(f, x));
+            clip.samples.insert(clip.samples.end(), x.samples.begin(), x.samples.end());
+        }
+        clip.sample_rate = 16000;
     }
-    CHECK(words_of(tr.text) == ws);
+    const double total = (double)clip.samples.size() / 16000.0;
+    {
+        SegmenterOpts o;
+        o.frame_sec = m->config().vad.frame_sec;
+        const auto segs = segment_by_vad(m->vad_probabilities(clip.samples), total, o);
+        std::printf("62 s clip (%.2f s): %zu segments:", total, segs.size());
+        for (const auto& sg : segs) std::printf(" [%.2f-%.2f]", sg.start, sg.end);
+        std::printf("\n");
+        CHECK(segs.size() >= 2);
+        if (!segs.empty()) {
+            CHECK(segs.front().start == 0.0);
+            CHECK(std::fabs(segs.back().end - total) < 1e-6);
+            for (size_t i = 0; i < segs.size(); ++i) {
+                CHECK(segs[i].end - segs[i].start <= o.max_seg_sec + 1e-6);
+                if (i + 1 < segs.size()) CHECK(segs[i].end == segs[i + 1].start);
+            }
+        }
+    }
+    {
+        const std::string full = m->transcribe_pcm(clip.samples, 16000, Decoder::kTDT);
+        const std::string seg = m->transcribe_pcm_vad(clip.samples, 16000, Decoder::kTDT);
+        const auto wf = words_of(full), ws = words_of(seg);
+        const double diff = (double)edit_distance(wf, ws) / (double)std::max<size_t>(1, wf.size());
+        std::printf("62 s clip: %zu vs %zu words, word diff %.3f\n", wf.size(), ws.size(), diff);
+        CHECK(!ws.empty());
+        CHECK(diff < 0.15);
+        const Transcription tr = m->transcribe_pcm_vad_with_timestamps(clip.samples, 16000, Decoder::kTDT);
+        CHECK(!tr.words.empty());
+        float prev = -1.0f;
+        for (const Word& w : tr.words) {
+            CHECK(w.start >= prev - 1e-3f);
+            CHECK(w.end >= w.start);
+            prev = w.start;
+        }
+        if (!tr.words.empty()) CHECK(tr.words.back().end <= (float)total + 0.5f);
+        for (size_t i = 1; i < tr.tokens.size(); ++i) CHECK(tr.tokens[i].frame >= tr.tokens[i - 1].frame);
+        CHECK(words_of(tr.text) == ws);
+    }
+
+    // 3. optional 180 s clip (untracked file)
+    Audio longclip;
+    if (!load_audio_16k_mono("benchmarks/audio/diverse/i_have_a_dream.wav", longclip)) {
+        std::puts("skip long clip: file missing");
+    } else {
+        const std::string full = m->transcribe_pcm(longclip.samples, 16000, Decoder::kTDT);
+        const std::string seg = m->transcribe_pcm_vad(longclip.samples, 16000, Decoder::kTDT);
+        const auto wf = words_of(full), ws = words_of(seg);
+        const double diff = (double)edit_distance(wf, ws) / (double)std::max<size_t>(1, wf.size());
+        std::printf("long clip: %zu vs %zu words, word diff %.3f\n", wf.size(), ws.size(), diff);
+        CHECK(!ws.empty());
+        CHECK(diff < 0.08);
+        const Transcription tr = m->transcribe_pcm_vad_with_timestamps(longclip.samples, 16000, Decoder::kTDT);
+        const float dur = (float)longclip.samples.size() / 16000.0f;
+        CHECK(!tr.words.empty());
+        float prev = -1.0f;
+        for (const Word& w : tr.words) {
+            CHECK(w.start >= prev - 1e-3f);
+            CHECK(w.end >= w.start);
+            CHECK(w.end <= dur + 0.5f);
+            prev = w.start;
+        }
+        CHECK(words_of(tr.text) == ws);
+    }
 
     // 4. C-API: JSON works on a VAD model, NULL + message on a model without one
     parakeet_ctx* ctx = parakeet_capi_load(ultra);
@@ -88,7 +141,10 @@ int main() {
         if (j) { CHECK(std::string(j).find("\"words\"") != std::string::npos); parakeet_capi_free_string(j); }
         parakeet_capi_free(ctx);
     }
+    if (!plain) std::puts("note: PARAKEET_TEST_GGUF unset, skipping no-VAD-head error check");
     if (plain) {
+        auto pm = Model::load(plain);
+        CHECK(pm && !pm->config().vad.present);
         parakeet_ctx* c2 = parakeet_capi_load(plain);
         CHECK(c2 != nullptr);
         if (c2) {

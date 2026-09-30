@@ -155,7 +155,8 @@ char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx, const char* wav_path
 // transcribed one by one (word/token times are relative to the whole file). Audio
 // of 30 s or less gives the same document as the plain function. Returns NULL and
 // sets the context's last error to "model has no VAD head" when the model has no
-// VAD head. Additive; no ABI bump.
+// VAD head. It always uses the default segmenter options (30 s cap, threshold
+// 0.5). Additive; no ABI bump.
 char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_path,
                                              int decoder);
 

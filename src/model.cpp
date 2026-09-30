@@ -300,10 +300,16 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
     const std::vector<float> p = m.vad_probabilities(pcm16k);
     const std::vector<VadSegment> segs = segment_by_vad(p, total_sec, opts);
     std::vector<Slice> out;
+    const size_t n = pcm16k.size();
+    auto at = [&](double sec) {
+        const long long v = std::llround(sec * 16000.0);
+        return (size_t)std::min<long long>(std::max<long long>(v, 0), (long long)n);
+    };
     for (size_t i = 0; i < segs.size(); ++i) {
-        const size_t a = (size_t)std::llround(segs[i].start * 16000.0);
-        const size_t b = (i + 1 == segs.size()) ? pcm16k.size()
-                                                : (size_t)std::llround(segs[i].end * 16000.0);
+        // Consecutive slices share the exact boundary sample: a slice ends where
+        // the next one starts.
+        const size_t a = (i == 0) ? 0 : at(segs[i].start);
+        const size_t b = (i + 1 == segs.size()) ? n : std::max(a, at(segs[i + 1].start));
         Slice s;
         s.pcm.assign(pcm16k.begin() + (std::ptrdiff_t)a, pcm16k.begin() + (std::ptrdiff_t)b);
         if (s.pcm.size() < 3200) s.pcm.resize(3200, 0.0f);  // 0.2 s minimum
@@ -324,8 +330,10 @@ std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_
         sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
     if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
         return transcribe_16k(pcm16k, decoder, target_lang);
+    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
+    if (slices.empty()) return transcribe_16k(pcm16k, decoder, target_lang);
     std::string text;
-    for (const Slice& s : vad_slices(*this, pcm16k, opts)) {
+    for (const Slice& s : slices) {
         const std::string t = transcribe_16k(s.pcm, decoder, target_lang);
         if (t.empty()) continue;
         if (!text.empty()) text += ' ';
@@ -342,8 +350,10 @@ Transcription Model::transcribe_pcm_vad_with_timestamps(const std::vector<float>
         sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
     if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
         return transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
+    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
+    if (slices.empty()) return transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
     Transcription all;
-    for (const Slice& s : vad_slices(*this, pcm16k, opts)) {
+    for (const Slice& s : slices) {
         Transcription t = transcribe_with_timestamps(s.pcm, 16000, decoder, target_lang);
         for (Word& w : t.words) { w.start += (float)s.start_sec; w.end += (float)s.start_sec; }
         for (TokenInfo& k : t.tokens) k.frame += s.start_frame;
