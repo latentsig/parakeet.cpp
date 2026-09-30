@@ -7,6 +7,52 @@ using namespace pk;
 static int failures = 0;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL: %s (line %d)\n", #c, __LINE__); ++failures; } } while (0)
 
+// Speaker names replace "Speaker N" when known
+static void test_render_names() {
+    pk::SceneUpdate u;
+    pk::SpeakerUtterance a{0, "hello there", 0.0f, 1.0f, 0.9f};
+    a.name = "alice";
+    pk::SpeakerUtterance b{1, "hi", 2.0f, 2.5f, 0.9f};   // slot 1 still unknown
+    u.utterances = {a, b};
+    u.safe_until = 10.0;
+    pk::SceneRenderer r(/*has_diar=*/true, /*show_speech=*/false, nullptr, /*has_asr=*/true);
+    r.add(u);
+    const auto lines = r.flush(10.0);
+    CHECK(lines.size() == 2);
+    CHECK(lines[0].find("alice: hello there") != std::string::npos);
+    CHECK(lines[0].find("Speaker") == std::string::npos);
+    CHECK(lines[1].find("Speaker 1: hi") != std::string::npos);
+
+    // Speaker-only lines use the slot name too.
+    pk::SceneUpdate d;
+    d.speakers = {{0, 1.0f, 2.0f}, {1, 3.0f, 4.0f}};
+    d.names = {{0, {"alice", 0.7f}}};
+    pk::SceneRenderer dz(true, false, nullptr, /*has_asr=*/false);
+    dz.add(d);
+    const auto dl = dz.flush_all();
+    CHECK(dl.size() == 2 && dl[0] == "[00:01.0 - 00:02.0]  alice" && dl[1] == "[00:03.0 - 00:04.0]  Speaker 1");
+}
+
+static void test_json_names() {
+    pk::SceneUpdate u;
+    u.t = 3.0;
+    pk::SpeakerUtterance a{0, "hello", 0.0f, 1.0f, 0.9f};
+    a.name = "alice"; a.name_score = 0.71f;
+    u.utterances = {a};
+    u.speakers = {{0, 0.0f, 1.0f}};
+    u.active_speakers = {{1, 2.0f, 3.0f}};
+    u.names = {{0, {"alice", 0.71f}}, {1, {"", 0.0f}}};
+    const std::string j = pk::scene_update_to_json(u, [](int) -> const char* { return nullptr; });
+    CHECK(j.find("\"names\":{\"0\":{\"name\":\"alice\",\"score\":0.7100},\"1\":{\"name\":\"\",\"score\":0.0000}}") != std::string::npos);
+    CHECK(j.find("\"utterances\":[{\"speaker\":0,\"name\":\"alice\",\"name_score\":0.7100,\"text\":\"hello\"") != std::string::npos);
+    CHECK(j.find("\"speakers\":[{\"speaker\":0,\"name\":\"alice\",\"name_score\":0.7100,\"start\"") != std::string::npos);
+    CHECK(j.find("\"active\":{\"speakers\":[{\"speaker\":1,\"name\":\"\",\"name_score\":0.0000,\"start\":2.000}") != std::string::npos);
+    // With no names the document keeps today's exact shape.
+    u.names.clear();
+    const std::string plain = pk::scene_update_to_json(u, [](int) -> const char* { return nullptr; });
+    CHECK(plain.find("\"name") == std::string::npos);
+}
+
 int main() {
     auto label = [](int i) -> const char* {
         return i == 0 ? "Speech" : i == 359 ? "Knock" : i == 42 ? "Speech synthesizer" : "Other";
@@ -75,6 +121,9 @@ int main() {
     withasr.add(d1);
     auto wl = withasr.flush_all();
     CHECK(wl.size() == 1 && wl[0] == "[00:03.0 - 00:03.5]  (Knock 0.70)");
+
+    test_render_names();
+    test_json_names();
 
     if (failures) return 1;
     std::fprintf(stderr, "PASS\n");

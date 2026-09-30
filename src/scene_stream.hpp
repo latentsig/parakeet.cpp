@@ -1,10 +1,12 @@
 #pragma once
 #include "asr_committer.hpp"
 #include "diar_pcm_stream.hpp"
+#include "speaker_identifier.hpp"  // pk::SlotName
 #include "sas_merge.hpp"      // pk::SpeakerWord, pk::SpeakerUtterance
 #include "sound_stream.hpp"   // pk::SoundOpts, pk::SoundSegment, pk::SoundWindow
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -38,6 +40,9 @@ struct SceneUpdate {
     std::vector<SoundSegment> sounds;               // closed this call
     std::vector<StreamingSpeakerSegment> active_speakers;
     std::vector<SoundSegment> active_sounds;
+    // Current identity of every diarization slot the speaker part has seen
+    // (unknown slots have an empty name). Empty without a speaker model.
+    std::map<int, SlotName> names;
 };
 
 // The part running when feed() threw, so a caller can attribute the error.

@@ -61,8 +61,11 @@ SceneRenderer::SceneRenderer(bool has_diar, bool show_speech, std::function<cons
 void SceneRenderer::add(const SceneUpdate& u) {
     if (speaker_lines_) {
         for (const SpeakerSegment& g : u.speakers) {
-            pending_.push_back({(double)g.start,
-                                format_span(g.start, g.end) + "  Speaker " + std::to_string(g.speaker)});
+            auto nm = u.names.find(g.speaker);
+            const std::string who = (nm != u.names.end() && !nm->second.name.empty())
+                                        ? nm->second.name
+                                        : "Speaker " + std::to_string(g.speaker);
+            pending_.push_back({(double)g.start, format_span(g.start, g.end) + "  " + who});
             diarized_ = std::max(diarized_, (double)g.end);
         }
         // A closed segment ends at or before the diarized time, and an open
@@ -77,7 +80,9 @@ void SceneRenderer::add(const SceneUpdate& u) {
     for (const SpeakerUtterance& utt : u.utterances) {
         std::string line = format_span(utt.start, utt.end) + "  ";
         if (has_diar_) {
-            if (utt.speaker >= 0)
+            if (!utt.name.empty())
+                line += utt.name + ": ";
+            else if (utt.speaker >= 0)
                 line += "Speaker " + std::to_string(utt.speaker) + ": ";
             else
                 line += "Speaker ?: ";
