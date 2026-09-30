@@ -344,6 +344,12 @@ parakeet_capi_scene_stream_begin_speaker
 parakeet_capi_transcribe_and_diarize_named_json
 ```
 
+```
+# v10 (additive; not used by LocalAI yet)
+parakeet_capi_speaker_registry_add_embedding   # add an embedding computed by the host
+parakeet_capi_diarize_named_pcm_json           # diarization + "names", no ASR model
+```
+
 Combined scene stream (ABI v8, additive; not used by LocalAI yet). One stream
 that carries any mix of an ASR context, a diarization context, and a tagger
 context, and emits speaker-attributed words/utterances plus sound-event
