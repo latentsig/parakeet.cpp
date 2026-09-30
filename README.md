@@ -54,9 +54,13 @@ NeMo-validated set above: there is no NeMo baseline for them, so parity is trans
 our own v3 path (see [`docs/parity.md`](docs/parity.md)), and no GGUFs are published yet.
 
 - Redux packs the encoder as ternary weights: a 213 MB GGUF, 6.8x smaller than F16. It runs on CPU
-  only and offline only. On x86 with AVX-512 VNNI it reaches median RTF 75.6 against 46.1 for the
-  same model in F16; WER on the 100 LibriSpeech utterances is 1.96 percent. See
-  [`docs/ternary.md`](docs/ternary.md).
+  only and offline only. On x86 with AVX-512 VNNI it reaches median RTF 75.6 per utterance on
+  LibriSpeech-100 (8 threads) against 46.1 for the same model in F16; on a single 180 s clip the
+  gain is about 10 percent; WER on the 100 LibriSpeech utterances is 1.96 percent. See
+  [`docs/ternary.md`](docs/ternary.md). SIMD kernels exist for x86-64 with AVX2 or AVX-512 VNNI and
+  aarch64 with dotprod; MSVC builds, Windows on ARM and aarch64 without dotprod use a slow scalar
+  kernel (about 1 GMAC/s), and the load logs a warning. The packed file also stays resident next to
+  the repacked planes, so memory use is more than the file size.
 - Both carry a voice-activity head, used by `transcribe --vad` to cut long audio at pauses. On
   synthetic long-form clips it does not change WER meaningfully.
 ---

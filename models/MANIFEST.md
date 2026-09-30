@@ -114,7 +114,10 @@ Neither is published yet; sizes are from local conversions. Transcript on
 
 Expected file set for a release (names as used by the tests and docs):
 `parakeet-ultra-f16.gguf`, `parakeet-redux-ternary.gguf` (`--ternary keep`, packed) and
-`parakeet-redux-f16.gguf` (`--ternary dequant --dtype f16`, for GPU or a non-x86/ARM CPU).
+`parakeet-redux-f16.gguf` (`--ternary dequant --dtype f16`). Use it for any GPU backend and for CPUs that would run the packed
+file on the slow scalar kernel: MSVC builds, Windows on ARM and aarch64 without dotprod. x86-64 with AVX2
+or AVX-512 VNNI and aarch64 with dotprod get SIMD kernels for the packed file. The packed file also keeps the
+original packed tensors resident next to the repacked planes, so its memory use is more than 213 MB.
 Ultra Q8_0 (`--dtype q8_0`, 941.5 MB) is measured in `docs/ternary.md` but is optional.
 
 Both carry the `parakeet.vad.*` KVs and `vad_head.*` tensors unless converted

@@ -57,12 +57,25 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
 
 - CPU only. Loading a packed GGUF with a GPU backend active fails with a
   message; re-convert with `--ternary dequant` to use a GPU.
+- The kernel is chosen at run time. x86-64 with AVX2 or AVX-512 VNNI and aarch64 with the
+  dot-product extension (dotprod) get SIMD kernels. MSVC builds, Windows on ARM and aarch64 without
+  dotprod select the scalar kernel (about 1 GMAC/s); the load logs a warning when that happens.
+  Re-convert with `--ternary dequant` on such machines.
+- The loader keeps the original packed tensors resident next to the repacked planes, so a packed
+  model uses more weight memory than its file size (roughly twice for Redux, not measured).
 - No cache-aware streaming. `StreamingEncoder` rejects packed GGUFs; use a
   `--ternary dequant` file for streaming.
 - `parakeet-cli quantize` never touches ternary tensors. Running it on a packed
   file copies `.qweight` (I8) and `.scales` (F16) verbatim.
 
 ## Measured speed
+
+### How the numbers were measured
+
+The numbers come from this repository's standard build. Its CMake configure
+applies the in-tree ggml patches from `third_party/ggml-patches`
+(`scripts/apply_ggml_patches.sh`); the ggml submodule pin itself is unchanged.
+Results on an unpatched ggml were not measured.
 
 Machine: AMD Ryzen 9 9950X3D (16 cores, Zen 5, AVX-512 VNNI), CPU backend,
 2026-09-29. The end-to-end numbers were taken at commit f228376, the microbench
@@ -122,6 +135,9 @@ RTF is 180 s divided by the median.
 | parakeet-ultra | Q8_0 | 941.5 MB | 9.04 s | 19.9 | 8.29 s |
 | parakeet-ultra | F16 | 1441.9 MB | 8.63 s | 20.9 | 7.83 s |
 | parakeet-tdt-0.6b-v3 | F16 | 1441.0 MB | 32.79 s | 5.5 | 29.29 s |
+
+The v3 F16 row read its model from a network share, and its wall time includes
+that model load, so it is not comparable with the other rows.
 
 The scalar kernel is a reference only (116.39 s for this clip in one run at
 commit c8499e6, with an earlier and faster form of the reference).
