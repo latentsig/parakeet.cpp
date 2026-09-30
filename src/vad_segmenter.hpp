@@ -17,8 +17,11 @@ struct SegmenterOpts {
 };
 
 // Cuts [0, total_sec] into contiguous segments of at most max_seg_sec, at
-// pauses found in the per-frame speech probabilities p. See the plan for the
-// rule. Every internal boundary is a whole number of frames.
+// pauses found in the per-frame speech probabilities p. Rule: cut in the middle
+// of the longest run of frames below threshold (at least min_pause_sec long),
+// searched first in the last third of the allowed window then in the whole
+// window from min_seg_sec on; ties go to the later run; hard cut at max_seg_sec
+// if no pause is found. Every internal boundary is a whole number of frames.
 std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total_sec,
                                        const SegmenterOpts& o);
 
