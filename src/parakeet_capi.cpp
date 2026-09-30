@@ -60,7 +60,9 @@
 //     registry, scene_stream_begin_speaker, transcribe_and_diarize_named_json;
 //     additive.
 // v10: raw-embedding enroll (parakeet_capi_speaker_registry_add_embedding) for
-//      callers that keep speaker embeddings themselves; additive.
+//      callers that keep speaker embeddings themselves, and diarization with
+//      speaker names and no ASR model (parakeet_capi_diarize_named_pcm_json);
+//      additive.
 #define PARAKEET_CAPI_ABI_VERSION 10
 
 // The opaque context: a loaded model plus a buffer for the last error message.
@@ -1970,12 +1972,20 @@ extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar_ctx, pa
                                                       const float* samples, int n_samples, int sample_rate,
                                                       float accept_threshold, float margin) {
     try {
+        // Each failure below sets the one message that applies; clear both so the other ctx
+        // never shows an older, unrelated error.
+        if (diar_ctx) diar_ctx->last_error.clear();
+        if (speaker) speaker->last_error.clear();
         if (!speaker) return nullptr;
         if (!require_diar(diar_ctx)) return nullptr;
         if (!require_speaker(speaker)) return nullptr;
         if (!registry) { speaker->last_error = "speaker identification needs a registry"; return nullptr; }
-        if (!samples || n_samples <= 0 || sample_rate <= 0) {
+        if (!samples || n_samples <= 0) {
             diar_ctx->last_error = "invalid samples buffer";
+            return nullptr;
+        }
+        if (sample_rate <= 0) {
+            diar_ctx->last_error = "invalid sample rate";
             return nullptr;
         }
         const int rd = registry->reg.dim();
@@ -1991,15 +2001,16 @@ extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar_ctx, pa
         const std::string oerr = pk::validate_speaker_opts(o);
         if (!oerr.empty()) { speaker->last_error = "invalid speaker options: " + oerr; return nullptr; }
 
-        const std::vector<float> pcm(samples, samples + n_samples);
+        // Resample once; diarize_pcm and the identifier both take the 16 kHz signal.
+        std::vector<float> pcm16k(samples, samples + n_samples);
+        if (sample_rate != 16000) pcm16k = pk::resample_linear(pcm16k, sample_rate, 16000);
         pk::DiarizationResult dr;
         try {
-            dr = diar_ctx->diar->diarize_pcm(pcm, sample_rate);
+            dr = diar_ctx->diar->diarize_pcm(pcm16k, 16000);
         } catch (const std::exception& e) {
             diar_ctx->last_error = e.what();
             return nullptr;
         }
-        const std::vector<float> pcm16k = sample_rate == 16000 ? pcm : pk::resample_linear(pcm, sample_rate, 16000);
         std::map<int, pk::SlotName> names;
         try {
             names = pk::identify_offline(pcm16k, dr.segments, speaker->speaker->embedder(), registry->reg, o);

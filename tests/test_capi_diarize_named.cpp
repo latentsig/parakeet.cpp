@@ -179,22 +179,38 @@ int main() {
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), 0, 16000, 0, 0) == nullptr);
     CHECK(std::strstr(parakeet_capi_last_error(diar), "invalid samples buffer") != nullptr);
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), 16000, 0, 0, 0) == nullptr);
-    CHECK(std::strstr(parakeet_capi_last_error(diar), "invalid samples buffer") != nullptr);
+    CHECK(std::strstr(parakeet_capi_last_error(diar), "invalid sample rate") != nullptr);
     // A registry made for a different encoder size is refused with both sizes in the message, on
-    // the speaker ctx, and before diarization runs (the whole fixture is passed, the diar ctx stays clean).
+    // the speaker ctx, and before diarization runs (the whole fixture is passed, the diar ctx stays clean, although the call before it left a message there).
     {
         parakeet_speaker_registry* wrong = parakeet_capi_speaker_registry_new();
         const float small[3] = {1, 0, 0};
         CHECK(parakeet_capi_speaker_registry_add_embedding(wrong, "x", small, 3) == 0);
-        // A good call first, which clears the diar ctx message left by the error cases above.
-        char* ok = parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), 16000, 16000, 0, 0);
-        if (ok) parakeet_capi_free_string(ok);
         CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, wrong, wav.samples.data(), (int)wav.samples.size(),
                                                     16000, 0, 0) == nullptr);
         const std::string msg = parakeet_capi_last_error(spk);
         const std::string want = "this model produces " + std::to_string(parakeet_capi_speaker_dim(spk));
         CHECK(msg.find("3-value") != std::string::npos);
         CHECK(msg.find(want) != std::string::npos);
+        CHECK(std::strlen(parakeet_capi_last_error(diar)) == 0);
+        parakeet_capi_speaker_registry_free(wrong);
+    }
+
+    // Only the ctx that the failure belongs to carries a message: a failure on one ctx must not
+    // leave an older message on the other.
+    {
+        parakeet_speaker_registry* wrong = parakeet_capi_speaker_registry_new();
+        const float small[3] = {1, 0, 0};
+        CHECK(parakeet_capi_speaker_registry_add_embedding(wrong, "x", small, 3) == 0);
+        // speaker fails, then diar fails: the speaker message is gone.
+        CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, wrong, wav.samples.data(), 16000, 16000, 0, 0) == nullptr);
+        CHECK(std::strlen(parakeet_capi_last_error(spk)) > 0);
+        CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, nullptr, 16000, 16000, 0, 0) == nullptr);
+        CHECK(std::strstr(parakeet_capi_last_error(diar), "invalid samples buffer") != nullptr);
+        CHECK(std::strlen(parakeet_capi_last_error(spk)) == 0);
+        // diar fails, then speaker fails: the diar message is gone.
+        CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, wrong, wav.samples.data(), 16000, 16000, 0, 0) == nullptr);
+        CHECK(std::strstr(parakeet_capi_last_error(spk), "3-value") != nullptr);
         CHECK(std::strlen(parakeet_capi_last_error(diar)) == 0);
         parakeet_capi_speaker_registry_free(wrong);
     }

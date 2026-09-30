@@ -667,8 +667,13 @@ char* parakeet_capi_transcribe_and_diarize_named_json(parakeet_ctx* asr, parakee
 // be 0 or more. 0 for either keeps its default (0.5 and 0.05). Any sample rate
 // (resampled to 16 kHz like the other PCM entry points). Returns NULL on error,
 // with the message on `diar` (a wrong kind, bad samples) or on `speaker` (a
-// wrong kind, a NULL or wrong-sized registry, invalid options). Free with
-// parakeet_capi_free_string. ABI v10.
+// wrong kind, a NULL or wrong-sized registry, invalid options); both messages
+// are cleared on entry, so only the ctx the failure belongs to has one. NULL
+// `diar` or `speaker` returns NULL with no message. An empty buffer
+// (`n_samples == 0`) is an error here, unlike parakeet_capi_diarize_pcm which
+// returns an empty document. An empty registry gives every slot an empty name.
+// `reg` is only read; it may be shared by concurrent calls as long as nothing
+// adds to it meanwhile. Free with parakeet_capi_free_string. ABI v10.
 char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
                                            parakeet_speaker_registry* reg, const float* samples,
                                            int n_samples, int sample_rate, float accept_threshold,
