@@ -46,6 +46,7 @@ pk_add_test(test_joint_step_batch)
 pk_add_test(test_prompt_kernel)
 pk_add_test(test_ternary)
 pk_add_test(test_ternary_model)
+pk_add_test(test_ternary_long)
 add_executable(bench_ternary bench_ternary.cpp)
 target_link_libraries(bench_ternary PRIVATE parakeet)
 target_include_directories(bench_ternary PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
@@ -157,7 +158,7 @@ set_tests_properties(test_model_loader test_mel test_mel_gpu test_subsampling te
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
                      test_combined_offline test_streaming_diarization test_diarization_accuracy test_diarization
                      PROPERTIES LABELS "model")
-set_tests_properties(test_ternary_model test_transcribe_vad test_vad_head test_model_loader_ternary
+set_tests_properties(test_ternary_model test_ternary_long test_transcribe_vad test_vad_head test_model_loader_ternary
                      test_ternary_load_negative PROPERTIES LABELS "model")
 # These tests read fixtures/baselines via paths relative to the project root.
 set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_batch test_subsampling_batch_causal test_relpos_attention test_relpos_attention_batch test_conformer test_conformer_batch
@@ -174,7 +175,7 @@ set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_bat
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
                      test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_stream test_capi_stream_json
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
-                     test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model test_transcribe_vad
+                     test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model test_ternary_long test_transcribe_vad
                      PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Python converter check (skips with exit 77 when the venv/model are absent).
