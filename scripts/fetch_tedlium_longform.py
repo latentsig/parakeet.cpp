@@ -20,6 +20,7 @@ from datasets import Audio, load_dataset
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
+    ap.add_argument("--only", help="write only the talk whose name contains this text (e.g. BillGates)")
     a = ap.parse_args()
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -27,6 +28,8 @@ def main():
     ds = ds.cast_column("audio", Audio(decode=False))
     for i, ex in enumerate(ds):
         name = re.sub(r"[^A-Za-z0-9_-]", "", pathlib.Path(ex["audio"]["path"] or f"talk{i}").stem) or f"talk{i}"
+        if a.only and a.only not in name:
+            continue
         y, sr = sf.read(io.BytesIO(ex["audio"]["bytes"]), dtype="float32")
         if y.ndim > 1:
             y = y.mean(axis=1)

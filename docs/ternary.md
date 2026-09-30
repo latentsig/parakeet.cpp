@@ -419,19 +419,19 @@ does not have (`model has no VAD head`), so v3 has only the plain column. The se
 
 | Talk (length) | v3 plain | Ultra plain | Ultra VAD | Redux packed plain | Redux packed VAD | Redux deq plain | Redux deq VAD |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| AimeeMullins (1249 s) | 6.65 | 3.44 | 3.41 | CRASH | 4.34 | 4.08 | 4.21 |
-| BillGates (1506 s) | 7.07 | 5.79 | 5.74 | CRASH | 6.34 | 6.32 | 6.32 |
-| DanBarber (834 s) | 5.75 | 5.46 | 4.90 | CRASH | 6.79 | 6.59 | 6.83 |
+| AimeeMullins (1249 s) | 6.65 | 3.44 | 3.41 | 4.18 | 4.34 | 4.08 | 4.21 |
+| BillGates (1506 s) | 7.07 | 5.79 | 5.74 | 6.18 | 6.34 | 6.32 | 6.32 |
+| DanBarber (834 s) | 5.75 | 5.46 | 4.90 | 6.47 | 6.79 | 6.59 | 6.83 |
 | DanBarber_2010_S103 (5.5 s) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 8.33 | 8.33 |
-| DanielKahneman (1096 s) | 3.29 | 3.23 | 3.20 | CRASH | 3.98 | 4.11 | 4.14 |
+| DanielKahneman (1096 s) | 3.29 | 3.23 | 3.20 | 4.11 | 3.98 | 4.11 | 4.14 |
 | EricMead (459 s) | 5.61 | 4.91 | 4.84 | 5.35 | 5.16 | 5.23 | 5.16 |
 | GaryFlake (345 s) | 2.90 | 3.16 | 3.08 | 3.52 | 3.60 | 3.60 | 3.69 |
-| JamesCameron (982 s) | 6.34 | 5.52 | 5.42 | CRASH | 5.62 | 5.62 | 5.55 |
-| JaneMcGonigal (1168 s) | 4.21 | 3.60 | 3.68 | CRASH | 4.09 | 4.06 | 4.16 |
-| MichaelSpecter (921 s) | 3.57 | 3.25 | 3.16 | CRASH | 3.79 | 3.63 | 3.86 |
+| JamesCameron (982 s) | 6.34 | 5.52 | 5.42 | 5.81 | 5.62 | 5.62 | 5.55 |
+| JaneMcGonigal (1168 s) | 4.21 | 3.60 | 3.68 | 4.06 | 4.09 | 4.06 | 4.16 |
+| MichaelSpecter (921 s) | 3.57 | 3.25 | 3.16 | 3.63 | 3.79 | 3.63 | 3.86 |
 | RobertGupta (340 s) | 3.04 | 2.71 | 2.59 | 4.17 | 4.51 | 4.17 | 4.62 |
-| Mean, all 11 | 4.40 | 3.73 | 3.64 | n/a (4 of 11 ran) | 4.38 | 5.07 | 5.17 |
-| Mean, without the 5.5 s clip | 4.84 | 4.11 | 4.00 | n/a | 4.82 | 4.74 | 4.85 |
+| Mean, all 11 | 4.40 | 3.73 | 3.64 | 4.32 | 4.38 | 5.07 | 5.17 |
+| Mean, without the 5.5 s clip | 4.84 | 4.11 | 4.00 | 4.75 | 4.82 | 4.74 | 4.85 |
 
 Reading:
 
@@ -448,10 +448,18 @@ Reading:
   5.5 s clip. The all-11 gap is the 24-word clip (0 against 2 errors); on the ten real talks packed and dequantized are the same.
 - VAD against plain. Ultra: VAD is better on 9 of 11 talks (one tie), mean 3.64 against 3.73 (4.00 against 4.11), gains of 0.03
   to 0.56 points (the 0.56 is DanBarber), and worse on JaneMcGonigal by 0.08. Redux dequantized: VAD is slightly worse, 5.17 against 5.07
-  (4.85 against 4.74). Where Redux packed has both (4 talks) it is 3.32 with VAD against 3.26 plain. The honest reading is that on
-  real talks VAD segmentation is about neutral: a small gain for Ultra, a small loss for Redux, all under about 0.15 points on the mean and
-  inside per-talk noise. Peak RSS (from `/usr/bin/time -v`) with `--vad` is 7 to 11 GB on the talks over 800 s, about the same as
+  (4.85 against 4.74). Redux packed: plain 4.32 against VAD 4.38 (4.75 against 4.82 without the short clip), so plain is slightly better, by
+  0.07 points. The honest reading is that on real talks VAD segmentation is about neutral: a small gain for Ultra, a small loss for Redux,
+  all under about 0.15 points on the mean and inside per-talk noise. Peak RSS (from `/usr/bin/time -v`) with `--vad` is 7 to 11 GB on the talks over 800 s, about the same as
   the single pass, and drops to about 4 GB only on the three shortest talks (340 to 459 s). So on these talks VAD did not buy a memory win.
+- Packed against dequantized Redux, plain single pass, after the long-audio fix (the seven talks that used to crash; packed run
+  at `--threads 8` with `/usr/bin/time -v`): WER 4.92 packed against 4.91 dequantized on the mean of the seven (per talk within
+  0.2 points, packed lower on 2, higher on 2, equal on 3). Scored with the dequantized transcript as the reference, packed
+  differs by 64 of 22922 words (0.28 percent; per talk 0.05 to 0.50 percent). So on real 14 to 25 minute talks the packed
+  path matches the dequantized one to a few words per talk, and there is no measurable cost from int8 activations or the
+  packed kernel. The packed plain runs all exited 0. Longest talk (BillGates, 1506 s): 82.8 s wall, 11.67 GB peak RSS, load average 20 at the
+  start; the other six took 64 to 85 s except JamesCameron (318 s) and MichaelSpecter (294 s), which started at load 26 to 48;
+  peak RSS 6.6 to 11.7 GB, similar to the F16 models. Load averages at start were 3.5 to 48, so wall times are indicative only.
 - Single-pass memory and time. Every single pass over a 5 to 25 minute talk finished on the F16 models (Ultra, dequantized Redux,
   v3), peak RSS 7 to 13 GB, so the O(T^2) attention above the 8192-frame local-attention threshold did not fail for any of these
   talks. Wall times were recorded but are not reported: the shared machine was heavily loaded during the runs (load average 40 to
@@ -472,9 +480,8 @@ only `<base>.weight`, which a packed GGUF does not have, so `ggml_mul_mat` got a
 
 Verified after the fix on a 714 s clip (`speech.wav` repeated, 2112 words): packed and dequantized Redux both finish and
 print byte-identical transcripts. `tests/test_ternary_long.cpp` forces the same paths on short audio
-(`PARAKEET_ATT_CONTEXT=64`), for a single item and for a batch. The TED-LIUM numbers above for packed Redux plain were
-measured before the fix and are not filled in for the seven long talks; those talks (all over about 655 s) still need to
-be re-run.
+(`PARAKEET_ATT_CONTEXT=64`), for a single item and for a batch. The seven talks that crashed were then re-run
+with the fixed build; their packed plain numbers are in the TED-LIUM table above.
 
 ### Parity with the transformers reference (Ultra)
 
@@ -543,7 +550,6 @@ Limits of this section:
   would remove; compare models against each other, not against upstream.
 - The TED-LIUM set has 11 talks, one of them 5.5 s long; a per-talk difference under 0.2 points is not meaningful.
 - Timing is not reported (loaded machine). The speed numbers are in the earlier speed section.
-- The packed Redux single-pass column is missing for the 7 talks over about 655 s: the run crashed before the fix described above and has not been repeated yet.
 
 ## Tests
 

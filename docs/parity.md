@@ -436,15 +436,15 @@ upstream cards.
 | Check | v3 F16 | Ultra F16 | Redux packed | Redux dequantized F16 |
 |---|---:|---:|---:|---:|
 | FLEURS, 25 languages x first 50 test utterances, mean WER percent | 12.77 | 10.71 | 12.09 | 11.99 |
-| TED-LIUM long-form, 11 talks, plain single pass, mean WER percent | 4.40 | 3.73 | pending re-run after the long-audio fix (7 talks over about 655 s) | 5.07 |
+| TED-LIUM long-form, 11 talks, plain single pass, mean WER percent | 4.40 | 3.73 | 4.32 | 5.07 |
 | TED-LIUM long-form, `--vad`, mean WER percent | no VAD head | 3.64 | 4.38 | 5.17 |
 
 The 5.5 s clip among the 11 talks skews the Redux dequantized means; without it the packed and dequantized `--vad`
-means are 4.82 and 4.85. Ultra against the transformers `ParakeetForTDT` reference (fp32, CPU) on 60 FLEURS utterances
+means are 4.82 and 4.85. Without the short clip the plain means are 4.75 packed and 4.74 dequantized. Ultra against the transformers `ParakeetForTDT` reference (fp32, CPU) on 60 FLEURS utterances
 (en_us, de_de, fr_fr): 56 of 60 transcripts identical after normalization, WER of ours against HF 0.33 percent.
 Packed Redux single-pass used to segfault above 8192 encoder frames (about 11 minutes, local attention paths without the
-packed branch); fixed, and a 714 s clip now gives the same transcript as the dequantized GGUF. The table cell is pending a
-re-run of the seven talks over about 655 s.
+packed branch); fixed, and a 714 s clip gives the same transcript as the dequantized GGUF. On the seven talks that crashed, packed plain
+WER is 4.92 against 4.91 dequantized, and the packed transcripts differ from the dequantized ones by 0.28 percent of words.
 
 ## Test suite status
 
