@@ -428,6 +428,23 @@ utterances (`docs/ternary.md`) Ultra Q8_0 has 1.71 percent and Redux packed 1.96
 
 Speed numbers are in `docs/ternary.md`.
 
+Multilingual and real long-form results (measured, no NeMo baseline; details, commands and caveats in
+`docs/ternary.md`, section "Multilingual and long-form validation"). Scoring uses the plain `normalize` from
+`scripts/asr_metrics.py`, not the Open ASR Leaderboard normalizer, so compare models with each other and not with
+upstream cards.
+
+| Check | v3 F16 | Ultra F16 | Redux packed | Redux dequantized F16 |
+|---|---:|---:|---:|---:|
+| FLEURS, 25 languages x first 50 test utterances, mean WER percent | 12.77 | 10.71 | 12.09 | 11.99 |
+| TED-LIUM long-form, 11 talks, plain single pass, mean WER percent | 4.40 | 3.73 | crashes on 7 of 11 (talks over about 11 min) | 5.07 |
+| TED-LIUM long-form, `--vad`, mean WER percent | no VAD head | 3.64 | 4.38 | 5.17 |
+
+The 5.5 s clip among the 11 talks skews the Redux dequantized means; without it the packed and dequantized `--vad`
+means are 4.82 and 4.85. Ultra against the transformers `ParakeetForTDT` reference (fp32, CPU) on 60 FLEURS utterances
+(en_us, de_de, fr_fr): 56 of 60 transcripts identical after normalization, WER of ours against HF 0.33 percent.
+Packed Redux single-pass segfaults above 8192 encoder frames (about 11 minutes); use `--vad` or the dequantized GGUF
+for long audio until fixed.
+
 ## Test suite status
 
 `ctest --test-dir build --output-on-failure` (with `PARAKEET_TEST_GGUF`,

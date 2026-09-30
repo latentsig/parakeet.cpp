@@ -327,7 +327,225 @@ Known limits:
 - Offline only: no streaming with `--vad`.
 - The VAD head detects pauses weakly (see the caveats above), so many cuts are hard cuts or land at the model's best guess.
 - Ternary kernels are CPU only.
-- All figures are from synthetic LibriSpeech clips.
+- The figures in this section are from synthetic LibriSpeech clips (218 to 354 s); real talks are in the multilingual and long-form section below.
+
+## Multilingual and long-form validation
+
+Everything above is English (LibriSpeech and synthetic long clips built from it). Ultra is a 25-language model, and the
+upstream cards report FLEURS and TED-LIUM long-form results, so this section measures our engine on both. Nothing was
+tuned, no `src/` code changed, and every number below comes from the commands listed here. The scoring, the subsets and
+the caveats matter for how to read the tables, so read those first.
+
+### Scoring and subset rules
+
+- Scoring uses `normalize` from `scripts/asr_metrics.py` on both reference and hypothesis (NFKC, lowercase, punctuation
+  replaced by a space, whitespace collapsed). It is the same for every model. It is NOT the Open ASR Leaderboard
+  normalizer (no number spelling, no text-normalizer for other languages), so the absolute numbers here are not
+  comparable with the upstream model cards. What matters is the direction and size of the differences between our
+  models on the same subset.
+- Upstream's own figures, from their pipeline on the full test splits, quoted only as theirs: FLEURS average 11.62 for
+  v3, 9.55 for Ultra and 10.56 for Redux; TED-LIUM long-form 2.71 for v3, 1.94 for Ultra and 2.51 for Redux.
+- FLEURS: the first 50 utterances of the `test` split of each language in dataset (streaming parquet) order, no
+  shuffling and no filtering. The reference is the dataset's `raw_transcription` (natural case and punctuation).
+  25 languages, 1250 utterances, 26784 reference words, 14580.6 s of audio. Audio is resampled to 16 kHz mono int16.
+  Because each language has about 1000 words, one word is about 0.1 point, so differences under roughly 1 point on a
+  single language are noise. WER per language is a corpus WER (total edits over total reference words); the mean is the
+  unweighted mean over the 25 languages.
+- The config ids all exist as listed: bg_bg, hr_hr, cs_cz, da_dk, nl_nl, en_us, et_ee, fi_fi, fr_fr, de_de, el_gr,
+  hu_hu, it_it, lv_lv, lt_lt, mt_mt, pl_pl, pt_br, ro_ro, ru_ru, sk_sk, sl_si, es_419, sv_se, uk_ua.
+- TED-LIUM: `distil-whisper/tedlium-long-form`, `test` split, 11 full talks (8905 s in total, 2.5 hours). The reference
+  is the `text` column with tags such as `<unk>` removed. One of the 11 is a 5.5 s clip with 24 words
+  (`DanBarber_2010_S103`), so it moves a per-talk mean by a lot; means are given with and without it.
+- Models: v3 F16 (`tdt-0.6b-v3-f16.gguf`), Ultra F16, Redux packed ternary (`--ternary keep`, native kernel) and
+  Redux dequantized F16 (`--ternary dequant`, isolates the int8 activation and packed kernel path). All with
+  `--decoder tdt`.
+
+### FLEURS-25, WER percent
+
+| FLEURS config | v3 F16 | Ultra F16 | Redux packed | Redux dequantized F16 |
+|---|---:|---:|---:|---:|
+| bg_bg | 11.24 | 9.23 | 10.37 | 10.98 |
+| cs_cz | 11.93 | 9.61 | 10.62 | 9.71 |
+| da_dk | 17.96 | 16.18 | 16.44 | 16.71 |
+| de_de | 4.75 | 3.67 | 4.92 | 4.83 |
+| el_gr | 36.14 | 33.01 | 32.13 | 32.29 |
+| en_us | 5.30 | 4.65 | 6.23 | 6.04 |
+| es_419 | 3.10 | 2.38 | 3.42 | 3.65 |
+| et_ee | 17.83 | 15.21 | 12.47 | 13.34 |
+| fi_fi | 13.06 | 9.77 | 11.84 | 12.21 |
+| fr_fr | 4.23 | 4.45 | 10.31 | 10.09 |
+| hr_hr | 11.80 | 8.90 | 9.67 | 9.19 |
+| hu_hu | 16.18 | 12.69 | 18.48 | 18.08 |
+| it_it | 1.88 | 2.11 | 3.54 | 3.69 |
+| lt_lt | 22.03 | 18.57 | 20.30 | 19.98 |
+| lv_lv | 23.56 | 19.08 | 14.39 | 14.61 |
+| mt_mt | 21.20 | 16.59 | 15.46 | 15.29 |
+| nl_nl | 7.94 | 7.15 | 10.86 | 10.41 |
+| pl_pl | 8.71 | 7.69 | 11.54 | 11.43 |
+| pt_br | 4.55 | 3.99 | 5.58 | 5.34 |
+| ro_ro | 12.73 | 11.31 | 12.56 | 12.90 |
+| ru_ru | 5.68 | 5.11 | 8.14 | 7.85 |
+| sk_sk | 9.22 | 7.01 | 9.42 | 9.22 |
+| sl_si | 24.12 | 19.00 | 20.81 | 20.17 |
+| sv_se | 17.39 | 14.87 | 14.57 | 14.07 |
+| uk_ua | 6.81 | 5.43 | 8.09 | 7.55 |
+| Mean over 25 languages | 12.77 | 10.71 | 12.09 | 11.99 |
+
+Reading:
+
+- Ultra beats v3 on 23 of 25 languages, mean 10.71 against 12.77 (2.07 points lower on average). It loses slightly on
+  fr_fr (4.45 against 4.23) and it_it (2.11 against 1.88), which are within noise at this sample size. The size of the
+  gain is close to upstream's (11.62 to 9.55), which is a useful sign that the conversion did not lose anything, but
+  the two pipelines differ so this is a direction check, not a reproduction.
+- Redux is better than v3 on 13 languages (mostly Baltic, Slavic, Uralic and Greek: bg, cs, da, el, et, fi, hr, lt, lv,
+  mt, ro, sl, sv) and worse on the rest; the mean is 12.09 against 12.77. It loses to Ultra on 20 of 25. The largest
+  gaps to Ultra are fr_fr (10.31 against 4.45, +5.9), hu_hu (+5.8), pl_pl (+3.9), nl_nl (+3.7), ru_ru (+3.0), uk_ua
+  (+2.7) and sk_sk (+2.4). French and Polish match what the upstream card says Redux gives up. Redux is ahead of Ultra
+  on el_gr, et_ee, lv_lv, mt_mt and sv_se, with lv_lv (14.39 against 19.08) and et_ee (12.47 against 15.21) the biggest.
+  I did not check why; it may be a difference in the training mix.
+- Int8 activations. Packed Redux (12.09) against dequantized Redux F16 (11.99) is +0.10 points on the mean, with
+  per-language differences from -0.87 to +0.91 and no direction (packed is lower on 9 languages, higher on 16). With
+  about 1000 words per language that is noise. On this data the packed ternary path costs no measurable WER against the
+  dequantized weights, and the speed benefit is in the speed section above.
+- el_gr is high for every model (32 to 36). The FLEURS Greek references and the model outputs likely disagree on
+  normalization details (accents, final sigma, number forms); I did not investigate, and it does not change the
+  comparison between models on the same references.
+
+### TED-LIUM long-form, WER percent
+
+Plain is one single pass over the whole talk; VAD is `--vad` with default options
+(threshold 0.5, min pause 0.32 s, max segment 30 s, min segment 8 s). The `--vad` option needs the VAD head, which v3
+does not have (`model has no VAD head`), so v3 has only the plain column. The segment count was not recorded.
+
+| Talk (length) | v3 plain | Ultra plain | Ultra VAD | Redux packed plain | Redux packed VAD | Redux deq plain | Redux deq VAD |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| AimeeMullins (1249 s) | 6.65 | 3.44 | 3.41 | CRASH | 4.34 | 4.08 | 4.21 |
+| BillGates (1506 s) | 7.07 | 5.79 | 5.74 | CRASH | 6.34 | 6.32 | 6.32 |
+| DanBarber (834 s) | 5.75 | 5.46 | 4.90 | CRASH | 6.79 | 6.59 | 6.83 |
+| DanBarber_2010_S103 (5.5 s) | 0.00 | 0.00 | 0.00 | 0.00 | 0.00 | 8.33 | 8.33 |
+| DanielKahneman (1096 s) | 3.29 | 3.23 | 3.20 | CRASH | 3.98 | 4.11 | 4.14 |
+| EricMead (459 s) | 5.61 | 4.91 | 4.84 | 5.35 | 5.16 | 5.23 | 5.16 |
+| GaryFlake (345 s) | 2.90 | 3.16 | 3.08 | 3.52 | 3.60 | 3.60 | 3.69 |
+| JamesCameron (982 s) | 6.34 | 5.52 | 5.42 | CRASH | 5.62 | 5.62 | 5.55 |
+| JaneMcGonigal (1168 s) | 4.21 | 3.60 | 3.68 | CRASH | 4.09 | 4.06 | 4.16 |
+| MichaelSpecter (921 s) | 3.57 | 3.25 | 3.16 | CRASH | 3.79 | 3.63 | 3.86 |
+| RobertGupta (340 s) | 3.04 | 2.71 | 2.59 | 4.17 | 4.51 | 4.17 | 4.62 |
+| Mean, all 11 | 4.40 | 3.73 | 3.64 | n/a (4 of 11 ran) | 4.38 | 5.07 | 5.17 |
+| Mean, without the 5.5 s clip | 4.84 | 4.11 | 4.00 | n/a | 4.82 | 4.74 | 4.85 |
+
+Reading:
+
+- Ultra beats v3 on 9 of the 11 talks in a single pass (one tie on the 5.5 s clip) and on the mean (3.73 against 4.40; 4.11 against 4.84 without the
+  short clip). It loses only on GaryFlake (3.16 against 2.90). Direction agrees with upstream (2.71 against 1.94), but our
+  absolute values are about twice upstream's. Part of that gap is the normalizer: the references spell numbers out while
+  the model writes digits, and in the Ultra plain hypotheses 218 of about 26800 tokens contain digits (none in the
+  references), which alone accounts for at least 0.8 points. I did not run a number-aware normalizer, so the rest of the gap is
+  not explained here.
+- Redux packed with `--vad`: 4.38 on all 11 (4.82 without the short clip), against Ultra VAD 3.64 (4.00) and v3 plain
+  4.40 (4.84). So Redux is about where v3 is on real talks and about 0.8 points behind Ultra, the same order as upstream
+  (2.51 against 1.94 against 2.71).
+- Packed against dequantized Redux, both with `--vad`: 4.38 against 5.17 on all 11, but 4.82 against 4.85 without the
+  5.5 s clip. The all-11 gap is the 24-word clip (0 against 2 errors); on the ten real talks packed and dequantized are the same.
+- VAD against plain. Ultra: VAD is better on 9 of 11 talks (one tie), mean 3.64 against 3.73 (4.00 against 4.11), gains of 0.03
+  to 0.56 points (the 0.56 is DanBarber), and worse on JaneMcGonigal by 0.08. Redux dequantized: VAD is slightly worse, 5.17 against 5.07
+  (4.85 against 4.74). Where Redux packed has both (4 talks) it is 3.32 with VAD against 3.26 plain. The honest reading is that on
+  real talks VAD segmentation is about neutral: a small gain for Ultra, a small loss for Redux, all under about 0.15 points on the mean and
+  inside per-talk noise. Peak RSS (from `/usr/bin/time -v`) with `--vad` is 7 to 11 GB on the talks over 800 s, about the same as
+  the single pass, and drops to about 4 GB only on the three shortest talks (340 to 459 s). So on these talks VAD did not buy a memory win.
+- Single-pass memory and time. Every single pass over a 5 to 25 minute talk finished on the F16 models (Ultra, dequantized Redux,
+  v3), peak RSS 7 to 13 GB, so the O(T^2) attention above the 8192-frame local-attention threshold did not fail for any of these
+  talks. Wall times were recorded but are not reported: the shared machine was heavily loaded during the runs (load average 40 to
+  90 from other jobs), so times vary by more than 10x between identical runs.
+
+#### Finding: packed Redux crashes on single-pass audio longer than about 11 minutes
+
+`redux-keep.gguf` (packed ternary) with plain single pass segfaults after about 3 s on every talk longer than about 655 s
+(8192 encoder frames at 80 ms): AimeeMullins, BillGates, DanBarber, DanielKahneman, JamesCameron, JaneMcGonigal and
+MichaelSpecter, exit code 139. The talks up to 459 s work. The same audio with the dequantized Redux, and with packed
+Redux under `--vad`, works. A gdb backtrace on DanBarber:
+
+```
+Program received signal SIGSEGV, Segmentation fault.
+#0  ggml_mul_mat () from libggml-base.so.0
+#1  pk::RelPosAttention::build_graph_local_chunked(...)
+#2  pk::ConformerLayer::build_graph(...)
+#3  pk::Encoder::forward_capture(...)
+```
+
+Above `kLocalThreshold = 8192` frames the encoder switches to the chunked local attention path, and the `linear` helper
+inside `build_graph_local_chunked` (`src/relpos_attention.cpp`) is a plain `ggml_mul_mat(clone_weight(...), in)`, while the
+other attention builders have a separate branch for packed ternary weights. That is my reading of the code, not a fix that
+was tried. The earlier synthetic clips (218 to 354 s) never reach this path, which is why it was not seen before. Long
+audio with packed Redux should use `--vad` (or the dequantized GGUF) until this is fixed.
+
+### Parity with the transformers reference (Ultra)
+
+An independent check that the Ultra conversion and engine reproduce the HF implementation. `ParakeetForTDT` is not in the
+installed transformers 5.3.0, so this used a source checkout that has it (version string 5.10.0.dev0) through
+`PYTHONPATH`. The HF checkpoint has no preprocessor or tokenizer files, so `scripts/hf_reference_transcribe.py` builds a
+`ParakeetFeatureExtractor(feature_size=128, sampling_rate=16000)` (per-feature normalization is built in) and decodes
+token ids with the piece table from our Ultra GGUF. The run is fp32 on CPU with greedy TDT decoding; ours is the F16 GGUF.
+Because the token table comes from our GGUF, this checks the encoder, decoder and search, not the tokenizer.
+
+Same first 20 test utterances of en_us, de_de and fr_fr (60 utterances, 1509 words). Ours scored against the HF
+transcript as reference, after `normalize`, and after dropping the `<unk>` piece, which the HF side prints and we omit:
+
+| Language | Identical after normalize | WER of ours vs HF |
+|---|---:|---:|
+| en_us | 20 of 20 | 0.00 |
+| de_de | 18 of 20 | 0.45 |
+| fr_fr | 18 of 20 | 0.48 |
+| total | 56 of 60 | 0.33 |
+
+The four differing utterances are single-word choices near a tie (for example `Hirnschadens` against `Höhenschadens`,
+`Laka` against `Lakas`, `vient` against `viant`, and `dix-sept` against `17`). The F16 weights in the GGUF against the fp32 weights in HF are a plausible cause, but I did not test that, for example by converting an
+F32 GGUF.
+
+Both implementations scored against the FLEURS references (same scorer as above, `<unk>` left in the HF text, where the
+`unk` word counts as an error):
+
+| Language | Ours (F16 GGUF) | HF transformers (fp32) |
+|---|---:|---:|
+| en_us | 3.64 | 3.64 |
+| de_de | 3.56 | 3.78 |
+| fr_fr | 5.13 | 6.09 |
+| mean of the three | 4.11 | 4.50 |
+
+The fr_fr gap on the HF side comes from `<unk>` pieces that the HF text prints (four in the 20 utterances) and we drop; it is a
+decoding detail, not a model difference.
+
+### Commands
+
+```
+# subsets (stream from the Hub, no token; only 16 kHz wavs, references and manifests are written, under 1 GB in total)
+python3 scripts/fetch_fleurs_subset.py --out /tmp/val/fleurs --n 50
+python3 scripts/fetch_tedlium_longform.py --out /tmp/val/ted
+
+# FLEURS WER for the four models (bench --json keeps the hypotheses per language)
+python3 scripts/eval_manifest_wer.py --out /tmp/val/fleurs_res --threads 8 \
+    --model v3=<tdt-0.6b-v3-f16.gguf> --model ultra=<ultra-f16.gguf> \
+    --model redux=<redux-keep.gguf> --model reduxdeq=<redux-deq.gguf> /tmp/val/fleurs/*/manifest.tsv
+
+# TED-LIUM plain and --vad, one command per model (records WER, wall time, peak RSS; a crash is recorded as FAIL)
+python3 scripts/eval_longform_talks.py --model <gguf> --dir /tmp/val/ted --save /tmp/val/ted_res/<name>
+
+# HF transformers reference for Ultra, then compare
+PYTHONPATH=<transformers checkout>/src python3 scripts/hf_reference_transcribe.py \
+    --hf-dir <hf ultra dir> --gguf <ultra-f16.gguf> --out /tmp/val/spike_hf /tmp/val/spike/{en_us,de_de,fr_fr}/manifest.tsv
+python3 scripts/compare_hyps.py /tmp/val/spike_res/ultra /tmp/val/spike_hf
+```
+
+The FLEURS run used `--threads 2` for most of the sweep instead of 8, because the machine was heavily loaded and 8 spinning
+threads were much slower than 2 there; greedy decoding does not depend on the thread count except for float summation
+order, which was not checked for any change in a transcript.
+
+Limits of this section:
+- 50 utterances per language is a sample, not the full FLEURS test split; per-language numbers carry about a 1 point noise band.
+- The normalizer is a plain one, so numbers, hyphenation and non-Latin scripts add errors that the leaderboard normalizer
+  would remove; compare models against each other, not against upstream.
+- The TED-LIUM set has 11 talks, one of them 5.5 s long; a per-talk difference under 0.2 points is not meaningful.
+- Timing is not reported (loaded machine). The speed numbers are in the earlier speed section.
+- The Redux long-audio crash means the single-pass column for packed Redux is missing for 7 of 11 talks.
 
 ## Tests
 
