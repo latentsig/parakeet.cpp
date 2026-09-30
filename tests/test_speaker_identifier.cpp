@@ -6,6 +6,7 @@
 #include "speaker_identifier.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
@@ -26,10 +27,12 @@ static const int kSr = 16000;
 struct Fake {
     int calls = 0;
     int last_n = 0;
+    std::vector<int> ns;   // every n the embedder was called with, in order
     SpeakerEmbed fn() {
         return [this](const float* pcm, int n, std::vector<float>& emb) {
             ++calls;
             last_n = n;
+            ns.push_back(n);
             double sum = 0.0;
             for (int i = 0; i < n; ++i) sum += pcm[i];
             const double mean = n ? sum / n : 0.0;
@@ -141,6 +144,36 @@ static void test_overlap_skipped() {
     CHECK(id.name(0).name == "alice");           // mixing 3-4 s would have given mean 0.3 -> unknown
 }
 
+static void test_overlap_same_call_close() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(6, {{0, 0, 4}, {1, 3, 6}});
+    id.push_pcm(pcm.data(), 6 * kSr);
+    id.update({{1, 3.0f, 6.0f}, {0, 0.0f, 4.0f}}, {}, false);   // both close in one call
+    CHECK(f.ns.size() == 2);
+    if (f.ns.size() == 2) {
+        CHECK(std::abs(f.ns[0] - 3 * kSr) <= 2);   // slot 0 (map order): 0-3 s alone
+        CHECK(std::abs(f.ns[1] - 2 * kSr) <= 2);   // slot 1: 4-6 s alone
+    }
+    CHECK(id.name(0).name == "alice");
+    CHECK(id.name(1).name == "bob");
+}
+
+static void test_overlap_earlier_call_close() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(6, {{0, 0, 4}, {1, 3, 6}});
+    id.push_pcm(pcm.data(), 6 * kSr);
+    id.update({{1, 3.0f, 6.0f}}, {{0, 0.0f, 4.0f}}, false);   // slot 0 still open: slot 1 keeps 4-6 s
+    CHECK(id.name(1).name == "bob");
+    id.update({{0, 0.0f, 4.0f}}, {}, false);   // slot 1 is already closed: only history_ knows it
+    CHECK(f.ns.size() == 2);
+    if (f.ns.size() == 2) CHECK(std::abs(f.ns[1] - 3 * kSr) <= 2);   // 3-4 s overlap excluded
+    CHECK(id.name(0).name == "alice");
+}
+
 static void test_unknown_voice() {
     Fake f;
     const SpeakerRegistry reg = make_registry();
@@ -236,6 +269,8 @@ int main() {
     test_min_voice();
     test_refresh_and_last();
     test_overlap_skipped();
+    test_overlap_same_call_close();
+    test_overlap_earlier_call_close();
     test_unknown_voice();
     test_hysteresis();
     test_hysteresis_reset_by_unknown();

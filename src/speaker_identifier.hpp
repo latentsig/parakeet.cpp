@@ -54,6 +54,10 @@ public:
     // `closed`: segments that closed since the last call. `open`: segments still
     // open now (used only to skip overlap). Throws std::runtime_error when the
     // embed callback fails.
+    // Contract: `open` must list every segment that has started and not yet
+    // closed, with `end` at least the end of any segment closing in this call
+    // that it overlaps. Overlap with a segment that was neither in `open` nor
+    // already closed is embedded and never revisited.
     void update(const std::vector<SpeakerSegment>& closed, const std::vector<SpeakerSegment>& open,
                 bool is_last);
 
@@ -84,7 +88,8 @@ private:
 };
 
 // Names slots for a finished recording: runs the same logic once over all
-// segments. Returns every slot that appears in `segs`.
+// segments. Returns every slot that appears in `segs`. It raises max_voice_sec
+// to at least 30 s and ring_sec to cover the whole recording.
 std::map<int, SlotName> identify_offline(const std::vector<float>& pcm16k,
                                          const std::vector<SpeakerSegment>& segs,
                                          const SpeakerEmbed& embed, const SpeakerRegistry& reg,
