@@ -4,3 +4,6 @@
 [submodule "third_party/ced.cpp"]
 	path = third_party/ced.cpp
 	url = https://github.com/localai-org/ced.cpp
+[submodule "third_party/voice-detect.cpp"]
+	path = third_party/voice-detect.cpp
+	url = https://github.com/mudler/voice-detect.cpp
