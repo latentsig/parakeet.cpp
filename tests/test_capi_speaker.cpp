@@ -120,6 +120,47 @@ int main() {
         CHECK(s != nullptr);
         parakeet_capi_scene_stream_free(s);
     }
+    // Invalid speaker fields are ignored when `size` does not cover them, and
+    // rejected when it does.
+    {
+        parakeet_scene_opts o;
+        parakeet_capi_scene_opts_default(&o);
+        o.speaker_refresh_sec = -1.0f;
+        o.speaker_min_voice_sec = -1.0f;
+        o.speaker_accept_threshold = 5.0f;
+        o.size = (int)offsetof(parakeet_scene_opts, speaker_accept_threshold);
+        parakeet_scene_stream* s = parakeet_capi_scene_stream_begin_speaker(nullptr, diar, nullptr, spk, reg, &o);
+        CHECK(s != nullptr);
+        parakeet_capi_scene_stream_free(s);
+        o.size = (int)sizeof(o);
+        CHECK(parakeet_capi_scene_stream_begin_speaker(nullptr, diar, nullptr, spk, reg, &o) == nullptr);
+        CHECK(std::strstr(parakeet_capi_last_error(spk), "invalid speaker options") != nullptr);
+    }
+    // Memory safety: a caller built against the v8 header owns a buffer that ends
+    // at `flags`. Nothing past it may be read (run under AddressSanitizer).
+    {
+        struct OldOpts {
+            int size;
+            int diar_latency;
+            parakeet_sound_opts sound;
+            int flags;
+        };
+        parakeet_scene_opts full;
+        parakeet_capi_scene_opts_default(&full);
+        OldOpts* old = (OldOpts*)std::malloc(sizeof(OldOpts));
+        CHECK(old != nullptr);
+        if (old) {
+            old->size = (int)sizeof(OldOpts);
+            old->diar_latency = full.diar_latency;
+            old->sound = full.sound;
+            old->flags = 0;
+            parakeet_scene_stream* s = parakeet_capi_scene_stream_begin_speaker(
+                nullptr, diar, nullptr, spk, reg, (const parakeet_scene_opts*)old);
+            CHECK(s != nullptr);
+            parakeet_capi_scene_stream_free(s);
+            std::free(old);
+        }
+    }
     // A registry built by a model with a different embedding size is refused with a
     // clear error. Needs a second speaker GGUF of another size (for example WeSpeaker
     // 256 versus CAM++ 192): PARAKEET_TEST_VD_GGUF_ALT. Skipped when unset.

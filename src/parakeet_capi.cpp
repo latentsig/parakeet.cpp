@@ -1588,9 +1588,15 @@ extern "C" void parakeet_capi_scene_opts_default(parakeet_scene_opts* o) {
 
 namespace {
 
-// True when `o` (as sized by the caller) covers the float field at `off`, and it is non-zero.
-bool scene_float_set(const parakeet_scene_opts* o, size_t off, float v) {
-    return o->size >= (int)(off + sizeof(float)) && v != 0.0f;
+// Reads the float at byte offset `off` of `o` only when the caller's `size`
+// covers it (a caller built against an older header owns a shorter struct, so
+// nothing past `size` may be touched). A zero or uncovered field returns
+// `dflt`.
+float scene_float_field(const parakeet_scene_opts* o, size_t off, float dflt) {
+    if (o->size < (int)(off + sizeof(float))) return dflt;
+    float v;
+    std::memcpy(&v, reinterpret_cast<const char*>(o) + off, sizeof(v));
+    return v != 0.0f ? v : dflt;
 }
 
 }  // namespace
@@ -1626,16 +1632,11 @@ extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin_speaker(
     }
     pk::SpeakerIdOpts so;
     if (speaker) {
-        if (scene_float_set(o, offsetof(parakeet_scene_opts, speaker_accept_threshold), o->speaker_accept_threshold))
-            so.accept_threshold = o->speaker_accept_threshold;
-        if (scene_float_set(o, offsetof(parakeet_scene_opts, speaker_margin), o->speaker_margin))
-            so.margin = o->speaker_margin;
-        if (scene_float_set(o, offsetof(parakeet_scene_opts, speaker_min_voice_sec), o->speaker_min_voice_sec))
-            so.min_voice_sec = o->speaker_min_voice_sec;
-        if (scene_float_set(o, offsetof(parakeet_scene_opts, speaker_refresh_sec), o->speaker_refresh_sec))
-            so.refresh_sec = o->speaker_refresh_sec;
-        if (scene_float_set(o, offsetof(parakeet_scene_opts, speaker_max_voice_sec), o->speaker_max_voice_sec))
-            so.max_voice_sec = o->speaker_max_voice_sec;
+        so.accept_threshold = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_accept_threshold), so.accept_threshold);
+        so.margin = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_margin), so.margin);
+        so.min_voice_sec = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_min_voice_sec), so.min_voice_sec);
+        so.refresh_sec = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_refresh_sec), so.refresh_sec);
+        so.max_voice_sec = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_max_voice_sec), so.max_voice_sec);
         const std::string err = pk::validate_speaker_opts(so);
         if (!err.empty()) { speaker->last_error = "invalid speaker options: " + err; return nullptr; }
         const int rd = registry->reg.dim();
@@ -1662,12 +1663,13 @@ extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin_speaker(
             const std::string err = pk::validate_sound_opts(p.sound, tagger->tagger->n_classes());
             if (!err.empty()) { tagger->last_error = "invalid sound options: " + err; return nullptr; }
         }
+        auto scene = std::make_unique<pk::SceneStream>(p);
         auto* s = new parakeet_scene_stream();
+        s->scene = std::move(scene);
         s->asr_ctx = asr;
         s->diar_ctx = diar;
         s->tagger_ctx = tagger;
         s->speaker_ctx = speaker;
-        s->scene = std::make_unique<pk::SceneStream>(p);
         if (asr) asr->last_error.clear();
         if (diar) diar->last_error.clear();
         if (tagger) tagger->last_error.clear();
