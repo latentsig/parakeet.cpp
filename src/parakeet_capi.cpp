@@ -13,6 +13,7 @@
 
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
+#include "audio_io.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -427,6 +428,42 @@ extern "C" char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx,
         pk::Transcription tr =
             ctx->model->transcribe_path_with_timestamps(wav_path, to_decoder(decoder));
         // frame_sec = hop_length * subsampling_factor / sample_rate (token "t").
+        const pk::ParakeetConfig& cfg = ctx->model->config();
+        const float frame_sec =
+            (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;
+        std::string json = pk::transcription_to_json(tr, frame_sec);
+        ctx->last_error.clear();
+        char* out = dup_to_c(json);
+        if (!out) { ctx->last_error = "out of memory"; return nullptr; }
+        return out;
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+extern "C" char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx,
+                                                        const char* wav_path,
+                                                        int decoder) {
+    if (!ctx) return nullptr;
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
+    if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
+    try {
+        pk::Audio audio;
+        if (!pk::load_audio_16k_mono(wav_path, audio)) {
+            ctx->last_error = std::string("failed to load audio: ") + wav_path;
+            return nullptr;
+        }
+        pk::Transcription tr = ctx->model->transcribe_pcm_vad_with_timestamps(
+            audio.samples, audio.sample_rate, to_decoder(decoder));
         const pk::ParakeetConfig& cfg = ctx->model->config();
         const float frame_sec =
             (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;

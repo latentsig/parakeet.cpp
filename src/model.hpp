@@ -4,6 +4,7 @@
 #include "tdt.hpp"             // pk::TdtBeamToken
 #include "transcription.hpp"   // pk::Transcription
 #include "vad_head.hpp"
+#include "vad_segmenter.hpp"
 
 #include <memory>
 #include <string>
@@ -126,6 +127,18 @@ public:
     // uses the defaults. Throws std::runtime_error if the model has no VAD head.
     std::vector<float> vad_probabilities(const std::vector<float>& pcm16k,
                                          const VadVariant* v = nullptr) const;
+
+    // Transcribe long audio in VAD-cut segments (see vad_segmenter.hpp). Audio no
+    // longer than opts.max_seg_sec takes the plain path. Requires a model with a
+    // VAD head (throws std::runtime_error("model has no VAD head") otherwise).
+    std::string transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
+                                   Decoder decoder = Decoder::kDefault,
+                                   const std::string& target_lang = "",
+                                   const SegmenterOpts& opts = SegmenterOpts()) const;
+    Transcription transcribe_pcm_vad_with_timestamps(
+        const std::vector<float>& pcm, int sample_rate,
+        Decoder decoder = Decoder::kDefault, const std::string& target_lang = "",
+        const SegmenterOpts& opts = SegmenterOpts()) const;
 
     // The underlying loaded GGUF. Exposed so the streaming C-API can build a
     // pk::StreamingSession (and a MelFrontend) over the same load-once model.

@@ -150,6 +150,15 @@ int parakeet_capi_transcribe_pcm_batch_lang(parakeet_ctx* ctx,
 char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx, const char* wav_path,
                                          int decoder);
 
+// Like parakeet_capi_transcribe_path_json, but long audio is cut at pauses found
+// by the model's own VAD head into segments of at most 30 s, and the segments are
+// transcribed one by one (word/token times are relative to the whole file). Audio
+// of 30 s or less gives the same document as the plain function. Returns NULL and
+// sets the context's last error to "model has no VAD head" when the model has no
+// VAD head. Additive; no ABI bump.
+char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_path,
+                                             int decoder);
+
 // Batched transcription with timestamps, returning ONE malloc'd JSON string that
 // is a JSON ARRAY of n_clips objects, each identical in shape to
 // parakeet_capi_transcribe_path_json's document ({"text","words","tokens"}).

@@ -196,6 +196,36 @@ static int cmd_transcribe_stream(const std::string& model, const std::string& in
     return 0;
 }
 
+static int cmd_transcribe_vad(const std::string& model, const std::string& input, pk::Decoder dec,
+                              const std::string& lang, bool timestamps, bool json,
+                              const pk::SegmenterOpts& opts) {
+    pk::Audio audio;
+    if (!load_audio_arg_16k_mono(input, audio)) {
+        std::fprintf(stderr, "parakeet-cli: failed to load audio %s\n", input.c_str());
+        return 1;
+    }
+    try {
+        std::unique_ptr<pk::Model> m = pk::Model::load(model);
+        if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
+        if (json || timestamps) {
+            pk::Transcription tr =
+                m->transcribe_pcm_vad_with_timestamps(audio.samples, audio.sample_rate, dec, lang, opts);
+            if (json) {
+                std::printf("%s\n", pk::transcription_to_json(tr, model_frame_sec(*m)).c_str());
+            } else {
+                for (const pk::Word& w : tr.words)
+                    std::printf("%.2f-%.2f  %s  (%.2f)\n", w.start, w.end, w.text.c_str(), w.conf);
+            }
+        } else {
+            std::printf("%s\n", m->transcribe_pcm_vad(audio.samples, audio.sample_rate, dec, lang, opts).c_str());
+        }
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "parakeet-cli: transcribe failed: %s\n", e.what());
+        return 1;
+    }
+    return 0;
+}
+
 // parakeet-cli transcribe --model <m.gguf> --input <wav|-> [--decoder ctc|tdt]
 //                         [--stream]
 // Prints the transcript. Default decoder is chosen by arch (TDT for transducer
@@ -206,6 +236,8 @@ static int cmd_transcribe(int argc, char** argv) {
     bool stream = false;
     bool timestamps = false;
     bool json = false;
+    bool vad = false;
+    pk::SegmenterOpts vad_opts;
     bool score_norm = true;
     int beam_size = 0;
     int nbest = 0;
@@ -233,6 +265,14 @@ static int cmd_transcribe(int argc, char** argv) {
             nbest = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--no-score-norm") == 0) {
             score_norm = false;
+        } else if (std::strcmp(argv[i], "--vad") == 0) {
+            vad = true;
+        } else if (std::strcmp(argv[i], "--vad-threshold") == 0 && i + 1 < argc) {
+            vad_opts.threshold = (float)std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--vad-min-pause") == 0 && i + 1 < argc) {
+            vad_opts.min_pause_sec = std::atof(argv[++i]);
+        } else if (std::strcmp(argv[i], "--vad-max-seg") == 0 && i + 1 < argc) {
+            vad_opts.max_seg_sec = std::atof(argv[++i]);
         }
     }
     if (model.empty() || input.empty()) {
@@ -240,6 +280,7 @@ static int cmd_transcribe(int argc, char** argv) {
             "usage: parakeet-cli transcribe --model <m.gguf> --input <wav|-> "
             "[--decoder ctc|tdt] [--lang <locale>] [--stream] [--timestamps] "
             "[--threads N] [--json] "
+            "[--vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]] "
             "[--beam-size N [--nbest N] [--no-score-norm]]\n");
         return 2;
     }
@@ -248,6 +289,10 @@ static int cmd_transcribe(int argc, char** argv) {
     if (threads > 0) pk::set_num_threads(threads);
 
     if (stream) {
+        if (vad) {
+            std::fprintf(stderr, "parakeet-cli: --vad is offline only\n");
+            return 2;
+        }
         if (beam_size != 0 || nbest != 0) {
             std::fprintf(stderr,
                 "parakeet-cli: --beam-size/--nbest are offline TDT only\n");
@@ -282,6 +327,13 @@ static int cmd_transcribe(int argc, char** argv) {
         }
     }
 
+    if (vad) {
+        if (beam_size != 0 || nbest != 0) {
+            std::fprintf(stderr, "parakeet-cli: --vad works with greedy decoding only\n");
+            return 2;
+        }
+        return cmd_transcribe_vad(model, input, dec, lang, timestamps, json, vad_opts);
+    }
     if (nbest != 0 && beam_size == 0) {
         std::fprintf(stderr,
             "parakeet-cli: --nbest requires --beam-size\n");
@@ -1569,6 +1621,7 @@ int main(int argc, char** argv) {
         "  parakeet-cli transcribe --model <model.gguf> --input <wav|-> "
         "[--decoder ctc|tdt] [--lang <locale>] [--stream] [--timestamps] "
         "[--threads N] [--json] "
+        "[--vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]] "
         "[--beam-size N [--nbest N] [--no-score-norm]]\n"
         "  parakeet-cli quantize <in.gguf> <out.gguf> "
         "<q4_0|q5_0|q8_0|q4_k|q5_k|q6_k>\n"
