@@ -3,6 +3,7 @@
 #include "model_loader.hpp"
 #include "tdt.hpp"             // pk::TdtBeamToken
 #include "transcription.hpp"   // pk::Transcription
+#include "vad_head.hpp"
 
 #include <memory>
 #include <string>
@@ -120,6 +121,11 @@ public:
         const std::string& target_lang = "") const;
 
     const ParakeetConfig& config() const { return loader_.config(); }
+    // Per-frame speech probability from the model's own VAD head (80 ms frames,
+    // cfg.vad.frame_sec). `v` overrides the head wiring for experiments; nullptr
+    // uses the defaults. Throws std::runtime_error if the model has no VAD head.
+    std::vector<float> vad_probabilities(const std::vector<float>& pcm16k,
+                                         const VadVariant* v = nullptr) const;
 
     // The underlying loaded GGUF. Exposed so the streaming C-API can build a
     // pk::StreamingSession (and a MelFrontend) over the same load-once model.

@@ -7,6 +7,7 @@
 #include "mel_gpu.hpp"
 #include "encoder.hpp"
 #include "subsampling.hpp"
+#include "vad_head.hpp"
 #include "ctc_decoder.hpp"
 #include "search.hpp"
 #include "tokenizer.hpp"
@@ -257,6 +258,31 @@ void Model::transcribe_16k_ctc_logits(const std::vector<float>& pcm16k,
     CTCDecoder ctc(loader_);
     ctc.forward(enc_out, d_model, Tout, logits, vocab_plus_1);
     T = Tout;
+}
+
+std::vector<float> Model::vad_probabilities(const std::vector<float>& pcm16k,
+                                            const VadVariant* v) const {
+    const ParakeetConfig& cfg = loader_.config();
+    if (!cfg.vad.present) throw std::runtime_error("model has no VAD head");
+    std::vector<float> feats;
+    int n_mels = 0, T = 0;
+    if (std::string(pk::global_backend().device_name()) != "cpu") {
+        GpuMel gmel(loader_);
+        gmel.compute(pcm16k, feats, n_mels, T);
+    } else {
+        MelFrontend mel(loader_);
+        mel.compute(pcm16k, feats, n_mels, T);
+    }
+    Subsampling sub(loader_);
+    std::vector<float> out;
+    int Tout = 0, d_model = 0, valid = 0;
+    const int tile = subsampling_tile_for(cfg, loader_, T);
+    if (tile > 0) sub.forward_tiled(feats, n_mels, T, tile, out, Tout, d_model, valid);
+    else          sub.forward(feats, n_mels, T, out, Tout, d_model, valid);
+    if ((uint32_t)d_model != cfg.vad.d_in)
+        throw std::runtime_error("VAD head input width does not match the subsampler output");
+    VadHead head(loader_);
+    return head.probabilities(out.data(), valid, v);
 }
 
 // Max mel frames per encoder pass before the first subsampling conv output

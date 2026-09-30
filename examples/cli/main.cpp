@@ -22,6 +22,7 @@
 #include "ced_tagger.hpp"
 #include "scene_stream.hpp"
 #include "scene_render.hpp"
+#include "vad_head.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -1506,6 +1507,39 @@ static int run_and_shutdown(int (*fn)(int, char**), int argc, char** argv) {
     return rc;
 }
 
+// parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]
+// Prints "t_sec,p" for every 80 ms frame. For inspecting the VAD head.
+static int cmd_vad_probe(int argc, char** argv) {
+    std::string model, input;
+    int variant = -1;
+    for (int i = 0; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) model = argv[++i];
+        else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) input = argv[++i];
+        else if (std::strcmp(argv[i], "--variant") == 0 && i + 1 < argc) variant = std::atoi(argv[++i]);
+    }
+    if (model.empty() || input.empty()) {
+        std::fprintf(stderr, "usage: parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]\n");
+        return 2;
+    }
+    pk::Audio audio;
+    if (!load_audio_arg_16k_mono(input, audio)) {
+        std::fprintf(stderr, "parakeet-cli: failed to load audio %s\n", input.c_str());
+        return 1;
+    }
+    try {
+        std::unique_ptr<pk::Model> m = pk::Model::load(model);
+        if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
+        const pk::VadVariant v = pk::VadVariant::from_index(variant < 0 ? 0 : variant);
+        const std::vector<float> p = m->vad_probabilities(audio.samples, variant < 0 ? nullptr : &v);
+        const float fs = m->config().vad.frame_sec;
+        for (size_t i = 0; i < p.size(); ++i) std::printf("%.2f,%.4f\n", (double)i * fs, p[i]);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "parakeet-cli: vad-probe failed: %s\n", e.what());
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && (std::strcmp(argv[1], "--version") == 0 ||
                       std::strcmp(argv[1], "-V") == 0)) {
@@ -1526,8 +1560,11 @@ int main(int argc, char** argv) {
         return run_and_shutdown(cmd_bench, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "scene") == 0)
         return run_and_shutdown(cmd_scene, argc - 2, argv + 2);
+    if (argc >= 2 && std::strcmp(argv[1], "vad-probe") == 0)
+        return run_and_shutdown(cmd_vad_probe, argc - 2, argv + 2);
     std::fprintf(stderr,
         "usage:\n"
+        "  parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]\n"
         "  parakeet-cli info <model.gguf>\n"
         "  parakeet-cli transcribe --model <model.gguf> --input <wav|-> "
         "[--decoder ctc|tdt] [--lang <locale>] [--stream] [--timestamps] "

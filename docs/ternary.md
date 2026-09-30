@@ -183,6 +183,58 @@ Transcripts on `tests/fixtures/speech.wav` are identical across the scalar,
 avx2 and vnni kernels and the dequantized F16 and Q8_0 Redux, and equal the
 reference transcript in `AGENTS.md`.
 
+## VAD head wiring
+
+Ultra and Redux carry a small voice-activity head (`vad_head.proj`, `vad_head.ctx`, `vad_head.out`) on the
+subsampler output. The tensor shapes fix the layer order (1x1 conv 1024 to 128, conv k=5 128 to 128, 1x1 conv 128 to 1,
+sigmoid), but Moondream does not document the activations or whether `ctx` is residual. We inferred the wiring from
+evidence, and `VadVariant` (`src/vad_head.hpp`) keeps the three choices switchable (`parakeet-cli vad-probe --variant N`,
+bit 0 ReLU after proj, bit 1 residual, bit 2 ReLU after ctx).
+
+How it was probed. Test data: three clips of 12 LibriSpeech utterances each (the first 36 of
+`benchmarks/librispeech_manifest.tsv`, joined with no inserted silence), `jfk.wav`, and the first 120 s of
+`i_have_a_dream.wav`. Labels came from the model's own TDT word timestamps: a speech frame (80 ms) has its center inside a
+word span widened by 0.04 s; a pause frame lies inside an inter-word, leading or trailing gap of at least 0.4 s, minus a
+0.16 s margin at each end. Counts: 4289 speech frames, 479 pause frames, 218 ignored, identical for both models. (An
+earlier probe with digital silence and white noise clips was discarded: zero padding wrecks the per-feature mel
+normalization of the speech part.) Features were dumped once per clip from the F16 Ultra and the dequantized F16 Redux.
+
+Grid, 108 variants: tap (subsampler output, final encoder output) x input treatment (none, per-frame LayerNorm without
+affine, per-frame L2 normalize times sqrt(1024)) x activation after proj (none, ReLU, SiLU) x activation after ctx (none,
+ReLU, SiLU) x ctx residual (no, yes). Each is scored by the median p on speech frames, the median p on pause frames and
+the ROC AUC of p separating the two.
+
+Top rows (speech median, pause median, AUC). All are the subsampler tap with no input treatment:
+
+| proj act, ctx act, residual | Ultra | Redux | mean AUC |
+| --- | --- | --- | --- |
+| ReLU, ReLU, no (chosen, variant 5) | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
+| ReLU, SiLU, no | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
+| SiLU, ReLU, no | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
+| SiLU, SiLU, no | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
+| ReLU, ReLU, yes | pause median 1.000 (collapses) | 1.000, 0.200, 0.959 | |
+
+The SiLU rows tie with ReLU because the pre-activations are huge and saturated. No variant met the strict rule (AUC of at
+least 0.90, speech median at least 0.8, pause median at most 0.2, on both models); variant 5 misses it only on the Ultra
+pause median (0.437).
+
+Refuted. The final encoder output as the tap scores AUC 0.17 to 0.67 for every treatment and activation, so it is at
+chance or inverted. LayerNorm and L2 input normalization do not help: the medians collapse to about 0.5 for both classes
+with equal or lower AUC.
+
+Decision: subsampler tap, no input treatment, ReLU after proj, ReLU after ctx, no residual (variant 5, the default of
+`VadVariant`).
+
+Caveats:
+- Pause detection is weak. Pause frames with p below 0.5: 58 percent on Ultra, 94 percent on Redux (the same for gaps of
+  0.8 s and 1.5 s or more). Speech frames above 0.5: 92.8 percent on Ultra, 92.9 percent on Redux.
+- Ultra and Redux disagree on the residual: Ultra needs none (with it the pause median is 1.000), Redux scores best with it
+  (AUC 0.959 against 0.948).
+- The wiring is inferred, not documented by Moondream. Something may still differ from training.
+- The default threshold is 0.5. Per-model thresholds may differ (Ultra about 0.5 to 0.7, Redux about 0.3).
+- Validation is by long-form WER with and without the VAD plus a threshold sweep (Task 12). The segmenter falls back to
+  hard cuts when it finds no pause, so a weak pause response degrades gracefully.
+
 ## Tests
 
 ```
