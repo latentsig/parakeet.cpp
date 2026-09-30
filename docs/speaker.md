@@ -106,8 +106,8 @@ recording):
 [00:20.4 - 00:23.3]  Ben: I don't wish to see it any more, observed Phoebe, turning away her
 ```
 
-With `--json` each update carries a `"names"` map, for example at the end of
-the file:
+With `--json` each update carries a `"names"` map (empty, `{}`, until a slot
+is seen), for example at the end of the file:
 
 ```
 "names":{"0":{"name":"Ada","score":0.9752},"1":{"name":"Ben","score":0.9681}}
@@ -172,10 +172,13 @@ parakeet_capi_transcribe_and_diarize_named_json  # offline speaker-attributed AS
 `parakeet_capi_scene_stream_begin` plus a speaker ctx and a registry. The
 registry is borrowed: keep it alive and unchanged while the stream runs.
 
-JSON fields: each utterance and word gets `"name"` and `"name_score"` (empty
-name means unknown), and the top level gets `"names"`, a map from slot to
-`{"name","score"}`. The offline named document is the SAS document plus those
-fields.
+JSON fields: each utterance, word and speaker segment gets `"name"` and
+`"name_score"` (empty name and 0.0000 mean unknown), and the top level gets
+`"names"`, a map from slot to `{"name","score"}`. In a scene stream with a
+speaker part these fields are there from the first document on: `"names"` is
+`{}` until diarization has seen a slot, so the shape of the document does not
+change during the stream. Without a speaker part none of them appear. The
+offline named document is the SAS document plus those fields.
 
 ## Devices and threads
 

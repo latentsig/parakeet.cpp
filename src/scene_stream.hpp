@@ -46,6 +46,9 @@ struct SceneUpdate {
     // Current identity of every diarization slot the speaker part has seen
     // (unknown slots have an empty name). Empty without a speaker model.
     std::map<int, SlotName> names;
+    // True on every update of a stream that has a speaker part, even before
+    // any slot is seen, so the JSON keeps one shape for the whole stream.
+    bool named = false;
 };
 
 // The part running when feed() threw, so a caller can attribute the error.
