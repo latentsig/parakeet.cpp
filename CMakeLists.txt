@@ -95,6 +95,7 @@ set(PARAKEET_SRC
     src/parakeet.cpp
     src/model.cpp
     src/vad_head.cpp
+    src/vad_segmenter.cpp
     src/parakeet_capi.cpp
     src/common.cpp
     src/audio_io.cpp
