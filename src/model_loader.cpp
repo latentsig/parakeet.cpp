@@ -5,6 +5,7 @@
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
+#include <cmath>
 #include <cstring>
 #include <vector>
 #include <utility>
@@ -173,6 +174,11 @@ bool ModelLoader::load(const std::string& path){
     cfg_.ternary.present = kv_bool(gguf_, "parakeet.ternary.present", false);
     if(cfg_.ternary.present){
         cfg_.ternary.group_size = kv_u32(gguf_, "parakeet.ternary.group_size", 128);
+        if(cfg_.ternary.group_size != 128){
+            PK_LOG("invalid packed ternary GGUF: parakeet.ternary.group_size is %u, only 128 is supported",
+                   (unsigned)cfg_.ternary.group_size);
+            return false;
+        }
     }
     cfg_.vad.present = kv_bool(gguf_, "parakeet.vad.present", false);
     if(cfg_.vad.present){

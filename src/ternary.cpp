@@ -172,7 +172,37 @@ struct TernaryStore {
     std::unordered_map<std::string, std::unique_ptr<TernaryWeight>> weights;
 };
 
-const TernaryWeight& weight_for(const ModelLoader& ml, const std::string& base) {
+// Validates the packed tensors of one linear before any read of their data.
+// expN / expK are the shapes the model config demands (or -1 to skip).
+void validate_ternary_tensors(const ggml_tensor* q, const ggml_tensor* s, const std::string& base,
+                              int64_t expN, int64_t expK) {
+    const std::string who = "ternary: " + base + ": ";
+    if (q->type != GGML_TYPE_I8) throw std::runtime_error(who + "qweight is not I8");
+    if (s->type != GGML_TYPE_F16) throw std::runtime_error(who + "scales is not F16");
+    if (q->ne[2] != 1 || q->ne[3] != 1 || s->ne[2] != 1 || s->ne[3] != 1)
+        throw std::runtime_error(who + "tensors must be 2-D");
+    const int64_t kMax = (int64_t)1 << 24;  // far above any real layer, keeps all products in range
+    const int64_t N = q->ne[1];
+    const int64_t G = s->ne[0];
+    if (N <= 0 || G <= 0 || N > kMax || G > kMax)
+        throw std::runtime_error(who + "invalid dimensions");
+    const int64_t K = G * kTernaryGroup;
+    if (K % kTernaryGroup != 0) throw std::runtime_error(who + "K is not a multiple of 128");
+    if (s->ne[1] != N) throw std::runtime_error(who + "scales rows differ from qweight rows");
+    const int64_t nb = (K + 4) / 5;
+    if (q->ne[0] != nb) throw std::runtime_error(who + "qweight row length does not match K");
+    if ((uint64_t)ggml_nbytes(q) != (uint64_t)N * (uint64_t)nb)
+        throw std::runtime_error(who + "qweight byte size mismatch");
+    if ((uint64_t)ggml_nbytes(s) != (uint64_t)N * (uint64_t)G * 2u)
+        throw std::runtime_error(who + "scales byte size mismatch");
+    if (expN >= 0 && (N != expN || K != expK))
+        throw std::runtime_error(who + "shape " + std::to_string(N) + "x" + std::to_string(K) +
+                                 " does not match the model config (" + std::to_string(expN) + "x" +
+                                 std::to_string(expK) + ")");
+}
+
+const TernaryWeight& weight_for(const ModelLoader& ml, const std::string& base,
+                                int64_t expN = -1, int64_t expK = -1) {
     static std::mutex init_mu;
     TernaryStore* store;
     {
@@ -187,10 +217,9 @@ const TernaryWeight& weight_for(const ModelLoader& ml, const std::string& base) 
     const ggml_tensor* q = ml.tensor(base + ".qweight");
     const ggml_tensor* s = ml.tensor(base + ".scales");
     if (!q || !s) throw std::runtime_error("ternary: missing " + base + ".qweight/.scales");
+    validate_ternary_tensors(q, s, base, expN, expK);
     const int N = (int)q->ne[1];
     const int K = (int)s->ne[0] * kTernaryGroup;
-    if ((int)q->ne[0] != (K + 4) / 5 || (int)s->ne[1] != N)
-        throw std::runtime_error("ternary: inconsistent shapes for " + base);
     auto w = std::make_unique<TernaryWeight>();
     ternary_repack(static_cast<const uint8_t*>(q->data), static_cast<const uint16_t*>(s->data), N, K, *w);
     return *store->weights.emplace(base, std::move(w)).first->second;
@@ -239,22 +268,33 @@ ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std:
 }
 
 void ternary_prepare(const ModelLoader& ml) {
-    static const char* const kLinears[] = {
-        "feed_forward1.linear1", "feed_forward1.linear2", "feed_forward2.linear1",
-        "feed_forward2.linear2", "self_attn.linear_q",    "self_attn.linear_k",
-        "self_attn.linear_v",    "self_attn.linear_out",  "self_attn.linear_pos",
-        "conv.pointwise_conv1",  "conv.pointwise_conv2"};
-    const int n_layers = (int)ml.config().n_layers;
+    const ParakeetConfig& cfg = ml.config();
+    const int64_t d = cfg.d_model, ff = cfg.ff_dim;
+    if (cfg.ternary.group_size != (uint32_t)kTernaryGroup)
+        throw std::runtime_error("ternary: group_size must be 128");
+    if (d <= 0 || ff <= 0) throw std::runtime_error("ternary: invalid d_model / ff_dim");
+    struct Lin2 { const char* name; int64_t N, K; };
+    const Lin2 kLinears[] = {
+        {"feed_forward1.linear1", ff, d},  {"feed_forward1.linear2", d, ff},
+        {"feed_forward2.linear1", ff, d},  {"feed_forward2.linear2", d, ff},
+        {"self_attn.linear_q", d, d},      {"self_attn.linear_k", d, d},
+        {"self_attn.linear_v", d, d},      {"self_attn.linear_out", d, d},
+        {"self_attn.linear_pos", d, d},    {"conv.pointwise_conv1", 2 * d, d},
+        {"conv.pointwise_conv2", d, d}};
+    const int n_layers = (int)cfg.n_layers;
     for (int i = 0; i < n_layers; ++i) {
-        for (const char* nm : kLinears) {
-            const std::string base = "encoder.layers." + std::to_string(i) + "." + nm;
+        for (const Lin2& l : kLinears) {
+            const std::string base = "encoder.layers." + std::to_string(i) + "." + l.name;
             if (has_ternary(ml, base)) {
-                weight_for(ml, base);
+                weight_for(ml, base, l.N, l.K);
             } else if (!ml.tensor(base + ".weight")) {
                 throw std::runtime_error("ternary: missing weight " + base);
             }
         }
     }
+    if (std::strcmp(ternary_kernel_name(), "scalar") == 0)
+        PK_LOG("packed ternary weights are running on the slow scalar kernel on this CPU/build "
+               "(about 1 GMAC/s); re-convert with --ternary dequant for speed");
 }
 
 }  // namespace pk

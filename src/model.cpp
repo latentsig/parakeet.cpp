@@ -56,12 +56,21 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     if (m->loader_.config().arch == "diarization") {
         return nullptr;
     }
+    // A GGUF that carries packed tensors but does not say so would skip the GPU
+    // refusal and the validation below, so refuse it outright.
+    if (!m->loader_.config().ternary.present &&
+        (m->loader_.tensor("encoder.layers.0.self_attn.linear_q.qweight") ||
+         m->loader_.tensor("encoder.layers.0.feed_forward1.linear1.qweight"))) {
+        PK_LOG("this GGUF holds packed ternary tensors (.qweight) but parakeet.ternary.present is not set; "
+               "refusing to load it");
+        return nullptr;
+    }
     // Packed ternary weights run on the CPU kernel only. Fail at load with a
     // clear message instead of crashing inside a GPU graph.
     if (m->loader_.config().ternary.present &&
         std::string(pk::global_backend().device_name()) != "cpu") {
         PK_LOG("this GGUF holds packed ternary weights, which run on the CPU backend only; "
-               "re-convert with --ternary dequant to use a GPU backend");
+               "re-convert with --ternary dequant to use a GPU backend, or set PARAKEET_DEVICE=cpu");
         return nullptr;
     }
     // Validate and repack every packed linear now so graph building never throws.
@@ -296,6 +305,15 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
                               const SegmenterOpts& opts_in) {
     SegmenterOpts opts = opts_in;
     opts.frame_sec = m.config().vad.frame_sec;
+    // Token frame offsets are in ENCODER frames (same formula as the JSON writer).
+    const ParakeetConfig& cfg = m.config();
+    const double enc_frame_sec =
+        (double)cfg.hop_length * (double)cfg.subsampling_factor / (double)cfg.sample_rate;
+    if (!(enc_frame_sec > 0.0) || !std::isfinite(enc_frame_sec))
+        throw std::runtime_error("invalid encoder frame size");
+    const double ratio = opts.frame_sec / enc_frame_sec;
+    if (std::fabs(ratio - std::round(ratio)) > 1e-3 || std::round(ratio) < 1.0)
+        throw std::runtime_error("VAD frame size is not a multiple of the encoder frame");
     const double total_sec = (double)pcm16k.size() / 16000.0;
     const std::vector<float> p = m.vad_probabilities(pcm16k);
     const std::vector<VadSegment> segs = segment_by_vad(p, total_sec, opts);
