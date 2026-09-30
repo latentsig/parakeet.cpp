@@ -318,7 +318,7 @@ static void test_open_segment_overlap_masked() {
     id.update({{0, 0.0f, 6.0f}}, {}, true);                      // 5-6 s alone, end flush
     CHECK(f.ns.size() == 2);
     if (f.ns.size() == 2) CHECK(std::abs(f.ns[1] - 5 * kSr) <= 2);   // 0-3 + 4-6, 3-4 excluded
-    CHECK(id.name(0).name == "alice");   // mixing 3-4 s in would give mean 0.133 -> unknown
+    CHECK(id.name(0).name == "alice");   // mixing 3-4 s in would give mean 0.133, an unknown voice
     CHECK(id.name(1).name.empty());      // slot 1 never had clean audio
 }
 
