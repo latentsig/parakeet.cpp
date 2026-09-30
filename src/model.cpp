@@ -89,6 +89,13 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     return m;
 }
 
+const Model::DecoderObjects& Model::decoder_objects() const {
+    std::call_once(decoder_once_, [this]() {
+        decoder_ = std::make_unique<DecoderObjects>(loader_);
+    });
+    return *decoder_;
+}
+
 // Forward declarations: subsampling-tiling helpers are defined below (after the
 // batched staging helpers) but used by the single-clip transcribe entry points.
 static int safe_mel_window(const pk::ParakeetConfig& cfg);
@@ -176,6 +183,7 @@ static EncodedAudio encode_16k(const ModelLoader& loader,
 // Decode one item's encoder output (row-major [d_model, Tout], channels-first)
 // into a transcript. Mirrors the tail of transcribe_16k exactly.
 static std::string decode_enc_out(const ModelLoader& loader,
+                                  const PredictionNet* dpred, const Joint* djoint,
                                   const std::vector<float>& enc_out,
                                   int d_model, int Tout, bool use_tdt) {
     const ParakeetConfig& cfg = loader.config();
@@ -184,8 +192,8 @@ static std::string decode_enc_out(const ModelLoader& loader,
         for (int t = 0; t < Tout; ++t)
             for (int c = 0; c < d_model; ++c)
                 enc_row[(size_t)t * d_model + c] = enc_out[(size_t)c * Tout + t];
-        PredictionNet pred(loader);
-        Joint        joint(loader);
+        const PredictionNet& pred  = *dpred;
+        const Joint&         joint = *djoint;
         const int max_symbols = static_cast<int>(cfg.max_symbols);
         std::vector<int32_t> ids;
         if (!cfg.tdt_durations.empty())
@@ -216,7 +224,10 @@ std::string Model::transcribe_16k(const std::vector<float>& pcm16k,
     const bool use_tdt = (decoder == Decoder::kTDT)
         || (decoder == Decoder::kDefault && arch_prefers_tdt(cfg.arch));
 
-    return decode_enc_out(loader_, encoded.channels_first,
+    return decode_enc_out(loader_,
+                          use_tdt ? &decoder_objects().pred : nullptr,
+                          use_tdt ? &decoder_objects().joint : nullptr,
+                          encoded.channels_first,
                           encoded.d_model, encoded.frames, use_tdt);
 }
 
@@ -500,8 +511,8 @@ std::vector<std::string> Model::transcribe_16k_batch(
         std::vector<std::vector<float>> encs;
         std::vector<int> Ts;
         batch_enc_to_row_major(enc_outs, valid_Tout, d_model, encs, Ts);
-        PredictionNet pred(loader_);
-        Joint        joint(loader_);
+        const PredictionNet& pred  = decoder_objects().pred;
+        const Joint&         joint = decoder_objects().joint;
         std::vector<std::vector<int32_t>> ids;
         pk::transducer_greedy_batch(pred, joint, encs, Ts, d_model,
                                     cfg.tdt_durations, (int)cfg.blank_id,
@@ -512,7 +523,10 @@ std::vector<std::string> Model::transcribe_16k_batch(
     } else {
         // CTC stays per-item (no autoregressive decode to batch).
         for (int b = 0; b < mb.B; ++b)
-            outs[b] = decode_enc_out(loader_, enc_outs[b], d_model, valid_Tout[b], use_tdt);
+            outs[b] = decode_enc_out(loader_,
+                                   use_tdt ? &decoder_objects().pred : nullptr,
+                                   use_tdt ? &decoder_objects().joint : nullptr,
+                                   enc_outs[b], d_model, valid_Tout[b], use_tdt);
     }
     return outs;
 }
@@ -534,7 +548,8 @@ std::vector<std::string> Model::transcribe_pcm_batch(
 // Transcription (text + per-word timestamps + tokens). Mirrors the decode tail
 // of transcribe_16k_with_timestamps exactly.
 static Transcription decode_enc_out_with_timestamps(
-        const ModelLoader& loader, const std::vector<float>& enc_out,
+        const ModelLoader& loader, const PredictionNet* dpred, const Joint* djoint,
+        const std::vector<float>& enc_out,
         int d_model, int Tout, bool use_tdt, float frame_sec) {
     const ParakeetConfig& cfg = loader.config();
     Transcription result;
@@ -544,8 +559,8 @@ static Transcription decode_enc_out_with_timestamps(
         for (int t = 0; t < Tout; ++t)
             for (int c = 0; c < d_model; ++c)
                 enc_row[(size_t)t * d_model + c] = enc_out[(size_t)c * Tout + t];
-        PredictionNet pred(loader);
-        Joint        joint(loader);
+        const PredictionNet& pred  = *dpred;
+        const Joint&         joint = *djoint;
         const int max_symbols = (int)cfg.max_symbols;
         if (!cfg.tdt_durations.empty())
             tdt_greedy(pred, joint, enc_row, Tout, d_model, cfg.tdt_durations,
@@ -593,7 +608,8 @@ Transcription Model::transcribe_16k_with_timestamps(
         || (decoder == Decoder::kDefault && arch_prefers_tdt(cfg.arch));
 
     Transcription result = decode_enc_out_with_timestamps(
-        loader_, encoded.channels_first, encoded.d_model, encoded.frames,
+        loader_, use_tdt ? &decoder_objects().pred : nullptr,
+        use_tdt ? &decoder_objects().joint : nullptr, encoded.channels_first, encoded.d_model, encoded.frames,
         use_tdt, frame_sec);
     return result;
 }
@@ -635,8 +651,8 @@ std::vector<Transcription> Model::transcribe_16k_batch_with_timestamps(
         std::vector<std::vector<float>> encs;
         std::vector<int> Ts;
         batch_enc_to_row_major(enc_outs, valid_Tout, d_model, encs, Ts);
-        PredictionNet pred(loader_);
-        Joint        joint(loader_);
+        const PredictionNet& pred  = decoder_objects().pred;
+        const Joint&         joint = decoder_objects().joint;
         std::vector<std::vector<int32_t>> ids;
         std::vector<std::vector<TokenInfo>> toks;
         pk::transducer_greedy_batch(pred, joint, encs, Ts, d_model,
@@ -655,7 +671,8 @@ std::vector<Transcription> Model::transcribe_16k_batch_with_timestamps(
         // CTC stays per-item (not a transducer; no autoregressive decode).
         for (int b = 0; b < mb.B; ++b)
             outs[b] = decode_enc_out_with_timestamps(
-                loader_, enc_outs[b], d_model, valid_Tout[b], use_tdt, frame_sec);
+                loader_, use_tdt ? &decoder_objects().pred : nullptr,
+                use_tdt ? &decoder_objects().joint : nullptr, enc_outs[b], d_model, valid_Tout[b], use_tdt, frame_sec);
     }
     return outs;
 }
@@ -688,8 +705,8 @@ std::vector<NBestTranscription> Model::transcribe_16k_nbest(
             enc_row[(size_t)t * encoded.d_model + c] =
                 encoded.channels_first[(size_t)c * encoded.frames + t];
 
-    PredictionNet pred(loader_);
-    Joint joint(loader_);
+    const PredictionNet& pred  = decoder_objects().pred;
+    const Joint&         joint = decoder_objects().joint;
     std::vector<TdtBeamHypothesis> beam = tdt_beam_search(
         pred, joint, enc_row, encoded.frames, encoded.d_model,
         cfg.tdt_durations, (int)cfg.blank_id,

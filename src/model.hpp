@@ -1,12 +1,15 @@
 #pragma once
 #include "parakeet.h"          // pk::Decoder
+#include "joint.hpp"
 #include "model_loader.hpp"
+#include "prediction.hpp"
 #include "tdt.hpp"             // pk::TdtBeamToken
 #include "transcription.hpp"   // pk::Transcription
 #include "vad_head.hpp"
 #include "vad_segmenter.hpp"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -28,7 +31,10 @@ struct NBestTranscription {
 //
 // The component objects (MelFrontend, Encoder, PredictionNet, Joint, ...) are
 // lightweight views over the ModelLoader (they hold `const ModelLoader&`), so
-// they are constructed per call; the expensive part — parsing the GGUF and
+// they are constructed per call, except the transducer decoder objects
+// (PredictionNet, Joint), which are built once on first use and shared by every
+// decode (they are immutable after construction; see decoder_objects()). The
+// expensive part — parsing the GGUF and
 // mapping every weight tensor — happens exactly once, in load().
 class Model {
 public:
@@ -182,6 +188,21 @@ private:
                                    const std::string& target_lang = "") const;
 
     ModelLoader loader_;
+
+    // The transducer decoder objects, built once per model on first use
+    // (thread-safe) so the 21 MB embedding table is not re-copied per
+    // utterance. PredictionNet and Joint are read-only after construction
+    // (the embedding table is filled once under a std::once_flag), so
+    // concurrent decodes may share them. Only valid for transducer models.
+    struct DecoderObjects {
+        PredictionNet pred;
+        Joint         joint;
+        explicit DecoderObjects(const ModelLoader& ml) : pred(ml), joint(ml) {}
+    };
+    const DecoderObjects& decoder_objects() const;
+
+    mutable std::once_flag decoder_once_;
+    mutable std::unique_ptr<DecoderObjects> decoder_;
 };
 
 } // namespace pk
