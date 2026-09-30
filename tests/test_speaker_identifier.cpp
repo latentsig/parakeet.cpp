@@ -1,0 +1,249 @@
+// Unit test for pk::SpeakerIdentifier with a fake embedder. No model or audio.
+//
+// Fake audio: speaker k is a constant sample value 0.1*(k+1). The fake embedder
+// maps the mean sample value back to a one-hot vector, so a clip that mixes two
+// speakers (mean 0.15) lands between two voices and would be caught by the checks.
+#include "speaker_identifier.hpp"
+
+#include <cmath>
+#include <cstdio>
+#include <stdexcept>
+#include <vector>
+
+using namespace pk;
+
+static int failures = 0;
+#define CHECK(cond)                                                          \
+    do {                                                                     \
+        if (!(cond)) {                                                       \
+            std::fprintf(stderr, "FAIL: %s (line %d)\n", #cond, __LINE__);  \
+            ++failures;                                                      \
+        }                                                                    \
+    } while (0)
+
+static const int kSr = 16000;
+
+struct Fake {
+    int calls = 0;
+    int last_n = 0;
+    SpeakerEmbed fn() {
+        return [this](const float* pcm, int n, std::vector<float>& emb) {
+            ++calls;
+            last_n = n;
+            double sum = 0.0;
+            for (int i = 0; i < n; ++i) sum += pcm[i];
+            const double mean = n ? sum / n : 0.0;
+            const int hot = (int)std::lround(mean * 10.0) - 1;   // 0.1 -> 0, 0.2 -> 1, 0.3 -> 2
+            emb.assign(4, 0.0f);
+            if (hot >= 0 && hot < 4 && std::fabs(mean * 10.0 - std::round(mean * 10.0)) < 0.2)
+                emb[(size_t)hot] = 1.0f;
+            else
+                emb[3] = 1.0f;   // ambiguous audio (a mixture) goes to a voice nobody enrolled
+            return true;
+        };
+    }
+};
+
+static SpeakerRegistry make_registry() {
+    SpeakerRegistry r;
+    r.enroll("alice", {1, 0, 0, 0});
+    r.enroll("bob", {0, 1, 0, 0});
+    return r;
+}
+
+// Builds a PCM stream of `total_sec` where each listed segment adds its speaker's value.
+struct Seg { int spk; float start, end; };
+static std::vector<float> make_pcm(double total_sec, const std::vector<Seg>& segs) {
+    std::vector<float> pcm((size_t)(total_sec * kSr), 0.0f);
+    for (const Seg& s : segs)
+        for (int i = (int)(s.start * kSr); i < (int)(s.end * kSr) && i < (int)pcm.size(); ++i)
+            pcm[(size_t)i] += 0.1f * (float)(s.spk + 1);
+    return pcm;
+}
+
+static SpeakerIdOpts opts() {
+    SpeakerIdOpts o;
+    o.min_voice_sec = 2.0f;
+    o.refresh_sec = 3.0f;
+    o.max_voice_sec = 10.0f;
+    return o;
+}
+
+static void test_clean_intervals() {
+    auto len = [](const std::vector<Interval>& v) { double t = 0; for (auto& i : v) t += i.end - i.start; return t; };
+    auto a = clean_intervals({0, 4}, {{3, 6}}, 0.2);
+    CHECK(a.size() == 1 && std::fabs(a[0].start) < 1e-9 && std::fabs(a[0].end - 3) < 1e-9);
+    auto b = clean_intervals({0, 4}, {{1, 2}}, 0.2);
+    CHECK(b.size() == 2 && std::fabs(len(b) - 3) < 1e-9);
+    CHECK(clean_intervals({0, 4}, {{0, 4}}, 0.2).empty());
+    CHECK(clean_intervals({0, 4}, {{0.1, 4}}, 0.2).empty());     // 0.1 s sliver dropped
+    auto c = clean_intervals({0, 4}, {{2, 5}, {1, 3}}, 0.2);     // overlapping others merge
+    CHECK(c.size() == 1 && std::fabs(c[0].end - 1) < 1e-9);
+    auto d = clean_intervals({0, 4}, {}, 0.2);
+    CHECK(d.size() == 1 && std::fabs(d[0].end - 4) < 1e-9);
+}
+
+static void test_names_two_speakers() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(12, {{0, 0, 5}, {1, 6, 11}});
+    id.push_pcm(pcm.data(), 5 * kSr);
+    id.update({{0, 0.0f, 5.0f}}, {}, false);
+    CHECK(id.name(0).name == "alice");
+    CHECK(id.name(1).name.empty());
+    id.push_pcm(pcm.data() + 5 * kSr, 6 * kSr);
+    id.update({{1, 6.0f, 11.0f}}, {}, false);
+    CHECK(id.name(1).name == "bob");
+    CHECK(id.names().size() == 2);
+    CHECK(id.name(7).name.empty());   // a slot never seen is unknown, not an error
+}
+
+static void test_min_voice() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(3, {{0, 0, 1.5}});
+    id.push_pcm(pcm.data(), 3 * kSr);
+    id.update({{0, 0.0f, 1.5f}}, {}, true);   // 1.5 s < min_voice_sec, even at end of stream
+    CHECK(f.calls == 0);
+    CHECK(id.name(0).name.empty());
+}
+
+static void test_refresh_and_last() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(12, {{0, 0, 2.5}, {0, 3, 4}, {0, 5, 6.5}, {0, 7, 8}, {0, 9, 10}});
+    auto feed_to = [&](int from, int to) { id.push_pcm(pcm.data() + from * kSr, (to - from) * kSr); };
+    feed_to(0, 3);   id.update({{0, 0.0f, 2.5f}}, {}, false);
+    CHECK(f.calls == 1 && id.name(0).name == "alice");           // first time past min_voice
+    feed_to(3, 5);   id.update({{0, 3.0f, 4.0f}}, {}, false);
+    CHECK(f.calls == 1);                                         // gained 1.0 s < refresh 3 s
+    feed_to(5, 7);   id.update({{0, 5.0f, 6.5f}}, {}, false);
+    CHECK(f.calls == 1);                                         // gained 2.5 s
+    feed_to(7, 9);   id.update({{0, 7.0f, 8.0f}}, {}, false);
+    CHECK(f.calls == 2);                                         // gained 3.5 s >= 3 s
+    feed_to(9, 11);  id.update({{0, 9.0f, 10.0f}}, {}, true);
+    CHECK(f.calls == 3);                                         // end of stream flushes the 1.0 s gained
+}
+
+static void test_overlap_skipped() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    // Speaker 0 talks 0-4 s, speaker 1 talks 3-6 s (still open when 0 closes).
+    const auto pcm = make_pcm(6, {{0, 0, 4}, {1, 3, 6}});
+    id.push_pcm(pcm.data(), 4 * kSr);
+    id.update({{0, 0.0f, 4.0f}}, {{1, 3.0f, 4.0f}}, false);
+    CHECK(f.calls == 1);
+    CHECK(std::abs(f.last_n - 3 * kSr) <= 2);   // only the 3 s that speaker 0 had alone
+    CHECK(id.name(0).name == "alice");           // mixing 3-4 s would have given mean 0.3 -> unknown
+}
+
+static void test_unknown_voice() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(5, {{2, 0, 4}});   // a third voice nobody enrolled
+    id.push_pcm(pcm.data(), 5 * kSr);
+    id.update({{2, 0.0f, 4.0f}}, {}, true);
+    CHECK(f.calls >= 1);
+    CHECK(id.name(2).name.empty());
+}
+
+static void test_hysteresis() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdOpts o = opts();
+    o.max_voice_sec = 3.0f;   // the buffer holds only the newest 3 s, so each refresh sees one voice
+    SpeakerIdentifier id(f.fn(), &reg, o);
+    // Slot 0 is alice's audio first, then bob's audio arrives on the same slot.
+    const auto pcm = make_pcm(30, {{0, 0, 3}, {1, 3, 6}, {1, 6, 9}, {1, 9, 12}});
+    auto feed_to = [&](int from, int to) { id.push_pcm(pcm.data() + from * kSr, (to - from) * kSr); };
+    feed_to(0, 3);   id.update({{0, 0.0f, 3.0f}}, {}, false);
+    CHECK(id.name(0).name == "alice");
+    feed_to(3, 6);   id.update({{0, 3.0f, 6.0f}}, {}, false);
+    CHECK(id.name(0).name == "alice");                           // bob won once: only pending
+    feed_to(6, 9);   id.update({{0, 6.0f, 9.0f}}, {}, false);
+    CHECK(id.name(0).name == "bob");                             // bob won twice in a row
+}
+
+static void test_hysteresis_reset_by_unknown() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdOpts o = opts();
+    o.max_voice_sec = 3.0f;
+    SpeakerIdentifier id(f.fn(), &reg, o);
+    const auto pcm = make_pcm(30, {{0, 0, 3}, {1, 3, 6}, {2, 6, 9}, {1, 9, 12}});
+    auto feed_to = [&](int from, int to) { id.push_pcm(pcm.data() + from * kSr, (to - from) * kSr); };
+    feed_to(0, 3);   id.update({{0, 0.0f, 3.0f}}, {}, false);
+    feed_to(3, 6);   id.update({{0, 3.0f, 6.0f}}, {}, false);    // bob pending
+    feed_to(6, 9);   id.update({{0, 6.0f, 9.0f}}, {}, false);    // unknown voice: breaks the run
+    feed_to(9, 12);  id.update({{0, 9.0f, 12.0f}}, {}, false);   // bob again, but only once in a row
+    CHECK(id.name(0).name == "alice");
+}
+
+static void test_ring_drops_old_audio() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdOpts o = opts();
+    o.ring_sec = 5.0f;
+    o.max_voice_sec = 4.0f;   // ring_sec must be >= max_voice_sec or the constructor rejects the options
+    SpeakerIdentifier id(f.fn(), &reg, o);
+    const auto pcm = make_pcm(20, {{0, 0, 3}});
+    id.push_pcm(pcm.data(), 20 * kSr);
+    id.update({{0, 0.0f, 3.0f}}, {}, false);   // its audio is 17 s old and gone from the ring
+    CHECK(f.calls == 0);                        // no audio, no embedding, no crash
+    CHECK(id.name(0).name.empty());
+}
+
+static void test_embed_failure_throws() {
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id([](const float*, int, std::vector<float>&) { return false; }, &reg, opts());
+    const auto pcm = make_pcm(5, {{0, 0, 4}});
+    id.push_pcm(pcm.data(), 5 * kSr);
+    bool threw = false;
+    try { id.update({{0, 0.0f, 4.0f}}, {}, false); } catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+static void test_offline() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    const auto pcm = make_pcm(24, {{0, 0, 5}, {1, 6, 11}, {0, 12, 17}, {1, 18, 23}});
+    const std::vector<SpeakerSegment> segs = {{0, 0, 5}, {1, 6, 11}, {0, 12, 17}, {1, 18, 23}};
+    const auto names = identify_offline(pcm, segs, f.fn(), reg, opts());
+    CHECK(names.size() == 2);
+    CHECK(names.at(0).name == "alice");
+    CHECK(names.at(1).name == "bob");
+}
+
+static void test_validate_opts() {
+    CHECK(validate_speaker_opts(SpeakerIdOpts{}).empty());
+    SpeakerIdOpts o;
+    o.min_voice_sec = 0.0f;   CHECK(!validate_speaker_opts(o).empty());
+    o = SpeakerIdOpts{}; o.refresh_sec = -1.0f;   CHECK(!validate_speaker_opts(o).empty());
+    o = SpeakerIdOpts{}; o.max_voice_sec = 1.0f;  CHECK(!validate_speaker_opts(o).empty());   // < min_voice
+    o = SpeakerIdOpts{}; o.accept_threshold = 1.5f; CHECK(!validate_speaker_opts(o).empty());
+    o = SpeakerIdOpts{}; o.margin = -0.1f;        CHECK(!validate_speaker_opts(o).empty());
+    o = SpeakerIdOpts{}; o.ring_sec = 5.0f;       CHECK(!validate_speaker_opts(o).empty());   // < max_voice
+}
+
+int main() {
+    test_clean_intervals();
+    test_names_two_speakers();
+    test_min_voice();
+    test_refresh_and_last();
+    test_overlap_skipped();
+    test_unknown_voice();
+    test_hysteresis();
+    test_hysteresis_reset_by_unknown();
+    test_ring_drops_old_audio();
+    test_embed_failure_throws();
+    test_offline();
+    test_validate_opts();
+    if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
+    std::printf("test_speaker_identifier: PASS\n");
+    return 0;
+}
