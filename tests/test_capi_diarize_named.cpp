@@ -111,6 +111,42 @@ int main() {
         parakeet_capi_free_string(j);
     }
 
+    // The margin reaches the identifier. Two registries whose only difference is a runner-up:
+    // "a1" and "a2" hold the very same vector (best minus runner-up is exactly 0, so the default
+    // 0.05 margin calls voice A unknown), while "a1" alone has no runner-up and is named.
+    // The construction is independent of the encoder. (A large margin such as 0.9 on the main
+    // registry is not robust: WeSpeaker scores impostors near 0, so best minus second best can
+    // exceed 0.9 and the slot is still named.)
+    {
+        parakeet_speaker_registry* tie = parakeet_capi_speaker_registry_new();
+        parakeet_speaker_registry* solo = parakeet_capi_speaker_registry_new();
+        CHECK(parakeet_capi_speaker_registry_add_embedding(tie, "a1", ea.data(), (int)ea.size()) == 0);
+        CHECK(parakeet_capi_speaker_registry_add_embedding(tie, "a2", ea.data(), (int)ea.size()) == 0);
+        CHECK(parakeet_capi_speaker_registry_add_embedding(solo, "a1", ea.data(), (int)ea.size()) == 0);
+        j = parakeet_capi_diarize_named_pcm_json(diar, spk, tie, wav.samples.data(), (int)wav.samples.size(),
+                                                  16000, 0.0f, 0.0f);
+        CHECK(j != nullptr);
+        if (j) {
+            const std::string s = j;
+            CHECK(s.find("\"names\":{\"0\":{\"name\":\"\"") != std::string::npos);   // a tie is unknown
+            CHECK(s.find("a1") == std::string::npos && s.find("a2") == std::string::npos);
+            parakeet_capi_free_string(j);
+        }
+        j = parakeet_capi_diarize_named_pcm_json(diar, spk, solo, wav.samples.data(), (int)wav.samples.size(),
+                                                  16000, 0.0f, 0.0f);
+        CHECK(j != nullptr);
+        if (j) {
+            CHECK(std::string(j).find("\"names\":{\"0\":{\"name\":\"a1\"") != std::string::npos);
+            parakeet_capi_free_string(j);
+        }
+        parakeet_capi_speaker_registry_free(tie);
+        parakeet_capi_speaker_registry_free(solo);
+    }
+    // A negative margin is refused by the identifier's validation, on the speaker ctx.
+    CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), (int)wav.samples.size(),
+                                                16000, 0.0f, -0.1f) == nullptr);
+    CHECK(std::strstr(parakeet_capi_last_error(spk), "invalid speaker options") != nullptr);
+
     // Invalid options and a non-16k input rate.
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), (int)wav.samples.size(),
                                                 16000, 2.0f, 0.0f) == nullptr);
@@ -127,21 +163,39 @@ int main() {
         }
     }
 
-    // Error paths.
+    // Error paths, and which ctx carries each message.
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, nullptr, reg, wav.samples.data(), 16000, 16000, 0, 0) == nullptr);
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, nullptr, wav.samples.data(), 16000, 16000, 0, 0) == nullptr);
     CHECK(std::strstr(parakeet_capi_last_error(spk), "needs a registry") != nullptr);
+    // A speaker ctx passed as `diar`: the message is on that ctx.
     CHECK(parakeet_capi_diarize_named_pcm_json(spk, spk, reg, wav.samples.data(), 16000, 16000, 0, 0) == nullptr);
+    CHECK(std::strstr(parakeet_capi_last_error(spk), "holds a speaker model; diarize_* needs a diarization model") != nullptr);
+    // A diarization ctx passed as `speaker`: the message is on that ctx.
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, diar, reg, wav.samples.data(), 16000, 16000, 0, 0) == nullptr);
+    CHECK(std::strstr(parakeet_capi_last_error(diar), "holds a diarization model; a speaker model is needed here") != nullptr);
+    // Bad samples: "invalid samples buffer" on diar.
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, nullptr, 16000, 16000, 0, 0) == nullptr);
+    CHECK(std::strstr(parakeet_capi_last_error(diar), "invalid samples buffer") != nullptr);
     CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), 0, 16000, 0, 0) == nullptr);
-    // A registry made for a different encoder size is refused with both sizes in the message.
+    CHECK(std::strstr(parakeet_capi_last_error(diar), "invalid samples buffer") != nullptr);
+    CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), 16000, 0, 0, 0) == nullptr);
+    CHECK(std::strstr(parakeet_capi_last_error(diar), "invalid samples buffer") != nullptr);
+    // A registry made for a different encoder size is refused with both sizes in the message, on
+    // the speaker ctx, and before diarization runs (the whole fixture is passed, the diar ctx stays clean).
     {
         parakeet_speaker_registry* wrong = parakeet_capi_speaker_registry_new();
         const float small[3] = {1, 0, 0};
         CHECK(parakeet_capi_speaker_registry_add_embedding(wrong, "x", small, 3) == 0);
-        CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, wrong, wav.samples.data(), 16000, 16000, 0, 0) == nullptr);
-        CHECK(std::strstr(parakeet_capi_last_error(spk), "embeddings") != nullptr);
+        // A good call first, which clears the diar ctx message left by the error cases above.
+        char* ok = parakeet_capi_diarize_named_pcm_json(diar, spk, reg, wav.samples.data(), 16000, 16000, 0, 0);
+        if (ok) parakeet_capi_free_string(ok);
+        CHECK(parakeet_capi_diarize_named_pcm_json(diar, spk, wrong, wav.samples.data(), (int)wav.samples.size(),
+                                                    16000, 0, 0) == nullptr);
+        const std::string msg = parakeet_capi_last_error(spk);
+        const std::string want = "this model produces " + std::to_string(parakeet_capi_speaker_dim(spk));
+        CHECK(msg.find("3-value") != std::string::npos);
+        CHECK(msg.find(want) != std::string::npos);
+        CHECK(std::strlen(parakeet_capi_last_error(diar)) == 0);
         parakeet_capi_speaker_registry_free(wrong);
     }
 
