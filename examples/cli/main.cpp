@@ -18,6 +18,7 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "transcription_json.hpp"
+#include "common.hpp"   // pk::write_file_atomic
 #include "diarization.hpp"
 #include "ced_tagger.hpp"
 #include "scene_stream.hpp"
@@ -32,9 +33,11 @@
 #include <memory>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1341,16 +1344,27 @@ static int cmd_bench_decode(int argc, char** argv) {
     return 0;
 }
 
-// Reads a whole file. False when it cannot be opened.
-static bool read_file_bytes(const std::string& path, std::string& out) {
+// Reads a whole file. Returns 0 on success, ENOENT when the path does not
+// exist, EISDIR when it is a directory, else the errno of the failure.
+static int read_file_bytes(const std::string& path, std::string& out) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) return EISDIR;
+    errno = 0;
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
+    if (!f) return errno ? errno : EIO;
     out.clear();
     char buf[4096];
     size_t k;
     while ((k = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, k);
+    const int e = std::ferror(f) ? (errno ? errno : EIO) : 0;
     std::fclose(f);
-    return true;
+    return e;
+}
+
+// One line for a registry file that cannot be read.
+static std::string registry_read_error(const std::string& path, int e) {
+    if (e == EISDIR) return path + " is a directory, not a speaker registry";
+    return "cannot read registry " + path + ": " + std::strerror(e);
 }
 
 static const char* kEnrollUsage =
@@ -1386,7 +1400,12 @@ static int cmd_enroll(int argc, char** argv) {
     }
     pk::SpeakerRegistry reg;
     std::string blob;
-    if (read_file_bytes(registry_path, blob)) {   // add to an existing registry
+    const int rerr = read_file_bytes(registry_path, blob);
+    if (rerr != 0 && rerr != ENOENT) {   // only a missing file means "start a new registry"
+        std::fprintf(stderr, "parakeet-cli enroll: %s\n", registry_read_error(registry_path, rerr).c_str());
+        return 1;
+    }
+    if (rerr == 0) {   // add to an existing registry
         try { reg = pk::SpeakerRegistry::deserialize(blob); }
         catch (const std::exception& e) {
             std::fprintf(stderr, "parakeet-cli enroll: %s is not a speaker registry: %s\n",
@@ -1415,20 +1434,11 @@ static int cmd_enroll(int argc, char** argv) {
         }
         ++clips;
     }
-    // Write next to the target and rename, so a failed write never costs the
-    // user the registry they already had.
-    const std::string out_blob = reg.serialize();
-    const std::string tmp_path = registry_path + ".tmp";
-    FILE* out = std::fopen(tmp_path.c_str(), "wb");
-    bool ok = out != nullptr;
-    if (out) {
-        ok = std::fwrite(out_blob.data(), 1, out_blob.size(), out) == out_blob.size();
-        if (std::fclose(out) != 0) ok = false;
-    }
-    if (ok && std::rename(tmp_path.c_str(), registry_path.c_str()) != 0) ok = false;
-    if (!ok) {
-        std::remove(tmp_path.c_str());
-        std::fprintf(stderr, "parakeet-cli enroll: cannot write %s\n", registry_path.c_str());
+    // Written next to the target and moved over it, so a failed write never
+    // costs the user the registry they already had.
+    std::string werr;
+    if (!pk::write_file_atomic(registry_path, reg.serialize(), &werr)) {
+        std::fprintf(stderr, "parakeet-cli enroll: %s\n", werr.c_str());
         return 1;
     }
     std::printf("enrolled %s (%d clip(s)), registry has %zu speaker(s)\n", name.c_str(), clips,
@@ -1594,8 +1604,9 @@ static int cmd_scene(int argc, char** argv) {
             return 1;
         }
         std::string blob;
-        if (!read_file_bytes(registry_path, blob)) {
-            std::fprintf(stderr, "parakeet-cli scene: cannot read registry %s\n", registry_path.c_str());
+        const int rerr = read_file_bytes(registry_path, blob);
+        if (rerr != 0) {
+            std::fprintf(stderr, "parakeet-cli scene: %s\n", registry_read_error(registry_path, rerr).c_str());
             return 1;
         }
         try { registry = pk::SpeakerRegistry::deserialize(blob); }

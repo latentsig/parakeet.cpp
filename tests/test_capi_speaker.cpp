@@ -10,10 +10,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
-
-#include <unistd.h>
 
 static int failures = 0;
 #define CHECK(cond)                                                          \
@@ -70,15 +69,36 @@ int main() {
     }
 
     // Save and load round trip, and a corrupt file is refused without crashing.
-    const std::string path = std::string("/tmp/pk_test_registry_") + std::to_string((long)::getpid()) + ".bin";
+    const std::filesystem::path tmp_dir = std::filesystem::temp_directory_path();
+    const std::string path = (tmp_dir / "pk_test_capi_speaker_registry.bin").string();
+    std::filesystem::remove(path);
     CHECK(parakeet_capi_speaker_registry_save(reg, path.c_str()) == 0);
     parakeet_speaker_registry* back = parakeet_capi_speaker_registry_load(path.c_str());
     CHECK(back && parakeet_capi_speaker_registry_size(back) == 2);
     parakeet_capi_speaker_registry_free(back);
+    // Saving over an existing registry replaces it, and leaves no tmp file.
+    {
+        parakeet_speaker_registry* one = parakeet_capi_speaker_registry_new();
+        CHECK(parakeet_capi_speaker_enroll(one, spk, "only_a", a0.data(), (int)a0.size(), 16000) == 0);
+        CHECK(parakeet_capi_speaker_registry_save(one, path.c_str()) == 0);
+        CHECK(!std::filesystem::exists(path + ".tmp"));
+        parakeet_speaker_registry* again = parakeet_capi_speaker_registry_load(path.c_str());
+        CHECK(again && parakeet_capi_speaker_registry_size(again) == 1);
+        parakeet_capi_speaker_registry_free(again);
+        // A failed save (directory that does not exist) reports an error and
+        // leaves the file that was there loadable.
+        const std::string bad = (tmp_dir / "pk_test_no_such_dir" / "registry.bin").string();
+        CHECK(parakeet_capi_speaker_registry_save(reg, bad.c_str()) != 0);
+        CHECK(std::strlen(parakeet_capi_speaker_registry_last_error(reg)) > 0);
+        parakeet_speaker_registry* still = parakeet_capi_speaker_registry_load(path.c_str());
+        CHECK(still && parakeet_capi_speaker_registry_size(still) == 1);
+        parakeet_capi_speaker_registry_free(still);
+        parakeet_capi_speaker_registry_free(one);
+    }
     { FILE* f = std::fopen(path.c_str(), "wb"); std::fputs("garbage", f); std::fclose(f); }
     CHECK(parakeet_capi_speaker_registry_load(path.c_str()) == nullptr);
-    CHECK(parakeet_capi_speaker_registry_load("/nonexistent/registry.bin") == nullptr);
-    std::remove(path.c_str());
+    CHECK(parakeet_capi_speaker_registry_load((tmp_dir / "pk_test_no_such_dir" / "registry.bin").string().c_str()) == nullptr);
+    std::filesystem::remove(path);
 
     // Scene stream with diarization + speaker.
     {

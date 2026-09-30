@@ -14,6 +14,7 @@
 #include "speaker_identifier.hpp" // pk::identify_offline
 #include "speaker_registry.hpp"   // pk::SpeakerRegistry
 #include "audio_io.hpp"   // pk::resample_linear
+#include "common.hpp"     // pk::write_file_atomic
 
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
@@ -1798,12 +1799,13 @@ extern "C" int parakeet_capi_speaker_registry_save(const parakeet_speaker_regist
     auto* mreg = const_cast<parakeet_speaker_registry*>(reg);   // only last_error is written
     if (!path || !*path) { mreg->last_error = "path is empty"; return 1; }
     try {
-        const std::string blob = reg->reg.serialize();
-        std::FILE* f = std::fopen(path, "wb");
-        if (!f) { mreg->last_error = std::string("cannot open ") + path + " for writing"; return 1; }
-        const bool ok = std::fwrite(blob.data(), 1, blob.size(), f) == blob.size();
-        const bool closed = std::fclose(f) == 0;
-        if (!ok || !closed) { mreg->last_error = std::string("write failed: ") + path; return 1; }
+        // Written to <path>.tmp and moved over the target, so a failed save
+        // never costs the caller the registry file they already had.
+        std::string err;
+        if (!pk::write_file_atomic(path, reg->reg.serialize(), &err)) {
+            mreg->last_error = err;
+            return 1;
+        }
         mreg->last_error.clear();
         return 0;
     } catch (const std::exception& e) {
@@ -1927,6 +1929,9 @@ extern "C" char* parakeet_capi_transcribe_and_diarize_named_json(
         s += "]}";
         speaker->last_error.clear();
         return dup_to_c(s);
+    } catch (const std::exception& e) {
+        if (speaker) speaker->last_error = e.what();
+        return nullptr;
     } catch (...) {
         if (speaker) speaker->last_error = "unknown error";
         return nullptr;
