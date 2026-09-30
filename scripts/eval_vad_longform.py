@@ -13,9 +13,13 @@ from asr_metrics import wer  # noqa: E402
 
 
 def run(cmd_prefix, cli, model, wav, extra, threads):
-    r = subprocess.run([*cmd_prefix, cli, "transcribe", "--model", model, "--input", wav,
-                        "--decoder", "tdt", "--threads", str(threads), *extra],
-                       capture_output=True, text=True, check=True)
+    try:
+        r = subprocess.run([*cmd_prefix, cli, "transcribe", "--model", model, "--input", wav,
+                            "--decoder", "tdt", "--threads", str(threads), *extra],
+                           capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"parakeet-cli failed (exit {e.returncode}) on {wav}:\n{e.stderr}", file=sys.stderr)
+        sys.exit(1)
     return r.stdout.strip()
 
 
@@ -38,7 +42,11 @@ def main():
     if save:
         save.mkdir(parents=True, exist_ok=True)
     tot_plain = tot_vad = n = 0.0
-    for wav in sorted(pathlib.Path(args.dir).glob(args.glob)):
+    wavs = sorted(pathlib.Path(args.dir).glob(args.glob))
+    if not wavs:
+        print(f"no files match {args.glob} in {args.dir}", file=sys.stderr)
+        sys.exit(2)
+    for wav in wavs:
         ref = wav.with_suffix(".txt").read_text()
         wp = float("nan")
         if not args.skip_plain:

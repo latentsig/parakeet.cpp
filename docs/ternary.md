@@ -248,7 +248,15 @@ digital zeros, because digital silence distorts the per-feature mel normalizatio
 (below the 0.32 s minimum pause on purpose), and no inserted gap (only the natural utterance edges). These are synthetic
 long-form clips built from LibriSpeech read speech, not TED-LIUM or other real long recordings.
 `scripts/eval_vad_longform.py` runs `parakeet-cli transcribe --decoder tdt --threads 8` under `taskset -c 0-7` with and
-without `--vad` and scores with `scripts/asr_metrics.py` `wer` (case and punctuation normalized). The models are the
+without `--vad` and scores with `scripts/asr_metrics.py` `wer` (case and punctuation normalized). CPU pinning and the shared bench lock are applied by the caller through the script's `--prefix` option, not by the
+script. The command used:
+
+```
+python3 scripts/eval_vad_longform.py --model <gguf> --dir <longform dir> --glob 'longform_0p45_*.wav' \
+    --prefix 'flock /tmp/pk-bench.lock taskset -c 0-7'
+```
+
+(`--threads 8` is the script default; sweep runs add `--skip-plain --vad-arg=--vad-threshold=0.3` and similar.) The models are the
 Ultra F16 GGUF and the packed ternary Redux GGUF (`--ternary keep`, native kernel).
 
 WER per clip, plain single pass vs `--vad` (percent, three clips per set, then the mean):
@@ -268,9 +276,11 @@ WER per clip, plain single pass vs `--vad` (percent, three clips per set, then t
 | Redux packed, plain | none | 0.62 | 2.03 | 2.83 | 1.83 |
 | Redux packed, `--vad` | none | 0.62 | 2.21 | 2.29 | 1.71 |
 
-Reading. VAD segmentation keeps WER where the single pass has it: the largest mean difference is +0.21 points for Ultra
-on the no-gap set (1.63 to 1.84), and Redux improves in all three sets. One clip is 645 to 919 words, so 0.1 point is
-about one word. Inspecting the worst Ultra clip (no gap, clip 0, 10 segments) shows every cut lands between words, none
+Reading. The change in mean WER from plain to `--vad` runs in both directions and stays within about 0.2 points:
+Ultra -0.02, +0.09 and +0.21 (0.45 s, 0.16 s, no gap); Redux -0.05, -0.26 and -0.12. The single largest loss (+0.21, Ultra,
+no gap) is marginally over the 0.2-point investigation limit. The Redux gains and the Ultra losses are the same size, so
+neither direction is a real effect on three clips per set: VAD segmentation does not change WER meaningfully on these
+clips. One clip is 645 to 919 words, so 0.1 point is about one word. Inspecting the worst Ultra clip (no gap, clip 0, 10 segments) shows every cut lands between words, none
 inside one, and the differing words are spelling variants (`tail`/`tale`, `honour`/`honor`) and rare names that flip
 between the two runs. The segment boundaries there were 20.32, 48.48, 70.00, 98.48, 127.12, 156.56, 179.92, 204.16 and
 229.28 s. The result is a wash, not a win: on these clips VAD does not measurably help or hurt accuracy. Its benefit is
@@ -290,7 +300,7 @@ Parameter sweep on Ultra F16 (mean `--vad` WER, percent, one variable at a time 
 Threshold 0.3 is the only setting ahead of the default. On Redux packed it gives 1.97, 1.65 and 1.63 (mean 1.75)
 against 1.92, 1.69 and 1.71 (mean 1.77) for the default. Both gains are 0.02 points, under half a word per clip set, and
 Redux gets worse on the 0.45 s gap set, so the defaults stay. A min pause of 0.64 s is worse on the 0.45 s gap set for
-Ultra (1.95): with a longer required pause the segmenter more often falls back to hard cuts. A min pause of 0.16 s
+Ultra (1.95); probably a longer required pause makes the segmenter fall back to hard cuts more often, which was not measured. A min pause of 0.16 s
 changes nothing here.
 
 Known limits:

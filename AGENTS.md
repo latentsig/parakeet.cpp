@@ -287,7 +287,7 @@ parakeet-cli info <model.gguf>
 parakeet-cli transcribe --model <model.gguf> --input <audio.wav> [--decoder ctc|tdt] [--stream] [--timestamps] [--json]
 parakeet-cli quantize <in.gguf> <out.gguf> <type>
 parakeet-cli transcribe --model <ultra-or-redux.gguf> --input <long.wav> --vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]
-parakeet-cli vad-probe ...      # dump VAD head probabilities (--variant N picks the head wiring)
+parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]   # dump VAD head probabilities as t_sec,p
 parakeet-cli scene [--model <asr.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>] --input <audio.wav> [--latency model|low|very_low|ultra_low] [--chunk-ms N] [--show-speech] [--json]
 ```
 
@@ -314,12 +314,18 @@ parakeet_capi_transcribe_pcm
 parakeet_capi_transcribe_path_json   # text + per-word/per-token timestamps + confidence as JSON
 parakeet_capi_free_string
 parakeet_capi_last_error
-parakeet_capi_transcribe_path_json_vad   # additive (ABI unchanged): same JSON, long audio cut at VAD pauses; needs a GGUF with a VAD head
 # streaming (cache-aware EOU model parakeet_realtime_eou_120m-v1):
 parakeet_capi_stream_begin
 parakeet_capi_stream_feed       # 16k mono f32 PCM -> newly-finalized text; *eou_out = event bitmask (ABI v5)
 parakeet_capi_stream_finalize   # flush the end-of-stream tail
 parakeet_capi_stream_free
+```
+
+VAD segmentation (additive, ABI unchanged; not used by LocalAI yet). Needs a GGUF
+with a VAD head (Ultra/Redux); see `docs/ternary.md`:
+
+```
+parakeet_capi_transcribe_path_json_vad   # same JSON as _json, long audio cut at VAD pauses
 ```
 
 Speaker diarization (ABI v7, additive; not used by LocalAI yet). A

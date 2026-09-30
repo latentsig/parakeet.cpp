@@ -42,9 +42,23 @@ Every model below is validated at WER 0 against NeMo and published as GGUF (f16,
 | [parakeet-tdt_ctc-1.1b](https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b) | hybrid TDT+CTC | 1.1B | English | NVIDIA |
 | [parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) | RNNT, streaming | 120M | cache-aware streaming with end-of-utterance detection (`--stream`) | NVIDIA |
 | [nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) | RNNT, streaming | 0.6B | multilingual (40+ locales), prompt-conditioned, offline and cache-aware streaming, pick a language with `--lang` (default `auto`). OpenMDW-1.1 | NVIDIA |
-| [parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) | TDT, v3 shape | 0.6B | multilingual, F16 GGUF, carries a VAD head for `--vad` | Moondream |
-| [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | TDT, v3 shape, ternary encoder | 0.6B | 213 MB packed GGUF (6.8x smaller than F16), CPU only, offline only. On x86 with AVX-512 VNNI it runs at median RTF 75.6 against 46.1 for the same model in F16; WER on LibriSpeech-100 is 1.96 percent. See [`docs/ternary.md`](docs/ternary.md) | Moondream |
 
+
+### Moondream Ultra and Redux (not yet published)
+
+[moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and
+[moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) are Moondream's
+post-trained (Ultra, F16) and ternary-encoder (Redux) derivatives of parakeet-tdt-0.6b-v3. They are
+HF safetensors, converted with `scripts/convert_hf_parakeet_to_gguf.py`. They are not part of the
+NeMo-validated set above: there is no NeMo baseline for them, so parity is transcript-level against
+our own v3 path (see [`docs/parity.md`](docs/parity.md)), and no GGUFs are published yet.
+
+- Redux packs the encoder as ternary weights: a 213 MB GGUF, 6.8x smaller than F16. It runs on CPU
+  only and offline only. On x86 with AVX-512 VNNI it reaches median RTF 75.6 against 46.1 for the
+  same model in F16; WER on the 100 LibriSpeech utterances is 1.96 percent. See
+  [`docs/ternary.md`](docs/ternary.md).
+- Both carry a voice-activity head, used by `transcribe --vad` to cut long audio at pauses. On
+  synthetic long-form clips it does not change WER meaningfully.
 ---
 
 ## Performance
