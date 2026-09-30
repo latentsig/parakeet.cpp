@@ -658,6 +658,20 @@ char* parakeet_capi_transcribe_and_diarize_named_json(parakeet_ctx* asr, parakee
                                                       const float* samples, int n_samples,
                                                       int sample_rate);
 
+// Diarization with speaker names and no ASR model: the parakeet_capi_diarize_pcm
+// document plus a "names" key, {"0":{"name":"ada","score":0.93},...}, one entry
+// per diarization slot that has audio ("name":"" for a slot with no matching
+// voice). `accept_threshold` is a cosine in [-1, 1] and `margin` the runner-up
+// margin of the identifier; 0 keeps its default (0.5 and 0.05). Any sample rate
+// (resampled to 16 kHz like the other PCM entry points). Returns NULL on error,
+// with the message on `diar` (a wrong kind, bad samples) or on `speaker` (a
+// wrong kind, a NULL or wrong-sized registry, invalid options). Free with
+// parakeet_capi_free_string. ABI v10.
+char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
+                                           parakeet_speaker_registry* reg, const float* samples,
+                                           int n_samples, int sample_rate, float accept_threshold,
+                                           float margin);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

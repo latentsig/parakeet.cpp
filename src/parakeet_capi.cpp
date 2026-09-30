@@ -1015,7 +1015,7 @@ bool require_speaker(parakeet_ctx* ctx) {
     return true;
 }
 
-char* diar_result_to_json(const pk::DiarizationResult& r) {
+std::string diar_result_json_string(const pk::DiarizationResult& r) {
     std::string json = "{\"speakers\":";
     pk::append_json_int(json, r.n_speakers);
     json += ",\"segments\":[";
@@ -1030,7 +1030,25 @@ char* diar_result_to_json(const pk::DiarizationResult& r) {
         json += '}';
     }
     json += "]}";
-    return dup_to_c(json);
+    return json;
+}
+
+char* diar_result_to_json(const pk::DiarizationResult& r) { return dup_to_c(diar_result_json_string(r)); }
+
+// {"0":{"name":"ada","score":0.9312},"1":{...}} for the slots the identifier has seen.
+std::string names_to_json(const std::map<int, pk::SlotName>& names) {
+    std::string s = "{";
+    bool first = true;
+    for (const auto& kv : names) {
+        if (!first) s += ',';
+        first = false;
+        s += "\"" + std::to_string(kv.first) + "\":{\"name\":";
+        pk::append_json_string(s, kv.second.name);
+        s += ",\"score\":";
+        pk::append_json_float(s, "%.4f", kv.second.score);
+        s += '}';
+    }
+    return s + "}";
 }
 
 template <typename T>
@@ -1924,18 +1942,8 @@ extern "C" char* parakeet_capi_transcribe_and_diarize_named_json(
         const std::vector<pk::SpeakerUtterance> utts = pk::group_speaker_words(words);
         std::string s = "{\"speakers\":";
         pk::append_json_int(s, n_speakers);
-        s += ",\"names\":{";
-        bool first = true;
-        for (const auto& kv : names) {
-            if (!first) s += ',';
-            first = false;
-            s += "\"" + std::to_string(kv.first) + "\":{\"name\":";
-            pk::append_json_string(s, kv.second.name);
-            s += ",\"score\":";
-            pk::append_json_float(s, "%.4f", kv.second.score);
-            s += '}';
-        }
-        s += "},\"utterances\":[";
+        s += ",\"names\":" + names_to_json(names);
+        s += ",\"utterances\":[";
         for (size_t i = 0; i < utts.size(); ++i) {
             if (i) s += ',';
             append_speaker_item(s, utts[i], "%.2f", &names);
@@ -1955,4 +1963,60 @@ extern "C" char* parakeet_capi_transcribe_and_diarize_named_json(
         if (speaker) speaker->last_error = "unknown error";
         return nullptr;
     }
+}
+
+extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar_ctx, parakeet_ctx* speaker,
+                                                      parakeet_speaker_registry* registry,
+                                                      const float* samples, int n_samples, int sample_rate,
+                                                      float accept_threshold, float margin) {
+    try {
+        if (!speaker) return nullptr;
+        if (!require_diar(diar_ctx)) return nullptr;
+        if (!require_speaker(speaker)) return nullptr;
+        if (!registry) { speaker->last_error = "speaker identification needs a registry"; return nullptr; }
+        if (!samples || n_samples <= 0 || sample_rate <= 0) {
+            diar_ctx->last_error = "invalid samples buffer";
+            return nullptr;
+        }
+        const int rd = registry->reg.dim();
+        if (rd != 0 && rd != speaker->speaker->dim()) {
+            speaker->last_error = "registry holds " + std::to_string(rd) +
+                                  "-value embeddings, this model produces " +
+                                  std::to_string(speaker->speaker->dim());
+            return nullptr;
+        }
+        pk::SpeakerIdOpts o;
+        if (accept_threshold != 0.0f) o.accept_threshold = accept_threshold;
+        if (margin != 0.0f) o.margin = margin;
+        const std::string oerr = pk::validate_speaker_opts(o);
+        if (!oerr.empty()) { speaker->last_error = "invalid speaker options: " + oerr; return nullptr; }
+
+        const std::vector<float> pcm(samples, samples + n_samples);
+        pk::DiarizationResult dr;
+        try {
+            dr = diar_ctx->diar->diarize_pcm(pcm, sample_rate);
+        } catch (const std::exception& e) {
+            diar_ctx->last_error = e.what();
+            return nullptr;
+        }
+        const std::vector<float> pcm16k = sample_rate == 16000 ? pcm : pk::resample_linear(pcm, sample_rate, 16000);
+        std::map<int, pk::SlotName> names;
+        try {
+            names = pk::identify_offline(pcm16k, dr.segments, speaker->speaker->embedder(), registry->reg, o);
+        } catch (const std::exception& e) {
+            speaker->last_error = e.what();
+            return nullptr;
+        }
+        std::string json = diar_result_json_string(dr);
+        json.pop_back();   // drop the closing '}' and add the names key
+        json += ",\"names\":" + names_to_json(names) + "}";
+        diar_ctx->last_error.clear();
+        speaker->last_error.clear();
+        return dup_to_c(json);
+    } catch (const std::exception& e) {
+        if (speaker) speaker->last_error = e.what();
+    } catch (...) {
+        if (speaker) speaker->last_error = "unknown error";
+    }
+    return nullptr;
 }
