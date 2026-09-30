@@ -110,19 +110,36 @@ void SpeakerIdentifier::maybe_embed(Slot& s, bool is_last) {
     apply(s, registry_->identify(emb, opts_.accept_threshold, opts_.margin));
 }
 
+void SpeakerIdentifier::consume(const SpeakerSegment& seg, const std::vector<SpeakerSegment>& open,
+                                bool growing) {
+    Slot& s = slots_[seg.speaker];   // a slot is known as soon as it has any segment
+    const double from = std::max((double)seg.start, s.consumed_until);
+    const double to = seg.end;
+    if (to <= from) return;
+    std::vector<Interval> others;
+    for (const SpeakerSegment& h : history_)
+        if (h.speaker != seg.speaker) others.push_back({h.start, h.end});
+    for (const SpeakerSegment& o : open)
+        if (o.speaker != seg.speaker) others.push_back({o.start, o.end});
+    double cursor = to;
+    // The tail of a growing segment is taken with min_len 0 so a short clean
+    // piece at the end can be held back and joined to the audio that follows.
+    std::vector<Interval> pieces = clean_intervals({from, to}, others, growing ? 0.0 : kMinPieceSec);
+    if (growing && !pieces.empty() && pieces.back().end >= to &&
+        pieces.back().end - pieces.back().start < kMinPieceSec) {
+        cursor = pieces.back().start;
+        pieces.pop_back();
+    }
+    for (const Interval& iv : pieces)
+        if (iv.end - iv.start >= kMinPieceSec) add_audio(seg.speaker, iv);
+    s.consumed_until = std::max(s.consumed_until, cursor);
+}
+
 void SpeakerIdentifier::update(const std::vector<SpeakerSegment>& closed,
                                const std::vector<SpeakerSegment>& open, bool is_last) {
     for (const SpeakerSegment& c : closed) history_.push_back(c);
-    for (const SpeakerSegment& c : closed) {
-        slots_[c.speaker];   // a slot is known as soon as it has closed a segment
-        std::vector<Interval> others;
-        for (const SpeakerSegment& h : history_)
-            if (h.speaker != c.speaker) others.push_back({h.start, h.end});
-        for (const SpeakerSegment& o : open)
-            if (o.speaker != c.speaker) others.push_back({o.start, o.end});
-        for (const Interval& iv : clean_intervals({c.start, c.end}, others, kMinPieceSec))
-            add_audio(c.speaker, iv);
-    }
+    for (const SpeakerSegment& c : closed) consume(c, open, false);
+    for (const SpeakerSegment& o : open) consume(o, open, true);
     const double horizon = (double)total_ / kSr - (double)opts_.ring_sec;
     history_.erase(std::remove_if(history_.begin(), history_.end(),
                                   [&](const SpeakerSegment& h) { return h.end < horizon; }),

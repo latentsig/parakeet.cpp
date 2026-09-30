@@ -166,11 +166,18 @@ static void test_overlap_earlier_call_close() {
     SpeakerIdentifier id(f.fn(), &reg, opts());
     const auto pcm = make_pcm(6, {{0, 0, 4}, {1, 3, 6}});
     id.push_pcm(pcm.data(), 6 * kSr);
-    id.update({{1, 3.0f, 6.0f}}, {{0, 0.0f, 4.0f}}, false);   // slot 0 still open: slot 1 keeps 4-6 s
+    // Slot 0 still open: slot 1 keeps 4-6 s, and slot 0's open 0-4 s is taken
+    // now (open segments are consumed), minus the 3-4 s that slot 1 shares.
+    id.update({{1, 3.0f, 6.0f}}, {{0, 0.0f, 4.0f}}, false);
     CHECK(id.name(1).name == "bob");
-    id.update({{0, 0.0f, 4.0f}}, {}, false);   // slot 1 is already closed: only history_ knows it
     CHECK(f.ns.size() == 2);
-    if (f.ns.size() == 2) CHECK(std::abs(f.ns[1] - 3 * kSr) <= 2);   // 3-4 s overlap excluded
+    if (f.ns.size() == 2) {
+        CHECK(std::abs(f.ns[0] - 3 * kSr) <= 2);   // slot 0 (map order): 3-4 s overlap excluded
+        CHECK(std::abs(f.ns[1] - 2 * kSr) <= 2);   // slot 1: 4-6 s alone
+    }
+    CHECK(id.name(0).name == "alice");
+    id.update({{0, 0.0f, 4.0f}}, {}, false);   // closing adds nothing new: 0-4 s was consumed
+    CHECK(f.ns.size() == 2);
     CHECK(id.name(0).name == "alice");
 }
 
@@ -252,6 +259,86 @@ static void test_offline() {
     CHECK(names.at(1).name == "bob");
 }
 
+
+// F1: a slot talking without a pause is named while its segment is still open.
+static void test_open_segment_named_before_close() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(8, {{0, 0, 8}});
+    for (int t = 1; t <= 5; ++t) {
+        id.push_pcm(pcm.data() + (t - 1) * kSr, kSr);
+        id.update({}, {{0, 0.0f, (float)t}}, false);
+        if (t == 1) CHECK(f.calls == 0 && id.name(0).name.empty());   // 1 s < min_voice
+        if (t == 2) CHECK(f.calls == 1 && id.name(0).name == "alice"); // named while still open
+        if (t == 3 || t == 4) CHECK(f.calls == 1);                    // gained < refresh
+    }
+    CHECK(id.names().size() == 1);
+    CHECK(f.ns.size() == 2);
+    if (f.ns.size() == 2) {
+        CHECK(std::abs(f.ns[0] - 2 * kSr) <= 2);   // first embedding at 2.0 s consumed
+        CHECK(std::abs(f.ns[1] - 5 * kSr) <= 2);   // refresh after 3 s more
+    }
+    // The segment closes at 6 s: only 5-6 s is new, 0-5 s was consumed while open.
+    id.push_pcm(pcm.data() + 5 * kSr, kSr);
+    id.update({{0, 0.0f, 6.0f}}, {}, true);
+    CHECK(f.ns.size() == 3);
+    if (f.ns.size() == 3) CHECK(std::abs(f.ns[2] - 6 * kSr) <= 2);   // 6 s, not 11 s
+    CHECK(id.name(0).name == "alice");
+}
+
+// A slot is known (listed by names()) as soon as it has an open segment.
+static void test_open_slot_is_known() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(2, {{1, 0, 2}});
+    id.push_pcm(pcm.data(), kSr);
+    id.update({}, {{1, 0.0f, 1.0f}}, false);
+    CHECK(id.names().size() == 1 && id.names().count(1) == 1);
+    CHECK(id.name(1).name.empty());
+}
+
+// Overlap with another slot that opened while this one was open is masked.
+static void test_open_segment_overlap_masked() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    // Slot 0 talks 0-6 s, slot 1 talks over it 3-4 s.
+    const auto pcm = make_pcm(6, {{0, 0, 6}, {1, 3, 4}});
+    id.push_pcm(pcm.data(), 3 * kSr);
+    id.update({}, {{0, 0.0f, 3.0f}}, false);
+    CHECK(f.ns.size() == 1);
+    if (!f.ns.empty()) CHECK(std::abs(f.ns[0] - 3 * kSr) <= 2);
+    id.push_pcm(pcm.data() + 3 * kSr, kSr);
+    id.update({}, {{0, 0.0f, 4.0f}, {1, 3.0f, 4.0f}}, false);   // 3-4 s is shared: nothing added
+    id.push_pcm(pcm.data() + 4 * kSr, kSr);
+    id.update({{1, 3.0f, 4.0f}}, {{0, 0.0f, 5.0f}}, false);     // 4-5 s alone
+    id.push_pcm(pcm.data() + 5 * kSr, kSr);
+    id.update({{0, 0.0f, 6.0f}}, {}, true);                      // 5-6 s alone, end flush
+    CHECK(f.ns.size() == 2);
+    if (f.ns.size() == 2) CHECK(std::abs(f.ns[1] - 5 * kSr) <= 2);   // 0-3 + 4-6, 3-4 excluded
+    CHECK(id.name(0).name == "alice");   // mixing 3-4 s in would give mean 0.133 -> unknown
+    CHECK(id.name(1).name.empty());      // slot 1 never had clean audio
+}
+
+// A short clean tail at the growing end of an open segment is not lost: it is
+// taken again with the audio that follows it.
+static void test_open_short_tail_not_lost() {
+    Fake f;
+    const SpeakerRegistry reg = make_registry();
+    SpeakerIdentifier id(f.fn(), &reg, opts());
+    const auto pcm = make_pcm(3, {{0, 0, 3}});
+    // 0.1 s per update: every step alone is shorter than the 0.2 s minimum piece.
+    for (int k = 1; k <= 25; ++k) {
+        id.push_pcm(pcm.data() + (k - 1) * (kSr / 10), kSr / 10);
+        id.update({}, {{0, 0.0f, 0.1f * (float)k}}, false);
+    }
+    CHECK(f.calls == 1);
+    if (!f.ns.empty()) CHECK(f.ns[0] >= 2 * kSr);
+    CHECK(id.name(0).name == "alice");
+}
+
 static void test_validate_opts() {
     CHECK(validate_speaker_opts(SpeakerIdOpts{}).empty());
     SpeakerIdOpts o;
@@ -278,6 +365,10 @@ int main() {
     test_embed_failure_throws();
     test_offline();
     test_validate_opts();
+    test_open_segment_named_before_close();
+    test_open_slot_is_known();
+    test_open_segment_overlap_masked();
+    test_open_short_tail_not_lost();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     std::printf("test_speaker_identifier: PASS\n");
     return 0;

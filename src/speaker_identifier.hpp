@@ -52,12 +52,24 @@ public:
     // Appends 16 kHz mono PCM (the same audio diarization sees).
     void push_pcm(const float* pcm, int n);
     // `closed`: segments that closed since the last call. `open`: segments still
-    // open now (used only to skip overlap). Throws std::runtime_error when the
-    // embed callback fails.
+    // open now, with `end` at the diarizer's current position (`frames_done`).
+    // Both are consumed: each slot keeps a cursor (consumed_until), and a call
+    // adds the clean audio of [max(start, cursor), end] for every closed and
+    // open segment of that slot, then moves the cursor to `end`. So a slot that
+    // talks without a pause is embedded while its segment is still open, and
+    // audio taken while a segment was open is not added again when it closes.
+    // A short clean piece (under 0.2 s) at the growing end of an open segment is
+    // held back and taken with the audio that follows it.
+    // Clean means not overlapped by another slot's closed segment (kept for
+    // ring_sec) or open segment. Overlap with any segment that started before
+    // the current position is masked, because such a segment is in `open` or
+    // `closed` already. Known limit: audio up to a cursor is never re-examined,
+    // so a segment of another slot reported later with a start earlier than
+    // that cursor is not masked retroactively. The streaming diarizer never does
+    // this (it marks an onset at the frame where it happens), but a caller that
+    // reports onsets late would mix that overlap in.
     // Contract: `open` must list every segment that has started and not yet
-    // closed, with `end` at least the end of any segment closing in this call
-    // that it overlaps. Overlap with a segment that was neither in `open` nor
-    // already closed is embedded and never revisited.
+    // closed. Throws std::runtime_error when the embed callback fails.
     void update(const std::vector<SpeakerSegment>& closed, const std::vector<SpeakerSegment>& open,
                 bool is_last);
 
@@ -71,9 +83,11 @@ private:
         bool embedded = false;
         SlotName current;
         std::string pending;        // a different known name that won last time
+        double consumed_until = 0.0; // seconds of this slot's segments already taken
     };
 
     void add_audio(int slot, const Interval& iv);
+    void consume(const SpeakerSegment& seg, const std::vector<SpeakerSegment>& open, bool growing);
     void maybe_embed(Slot& s, bool is_last);
     void apply(Slot& s, const SpeakerMatch& m);
 
