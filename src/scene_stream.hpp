@@ -56,8 +56,8 @@ enum class ScenePart { None, Diarization, Asr, Sound, Speaker };
 // finalized. Not thread-safe.
 //
 // Error paths: feed() runs diarization, then the speaker part (when there
-// is one), then ASR, then the sound part, in that order, and does not catch between them, so a part that throws loses
-// the rest of that call. If the sound part throws, anything diarization or
+// is one), then ASR, then the sound part, in that order, and does not catch
+// between them, so a part that throws loses the rest of that call. If the sound part throws, anything diarization or
 // ASR already finalized in this call (including words the commit window
 // released) is lost with it, not returned before the exception propagates.
 // If ASR throws, the sound part for that chunk never runs (skipped, not
@@ -75,7 +75,8 @@ enum class ScenePart { None, Diarization, Asr, Sound, Speaker };
 // should end the stream after an error rather than keep feeding it.
 class SceneStream {
 public:
-    explicit SceneStream(const SceneParts& p);      // throws std::invalid_argument when no part is given
+    explicit SceneStream(const SceneParts& p);      // throws std::invalid_argument when no part is given,
+                                                    // or a speaker part lacks diarization, a registry or valid options
     ~SceneStream();
     SceneStream(const SceneStream&) = delete;
     SceneStream& operator=(const SceneStream&) = delete;

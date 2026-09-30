@@ -4,9 +4,13 @@
 //   PARAKEET_TEST_VD_GGUF     speaker encoder GGUF (required, else skip 77)
 //
 // Enrolls the two voices of tests/fixtures/two_speakers.wav (LibriSpeech 1272 = A,
-// 2086 = B) from clips that do not overlap the segments being checked, then streams
-// the whole file and checks the diarization slots get the right names. NeMo's
-// segments for the fixture: A 0.50-5.52 and 14.78-18.75, B 6.85-13.49 and 20.10-23.60.
+// 2086 = B) from their first turns, then streams the whole file and checks the
+// diarization slots get the right names. The enrollment clips come from inside the
+// streamed segments (same recording), so on its own this is parity-style evidence.
+// What makes it discriminating: the voices are enrolled in the reverse of their
+// arrival order (so slot i cannot map to registry entry i), and a registry that
+// lacks voice A must leave slot 0 unnamed. NeMo's segments for the fixture: A
+// 0.50-5.52 and 14.78-18.75, B 6.85-13.49 and 20.10-23.60.
 #include "audio_io.hpp"
 #include "diarization.hpp"
 #include "scene_stream.hpp"
@@ -52,48 +56,90 @@ int main() {
         return 1;
     }
 
-    // Enroll from the first turn of A and the first turn of B only (about 4 s each).
-    SpeakerRegistry reg;
-    std::vector<float> e;
     auto a0 = slice(wav.samples, 0.6, 4.6);
     auto b0 = slice(wav.samples, 6.9, 10.9);
-    CHECK(enc->embed(a0.data(), (int)a0.size(), e)); reg.enroll("speaker_a", e);
-    CHECK(enc->embed(b0.data(), (int)b0.size(), e)); reg.enroll("speaker_b", e);
+    std::vector<float> e;
 
-    SceneParts parts;
-    parts.diar = diar.get();
-    parts.speaker_embed = enc->embedder();
-    parts.registry = &reg;
-    SceneStream stream(parts);
+    // Streams the file and returns each slot's final name.
+    auto run = [&](const SpeakerRegistry& reg, const SpeakerIdOpts& opts = SpeakerIdOpts()) {
+        SceneParts parts;
+        parts.diar = diar.get();
+        parts.speaker_embed = enc->embedder();
+        parts.registry = &reg;
+        parts.speaker_opts = opts;
+        SceneStream stream(parts);
+        std::map<int, std::string> names;
+        const int chunk = 3200;   // 200 ms
+        const int n = (int)wav.samples.size();
+        for (int lo = 0; lo < n; lo += chunk) {
+            const int len = std::min(chunk, n - lo);
+            const SceneUpdate u = stream.feed(wav.samples.data() + lo, len, lo + len >= n);
+            for (const auto& kv : u.names) {
+                names[kv.first] = kv.second.name;
+                if (std::getenv("PK_TEST_DEBUG"))
+                    std::fprintf(stderr, "DBG t=%.1f slot%d '%s' %.3f\n", u.t, kv.first,
+                                 kv.second.name.c_str(), kv.second.score);
+            }
+        }
+        return names;
+    };
 
-    std::map<int, std::string> final_names;
-    const int chunk = 3200;   // 200 ms
-    const int n = (int)wav.samples.size();
-    for (int lo = 0; lo < n; lo += chunk) {
-        const int len = std::min(chunk, n - lo);
-        const SceneUpdate u = stream.feed(wav.samples.data() + lo, len, lo + len >= n);
-        for (const auto& kv : u.names) final_names[kv.first] = kv.second.name;
+    // Enroll in reverse arrival order: B's clip first, A's second.
+    {
+        SpeakerRegistry reg;
+        CHECK(enc->embed(b0.data(), (int)b0.size(), e)); reg.enroll("second_voice", e);
+        CHECK(enc->embed(a0.data(), (int)a0.size(), e)); reg.enroll("first_voice", e);
+        auto names = run(reg);
+        // Slot numbers are arrival order: slot 0 is voice A (speaks first), slot 1 is B.
+        CHECK(names.size() == 2);
+        CHECK(names[0] == "first_voice");
+        CHECK(names[1] == "second_voice");
+    }
+    // Only B enrolled: slot 0 (voice A) must stay unnamed, never get B's name.
+    {
+        SpeakerRegistry reg;
+        CHECK(enc->embed(b0.data(), (int)b0.size(), e)); reg.enroll("second_voice", e);
+        // ECAPA scored an impostor voice at cosine 0.566 on this fixture, so the
+        // acceptance threshold is encoder specific and the default is a starting
+        // point (docs/speaker.md carries the per-encoder numbers).
+        SpeakerIdOpts strict;
+        strict.accept_threshold = 0.7f;
+        auto names = run(reg, strict);
+        CHECK(names.count(0) == 1 && names[0].empty());
+        CHECK(names[1] == "second_voice");
     }
 
-    // Slot numbers are arrival order, so slot 0 is voice A here (A speaks first).
-    CHECK(final_names.size() == 2);
-    CHECK(final_names[0] == "speaker_a");
-    CHECK(final_names[1] == "speaker_b");
+    SpeakerRegistry reg;
+    CHECK(enc->embed(a0.data(), (int)a0.size(), e)); reg.enroll("first_voice", e);
 
-    // Speaker part without diarization, or without a registry, is rejected clearly.
+    // Bad speaker configurations are rejected with the specific message.
+    auto expect_throw = [&](const SceneParts& p, const char* what) {
+        try {
+            SceneStream s(p);
+        } catch (const std::invalid_argument& ex) {
+            if (std::string(ex.what()).find(what) != std::string::npos) return;
+            std::fprintf(stderr, "FAIL: wrong message '%s', wanted '%s'\n", ex.what(), what);
+            ++failures;
+            return;
+        }
+        std::fprintf(stderr, "FAIL: no throw, wanted '%s'\n", what);
+        ++failures;
+    };
     {
         SceneParts no_diar;
         no_diar.speaker_embed = enc->embedder();
         no_diar.registry = &reg;
-        bool threw = false;
-        try { SceneStream s(no_diar); } catch (const std::invalid_argument&) { threw = true; }
-        CHECK(threw);
+        expect_throw(no_diar, "needs a diarization model");
         SceneParts no_reg;
         no_reg.diar = diar.get();
         no_reg.speaker_embed = enc->embedder();
-        threw = false;
-        try { SceneStream s(no_reg); } catch (const std::invalid_argument&) { threw = true; }
-        CHECK(threw);
+        expect_throw(no_reg, "needs a registry");
+        SceneParts bad_opts;
+        bad_opts.diar = diar.get();
+        bad_opts.speaker_embed = enc->embedder();
+        bad_opts.registry = &reg;
+        bad_opts.speaker_opts.min_voice_sec = 0;
+        expect_throw(bad_opts, "invalid speaker options");
     }
 
     // With no speaker part the update carries no names (existing behavior).

@@ -10,15 +10,18 @@
 namespace pk {
 
 SceneStream::SceneStream(const SceneParts& p) {
-    if (!p.asr && !p.diar && !p.tagger)
-        throw std::invalid_argument("scene stream needs at least one model");
+    if (p.speaker_embed && !p.diar)
+        throw std::invalid_argument("speaker identification needs a diarization model");
+    if (p.speaker_embed && !p.registry)
+        throw std::invalid_argument("speaker identification needs a registry");
     if (p.speaker_embed) {
-        if (!p.diar) throw std::invalid_argument("speaker identification needs a diarization model");
-        if (!p.registry) throw std::invalid_argument("speaker identification needs a registry");
         const std::string err = validate_speaker_opts(p.speaker_opts);
         if (!err.empty()) throw std::invalid_argument("invalid speaker options: " + err);
-        speaker_ = std::make_unique<SpeakerIdentifier>(p.speaker_embed, p.registry, p.speaker_opts);
     }
+    if (!p.asr && !p.diar && !p.tagger)
+        throw std::invalid_argument("scene stream needs at least one model");
+    if (p.speaker_embed)
+        speaker_ = std::make_unique<SpeakerIdentifier>(p.speaker_embed, p.registry, p.speaker_opts);
     if (p.diar) diar_ = std::make_unique<DiarPcmStream>(*p.diar, p.diar_latency);
     if (p.asr) {
         const Model* m = p.asr;
