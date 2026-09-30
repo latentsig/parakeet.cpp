@@ -59,7 +59,9 @@
 // v9: speaker identification (voice-detect.cpp): a speaker ctx kind, a speaker
 //     registry, scene_stream_begin_speaker, transcribe_and_diarize_named_json;
 //     additive.
-#define PARAKEET_CAPI_ABI_VERSION 9
+// v10: raw-embedding enroll (parakeet_capi_speaker_registry_add_embedding) for
+//      callers that keep speaker embeddings themselves; additive.
+#define PARAKEET_CAPI_ABI_VERSION 10
 
 // The opaque context: a loaded model plus a buffer for the last error message.
 // Exactly one of `model` / `diar` / `tagger` / `speaker` is non-null: ASR models
@@ -1790,6 +1792,23 @@ extern "C" int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, para
         speaker->last_error = e.what();
     } catch (...) {
         speaker->last_error = "unknown error";
+    }
+    return 1;
+}
+
+extern "C" int parakeet_capi_speaker_registry_add_embedding(parakeet_speaker_registry* reg, const char* name,
+                                                            const float* embedding, int dim) {
+    if (!reg) return 1;
+    try {
+        if (!name || !*name) { reg->last_error = "speaker name is empty"; return 1; }
+        if (!embedding || dim <= 0) { reg->last_error = "no embedding"; return 1; }
+        reg->reg.enroll(name, std::vector<float>(embedding, embedding + dim));
+        reg->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        reg->last_error = e.what();
+    } catch (...) {
+        reg->last_error = "unknown error";
     }
     return 1;
 }
