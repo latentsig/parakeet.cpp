@@ -131,6 +131,7 @@ set(PARAKEET_SRC
     src/diarization_streaming.cpp
     src/ced_tagger.cpp
     src/sound_stream.cpp
+    src/speaker_registry.cpp
     src/scene_render.cpp)
 
 if(PARAKEET_SHARED)
