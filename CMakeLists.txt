@@ -18,6 +18,7 @@ option(PARAKEET_GGML_METAL  "Forward GGML_METAL" OFF)
 option(PARAKEET_GGML_VULKAN "Forward GGML_VULKAN" OFF)
 option(PARAKEET_GGML_HIP "Forward GGML_HIP (ROCm)" OFF)
 option(PARAKEET_WITH_CED "Sound-event detection through ced.cpp" ON)
+option(PARAKEET_WITH_VOICEDETECT "Speaker identification through voice-detect.cpp" ON)
 
 set(GGML_CUDA    ${PARAKEET_GGML_CUDA}   CACHE BOOL "" FORCE)
 set(GGML_METAL   ${PARAKEET_GGML_METAL}  CACHE BOOL "" FORCE)
@@ -91,6 +92,19 @@ if(PARAKEET_WITH_CED)
   target_link_libraries(ced PRIVATE dr_wav_impl)
 endif()
 
+if(PARAKEET_WITH_VOICEDETECT)
+  if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/voice-detect.cpp/CMakeLists.txt")
+    message(FATAL_ERROR "third_party/voice-detect.cpp is missing: run `git submodule update --init third_party/voice-detect.cpp`, or configure with -DPARAKEET_WITH_VOICEDETECT=OFF")
+  endif()
+  set(VOICEDETECT_BUILD_CLI OFF CACHE BOOL "" FORCE)
+  set(VOICEDETECT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(VOICEDETECT_SHARED OFF CACHE BOOL "" FORCE)
+  set(VOICEDETECT_EXTERNAL_DR_WAV ON CACHE BOOL "" FORCE)   # dr_wav_impl provides it
+  add_subdirectory(third_party/voice-detect.cpp EXCLUDE_FROM_ALL)
+  set_target_properties(voicedetect PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_link_libraries(voicedetect PRIVATE dr_wav_impl)
+endif()
+
 set(PARAKEET_SRC
     src/parakeet.cpp
     src/model.cpp
@@ -131,6 +145,9 @@ set(PARAKEET_SRC
     src/diarization_streaming.cpp
     src/ced_tagger.cpp
     src/sound_stream.cpp
+    src/speaker_registry.cpp
+    src/speaker_identifier.cpp
+    src/speaker_encoder.cpp
     src/scene_render.cpp)
 
 if(PARAKEET_SHARED)
@@ -152,6 +169,11 @@ target_link_libraries(parakeet PRIVATE dr_wav_impl)
 if(PARAKEET_WITH_CED)
   target_link_libraries(parakeet PRIVATE ced)
   target_compile_definitions(parakeet PRIVATE PARAKEET_WITH_CED=1)
+endif()
+
+if(PARAKEET_WITH_VOICEDETECT)
+  target_link_libraries(parakeet PRIVATE voicedetect)
+  target_compile_definitions(parakeet PRIVATE PARAKEET_WITH_VOICEDETECT=1)
 endif()
 
 if(PARAKEET_BUILD_CLI)

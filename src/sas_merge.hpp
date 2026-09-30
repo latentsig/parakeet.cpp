@@ -15,6 +15,8 @@ struct SpeakerWord {
     float       start;     // from ASR word (seconds)
     float       end;       // from ASR word (seconds)
     float       conf;      // from ASR word
+    std::string name;             // enrolled speaker name; empty = unknown or no speaker model
+    float       name_score = 0.0f;
 };
 
 // A speaker-attributed utterance: consecutive words from the same speaker
@@ -26,6 +28,8 @@ struct SpeakerUtterance {
     float       start;     // first word start
     float       end;       // last word end
     float       conf;      // min word confidence
+    std::string name;             // enrolled speaker name; empty = unknown or no speaker model
+    float       name_score = 0.0f;
 };
 
 // Merge ASR word timestamps with diarization speaker segments.

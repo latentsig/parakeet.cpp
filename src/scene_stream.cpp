@@ -10,8 +10,18 @@
 namespace pk {
 
 SceneStream::SceneStream(const SceneParts& p) {
+    if (p.speaker_embed && !p.diar)
+        throw std::invalid_argument("speaker identification needs a diarization model");
+    if (p.speaker_embed && !p.registry)
+        throw std::invalid_argument("speaker identification needs a registry");
+    if (p.speaker_embed) {
+        const std::string err = validate_speaker_opts(p.speaker_opts);
+        if (!err.empty()) throw std::invalid_argument("invalid speaker options: " + err);
+    }
     if (!p.asr && !p.diar && !p.tagger)
         throw std::invalid_argument("scene stream needs at least one model");
+    if (p.speaker_embed)
+        speaker_ = std::make_unique<SpeakerIdentifier>(p.speaker_embed, p.registry, p.speaker_opts);
     if (p.diar) diar_ = std::make_unique<DiarPcmStream>(*p.diar, p.diar_latency);
     if (p.asr) {
         const Model* m = p.asr;
@@ -38,6 +48,18 @@ SceneUpdate SceneStream::feed(const float* pcm, int n, bool is_last) {
             u.speakers.push_back({c.speaker, c.start, c.end});
         }
     }
+    if (speaker_) {
+        part_ = ScenePart::Speaker;
+        speaker_->push_pcm(pcm, n);
+        std::vector<SpeakerSegment> closed_segs, open_segs;
+        for (const auto& c : closed) closed_segs.push_back({c.speaker, c.start, c.end});
+        for (const auto& o : diar_->open_segments()) open_segs.push_back({o.speaker, o.start, o.end});
+        speaker_->update(closed_segs, open_segs, is_last);
+        u.names = speaker_->names();
+        u.named = true;
+        // A failure past this point is charged to the next part.
+        part_ = asr_ ? ScenePart::Asr : ScenePart::Diarization;
+    }
     if (asr_) {
         asr_->push(pcm, n);
         // With diarization, ASR follows how far diarization has got, and only
@@ -54,6 +76,12 @@ SceneUpdate SceneStream::feed(const float* pcm, int n, bool is_last) {
             if (diar_)
                 for (const auto& o : diar_->open_segments()) segs.push_back({o.speaker, o.start, o.end});
             u.words = merge_asr_diarization(committed, segs);
+            if (speaker_)
+                for (SpeakerWord& w : u.words) {
+                    const SlotName sn = speaker_->name(w.speaker);
+                    w.name = sn.name;
+                    w.name_score = sn.score;
+                }
             u.utterances = group_speaker_words(u.words);
             // Segments that ended before the commit point can no longer match a word.
             const double commit_sec = asr_->commit_sec();
@@ -95,24 +123,45 @@ std::vector<SoundWindow> SceneStream::drain_windows() {
 
 namespace {
 
-void append_speaker_segment(std::string& out, const SpeakerSegment& s) {
+// ,"name":"alice","name_score":0.7100 : only when a speaker model ran (`named`).
+void append_name(std::string& out, bool named, const std::map<int, SlotName>& names, int slot,
+                 const std::string& own_name, float own_score, bool use_own) {
+    if (!named) return;
+    std::string n = own_name;
+    float sc = own_score;
+    if (!use_own) {
+        auto it = names.find(slot);
+        n = it == names.end() ? std::string() : it->second.name;
+        sc = it == names.end() ? 0.0f : it->second.score;
+    }
+    out += ",\"name\":";        append_json_string(out, n);
+    out += ",\"name_score\":";  append_json_float(out, "%.4f", sc);
+}
+
+void append_speaker_segment(std::string& out, const SpeakerSegment& s,
+                            bool named, const std::map<int, SlotName>& names) {
     out += "{\"speaker\":"; append_json_int(out, s.speaker);
+    append_name(out, named, names, s.speaker, std::string(), 0.0f, false);
     out += ",\"start\":";   append_json_float(out, "%.3f", s.start);
     out += ",\"end\":";     append_json_float(out, "%.3f", s.end);
     out += "}";
 }
 
-void append_active_speaker(std::string& out, const StreamingSpeakerSegment& s) {
+void append_active_speaker(std::string& out, const StreamingSpeakerSegment& s,
+                           bool named, const std::map<int, SlotName>& names) {
     out += "{\"speaker\":"; append_json_int(out, s.speaker);
+    append_name(out, named, names, s.speaker, std::string(), 0.0f, false);
     out += ",\"start\":";   append_json_float(out, "%.3f", s.start);
     out += "}";
 }
 
-std::string utterances_to_json(const std::vector<SpeakerUtterance>& utts) {
+std::string utterances_to_json(const std::vector<SpeakerUtterance>& utts,
+                               bool named, const std::map<int, SlotName>& names) {
     std::string out = "[";
     for (size_t i = 0; i < utts.size(); ++i) {
         if (i) out += ",";
         out += "{\"speaker\":"; append_json_int(out, utts[i].speaker);
+        append_name(out, named, names, utts[i].speaker, utts[i].name, utts[i].name_score, true);
         out += ",\"text\":";    append_json_string(out, utts[i].text);
         out += ",\"start\":";   append_json_float(out, "%.3f", utts[i].start);
         out += ",\"end\":";     append_json_float(out, "%.3f", utts[i].end);
@@ -122,7 +171,8 @@ std::string utterances_to_json(const std::vector<SpeakerUtterance>& utts) {
     return out + "]";
 }
 
-std::string words_to_json(const std::vector<SpeakerWord>& words) {
+std::string words_to_json(const std::vector<SpeakerWord>& words,
+                          bool named, const std::map<int, SlotName>& names) {
     std::string out = "[";
     for (size_t i = 0; i < words.size(); ++i) {
         if (i) out += ",";
@@ -131,16 +181,18 @@ std::string words_to_json(const std::vector<SpeakerWord>& words) {
         out += ",\"end\":";     append_json_float(out, "%.3f", words[i].end);
         out += ",\"conf\":";    append_json_float(out, "%.4f", words[i].conf);
         out += ",\"speaker\":"; append_json_int(out, words[i].speaker);
+        append_name(out, named, names, words[i].speaker, words[i].name, words[i].name_score, true);
         out += "}";
     }
     return out + "]";
 }
 
-std::string speakers_to_json(const std::vector<SpeakerSegment>& segs) {
+std::string speakers_to_json(const std::vector<SpeakerSegment>& segs,
+                             bool named, const std::map<int, SlotName>& names) {
     std::string out = "[";
     for (size_t i = 0; i < segs.size(); ++i) {
         if (i) out += ",";
-        append_speaker_segment(out, segs[i]);
+        append_speaker_segment(out, segs[i], named, names);
     }
     return out + "]";
 }
@@ -150,14 +202,31 @@ std::string speakers_to_json(const std::vector<SpeakerSegment>& segs) {
 std::string scene_update_to_json(const SceneUpdate& u, const std::function<const char*(int)>& label) {
     std::string out = "{\"t\":";
     append_json_float(out, "%.3f", (float)u.t);
-    out += ",\"utterances\":" + utterances_to_json(u.utterances);
-    out += ",\"words\":" + words_to_json(u.words);
-    out += ",\"speakers\":" + speakers_to_json(u.speakers);
+    // No speaker part: no names at all (the shape from before speaker
+    // identification). With one: names on every update, possibly empty.
+    const bool named = u.named || !u.names.empty();
+    if (named) {
+        out += ",\"names\":{";
+        bool first = true;
+        for (const auto& kv : u.names) {
+            if (!first) out += ",";
+            first = false;
+            out += "\"" + std::to_string(kv.first) + "\":{\"name\":";
+            append_json_string(out, kv.second.name);
+            out += ",\"score\":";
+            append_json_float(out, "%.4f", kv.second.score);
+            out += "}";
+        }
+        out += "}";
+    }
+    out += ",\"utterances\":" + utterances_to_json(u.utterances, named, u.names);
+    out += ",\"words\":" + words_to_json(u.words, named, u.names);
+    out += ",\"speakers\":" + speakers_to_json(u.speakers, named, u.names);
     out += ",\"sounds\":" + sound_segments_to_json(u.sounds, label);
     out += ",\"active\":{\"speakers\":[";
     for (size_t i = 0; i < u.active_speakers.size(); ++i) {
         if (i) out += ",";
-        append_active_speaker(out, u.active_speakers[i]);
+        append_active_speaker(out, u.active_speakers[i], named, u.names);
     }
     out += "],\"sounds\":" + sound_segments_to_json(u.active_sounds, label);
     out += "}}";

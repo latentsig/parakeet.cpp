@@ -10,6 +10,11 @@
 #include "sas_merge.hpp"  // pk::merge_asr_diarization, pk::group_speaker_words
 #include "diar_pcm_stream.hpp" // pk::DiarPcmStream
 #include "scene_stream.hpp" // pk::SceneStream
+#include "speaker_encoder.hpp"    // pk::SpeakerEncoder
+#include "speaker_identifier.hpp" // pk::identify_offline
+#include "speaker_registry.hpp"   // pk::SpeakerRegistry
+#include "audio_io.hpp"   // pk::resample_linear
+#include "common.hpp"     // pk::write_file_atomic
 
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
@@ -22,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <map>
 #include <memory>
 #include <new>
 #include <string>
@@ -50,16 +56,26 @@
 //     (transcribe_and_diarize*, sas_stream_*) and streaming diarization
 //     (diarize_stream_*). A context holds either an ASR or a diarization model.
 // v8: sound-event detection (CED), sound_stream_*, scene_stream_*; additive.
-#define PARAKEET_CAPI_ABI_VERSION 8
+// v9: speaker identification (voice-detect.cpp): a speaker ctx kind, a speaker
+//     registry, scene_stream_begin_speaker, transcribe_and_diarize_named_json;
+//     additive.
+#define PARAKEET_CAPI_ABI_VERSION 9
 
 // The opaque context: a loaded model plus a buffer for the last error message.
-// Exactly one of `model` / `diar` / `tagger` is non-null: ASR models use
-// `model`, diarization models (Sortformer) use `diar`, CED sound-event
-// taggers use `tagger`.
+// Exactly one of `model` / `diar` / `tagger` / `speaker` is non-null: ASR models
+// use `model`, diarization models (Sortformer) use `diar`, CED sound-event
+// taggers use `tagger`, voice-detect speaker encoders use `speaker`.
 struct parakeet_ctx {
     std::unique_ptr<pk::Model> model;
     std::unique_ptr<pk::DiarizationModel> diar;
     std::unique_ptr<pk::CedTagger> tagger;
+    std::unique_ptr<pk::SpeakerEncoder> speaker;
+    std::string last_error;
+};
+
+// Enrolled voices plus a buffer for the last save/load error.
+struct parakeet_speaker_registry {
+    pk::SpeakerRegistry reg;
     std::string last_error;
 };
 
@@ -200,6 +216,14 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
         if (pk::gguf_is_ced(gguf_path)) {
             ctx->tagger = pk::CedTagger::load(gguf_path);
             if (ctx->tagger) return ctx;
+            delete ctx;
+            return nullptr;
+        }
+
+        // A voice-detect GGUF (architecture "voicedetect") is a speaker encoder.
+        if (pk::gguf_is_voicedetect(gguf_path)) {
+            ctx->speaker = pk::SpeakerEncoder::load(gguf_path);
+            if (ctx->speaker) return ctx;
             delete ctx;
             return nullptr;
         }
@@ -940,6 +964,7 @@ bool require_diar(parakeet_ctx* ctx) {
     if (!ctx->diar) {
         ctx->last_error = ctx->model  ? "context holds an ASR model; diarize_* needs a diarization model"
                          : ctx->tagger ? "context holds a CED sound model; diarize_* needs a diarization model"
+                         : ctx->speaker ? "context holds a speaker model; diarize_* needs a diarization model"
                                        : "context has no loaded model";
         return false;
     }
@@ -951,6 +976,7 @@ bool require_asr(parakeet_ctx* ctx) {
     if (!ctx->model) {
         ctx->last_error = ctx->diar   ? "context holds a diarization model; an ASR model is needed here"
                          : ctx->tagger ? "context holds a CED sound model; an ASR model is needed here"
+                         : ctx->speaker ? "context holds a speaker model; an ASR model is needed here"
                                        : "context has no loaded model";
         return false;
     }
@@ -965,7 +991,23 @@ bool require_tagger(parakeet_ctx* ctx) {
     if (!ctx->tagger) {
         ctx->last_error = ctx->model ? "context holds an ASR model; a CED sound model is needed here"
                         : ctx->diar  ? "context holds a diarization model; a CED sound model is needed here"
+                        : ctx->speaker ? "context holds a speaker model; a CED sound model is needed here"
                                      : "context has no loaded model";
+        return false;
+    }
+    return true;
+}
+
+constexpr const char* kNoSpeaker = "built without speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)";
+
+bool require_speaker(parakeet_ctx* ctx) {
+    if (!ctx) return false;
+    if (!pk::SpeakerEncoder::available()) { ctx->last_error = kNoSpeaker; return false; }
+    if (!ctx->speaker) {
+        ctx->last_error = ctx->model  ? "context holds an ASR model; a speaker model is needed here"
+                        : ctx->diar   ? "context holds a diarization model; a speaker model is needed here"
+                        : ctx->tagger ? "context holds a CED sound model; a speaker model is needed here"
+                                      : "context has no loaded model";
         return false;
     }
     return true;
@@ -990,9 +1032,16 @@ char* diar_result_to_json(const pk::DiarizationResult& r) {
 }
 
 template <typename T>
-void append_speaker_item(std::string& s, const T& x, const char* time_fmt) {
+void append_speaker_item(std::string& s, const T& x, const char* time_fmt,
+                         const std::map<int, pk::SlotName>* names = nullptr) {
     s += "{\"speaker\":";
     pk::append_json_int(s, x.speaker);
+    if (names) {
+        s += ",\"name\":";
+        pk::append_json_string(s, x.name);
+        s += ",\"name_score\":";
+        pk::append_json_float(s, "%.4f", x.name_score);
+    }
     s += ",\"text\":";
     pk::append_json_string(s, x.text);
     s += ",\"start\":";
@@ -1028,7 +1077,9 @@ bool to_c_results(const std::vector<pk::SpeakerUtterance>& utts,
 // ASR + diarization on the same audio, merged per word.
 bool run_sas(parakeet_ctx* asr_ctx, parakeet_ctx* diar_ctx,
              const float* samples, int n_samples, int sample_rate,
-             std::vector<pk::SpeakerWord>& words, int& n_speakers) {
+             std::vector<pk::SpeakerWord>& words, int& n_speakers,
+             std::vector<pk::SpeakerSegment>* segs_out = nullptr,
+             std::vector<float>* pcm16k_out = nullptr) {
     if (!require_asr(asr_ctx) || !require_diar(diar_ctx)) return false;
     if (!samples || n_samples < 0) {
         asr_ctx->last_error = "invalid samples buffer";
@@ -1051,6 +1102,8 @@ bool run_sas(parakeet_ctx* asr_ctx, parakeet_ctx* diar_ctx,
     }
     n_speakers = dr.n_speakers;
     words = pk::merge_asr_diarization(tr.words, dr.segments);
+    if (segs_out) *segs_out = dr.segments;
+    if (pcm16k_out) *pcm16k_out = sample_rate == 16000 ? pcm : pk::resample_linear(pcm, sample_rate, 16000);
     asr_ctx->last_error.clear();
     diar_ctx->last_error.clear();
     return true;
@@ -1485,6 +1538,7 @@ extern "C" int parakeet_capi_model_kind(const parakeet_ctx* ctx) {
     if (ctx->model) return PARAKEET_MODEL_KIND_ASR;
     if (ctx->diar) return PARAKEET_MODEL_KIND_DIARIZATION;
     if (ctx->tagger) return PARAKEET_MODEL_KIND_SOUND;
+    if (ctx->speaker) return PARAKEET_MODEL_KIND_SPEAKER;
     return PARAKEET_MODEL_KIND_NONE;
 }
 
@@ -1497,6 +1551,7 @@ struct parakeet_scene_stream {
     parakeet_ctx* asr_ctx = nullptr;
     parakeet_ctx* diar_ctx = nullptr;
     parakeet_ctx* tagger_ctx = nullptr;
+    parakeet_ctx* speaker_ctx = nullptr;
     std::unique_ptr<pk::SceneStream> scene;
     std::string last_error;
 };
@@ -1510,6 +1565,7 @@ parakeet_ctx* scene_failed_ctx(parakeet_scene_stream* s) {
         case pk::ScenePart::Diarization: return s->diar_ctx ? s->diar_ctx : s->asr_ctx;
         case pk::ScenePart::Asr:         return s->asr_ctx ? s->asr_ctx : s->diar_ctx;
         case pk::ScenePart::Sound:       return s->tagger_ctx;
+        case pk::ScenePart::Speaker:     return s->speaker_ctx ? s->speaker_ctx : s->diar_ctx;
         default:                         return s->asr_ctx ? s->asr_ctx
                                                 : s->diar_ctx ? s->diar_ctx : s->tagger_ctx;
     }
@@ -1523,11 +1579,43 @@ extern "C" void parakeet_capi_scene_opts_default(parakeet_scene_opts* o) {
     o->diar_latency = PARAKEET_DIAR_LATENCY_MODEL;
     parakeet_capi_sound_opts_default(&o->sound);
     o->flags = 0;
+    const pk::SpeakerIdOpts d;
+    o->speaker_accept_threshold = d.accept_threshold;
+    o->speaker_margin = d.margin;
+    o->speaker_min_voice_sec = d.min_voice_sec;
+    o->speaker_refresh_sec = d.refresh_sec;
+    o->speaker_max_voice_sec = d.max_voice_sec;
 }
+
+namespace {
+
+// Reads the float at byte offset `off` of `o` only when the caller's `size`
+// covers it (a caller built against an older header owns a shorter struct, so
+// nothing past `size` may be touched). A zero or uncovered field returns
+// `dflt`.
+float scene_float_field(const parakeet_scene_opts* o, size_t off, float dflt) {
+    if (o->size < (int)(off + sizeof(float))) return dflt;
+    float v;
+    std::memcpy(&v, reinterpret_cast<const char*>(o) + off, sizeof(v));
+    return v != 0.0f ? v : dflt;
+}
+
+}  // namespace
 
 extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx* asr, parakeet_ctx* diar,
                                                                     parakeet_ctx* tagger,
                                                                     const parakeet_scene_opts* o) {
+    return parakeet_capi_scene_stream_begin_speaker(asr, diar, tagger, nullptr, nullptr, o);
+}
+
+extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin_speaker(
+    parakeet_ctx* asr, parakeet_ctx* diar, parakeet_ctx* tagger, parakeet_ctx* speaker,
+    parakeet_speaker_registry* registry, const parakeet_scene_opts* o) {
+    if (speaker) {
+        if (!require_speaker(speaker)) return nullptr;
+        if (!diar) { speaker->last_error = "speaker identification needs a diarization model"; return nullptr; }
+        if (!registry) { speaker->last_error = "speaker identification needs a registry"; return nullptr; }
+    }
     if (!asr && !diar && !tagger) return nullptr;
     if ((asr && !require_asr(asr)) || (diar && !require_diar(diar)) || (tagger && !require_tagger(tagger)))
         return nullptr;
@@ -1543,8 +1631,30 @@ extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx*
         diar->last_error = "unknown diarization latency mode";
         return nullptr;
     }
+    pk::SpeakerIdOpts so;
+    if (speaker) {
+        so.accept_threshold = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_accept_threshold), so.accept_threshold);
+        so.margin = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_margin), so.margin);
+        so.min_voice_sec = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_min_voice_sec), so.min_voice_sec);
+        so.refresh_sec = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_refresh_sec), so.refresh_sec);
+        so.max_voice_sec = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_max_voice_sec), so.max_voice_sec);
+        const std::string err = pk::validate_speaker_opts(so);
+        if (!err.empty()) { speaker->last_error = "invalid speaker options: " + err; return nullptr; }
+        const int rd = registry->reg.dim();
+        if (rd != 0 && rd != speaker->speaker->dim()) {
+            speaker->last_error = "registry holds " + std::to_string(rd) +
+                                  "-value embeddings, this model produces " +
+                                  std::to_string(speaker->speaker->dim());
+            return nullptr;
+        }
+    }
     try {
         pk::SceneParts p;
+        if (speaker) {
+            p.speaker_embed = speaker->speaker->embedder();
+            p.registry = &registry->reg;
+            p.speaker_opts = so;
+        }
         p.asr = asr ? asr->model.get() : nullptr;
         p.diar = diar ? diar->diar.get() : nullptr;
         p.diar_latency = latency_from_int(o->diar_latency);
@@ -1554,19 +1664,22 @@ extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin(parakeet_ctx*
             const std::string err = pk::validate_sound_opts(p.sound, tagger->tagger->n_classes());
             if (!err.empty()) { tagger->last_error = "invalid sound options: " + err; return nullptr; }
         }
+        auto scene = std::make_unique<pk::SceneStream>(p);
         auto* s = new parakeet_scene_stream();
+        s->scene = std::move(scene);
         s->asr_ctx = asr;
         s->diar_ctx = diar;
         s->tagger_ctx = tagger;
-        s->scene = std::make_unique<pk::SceneStream>(p);
+        s->speaker_ctx = speaker;
         if (asr) asr->last_error.clear();
         if (diar) diar->last_error.clear();
         if (tagger) tagger->last_error.clear();
+        if (speaker) speaker->last_error.clear();
         return s;
     } catch (const std::exception& e) {
-        (asr ? asr : diar ? diar : tagger)->last_error = e.what();
+        (speaker ? speaker : asr ? asr : diar ? diar : tagger)->last_error = e.what();
     } catch (...) {
-        (asr ? asr : diar ? diar : tagger)->last_error = "unknown error";
+        (speaker ? speaker : asr ? asr : diar ? diar : tagger)->last_error = "unknown error";
     }
     return nullptr;
 }
@@ -1612,3 +1725,215 @@ extern "C" const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stre
 }
 
 extern "C" void parakeet_capi_scene_stream_free(parakeet_scene_stream* s) { delete s; }
+
+// ---------------------------------------------------------------------------
+// Speaker identification (ABI v9)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Embeds mono PCM at `sample_rate` with the speaker ctx. Errors go on the ctx.
+bool speaker_embed_pcm(parakeet_ctx* speaker, const float* pcm, int n, int sample_rate,
+                       std::vector<float>& emb) {
+    if (!pcm || n <= 0) { speaker->last_error = "no audio"; return false; }
+    if (sample_rate <= 0) { speaker->last_error = "invalid sample rate"; return false; }
+    bool ok;
+    if (sample_rate == 16000) {
+        ok = speaker->speaker->embed(pcm, n, emb);
+    } else {
+        const std::vector<float> in(pcm, pcm + n);
+        const std::vector<float> r = pk::resample_linear(in, sample_rate, 16000);
+        if (r.empty()) { speaker->last_error = "no audio"; return false; }
+        ok = speaker->speaker->embed(r.data(), (int)r.size(), emb);
+    }
+    if (!ok) {
+        const std::string& e = speaker->speaker->last_error();
+        speaker->last_error = e.empty() ? "speaker embedding failed" : e;
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+extern "C" int parakeet_capi_speaker_dim(const parakeet_ctx* ctx) {
+    return (ctx && ctx->speaker) ? ctx->speaker->dim() : -1;
+}
+
+extern "C" parakeet_speaker_registry* parakeet_capi_speaker_registry_new(void) {
+    return new (std::nothrow) parakeet_speaker_registry();
+}
+
+extern "C" void parakeet_capi_speaker_registry_free(parakeet_speaker_registry* reg) { delete reg; }
+
+extern "C" int parakeet_capi_speaker_registry_size(const parakeet_speaker_registry* reg) {
+    return reg ? (int)reg->reg.size() : 0;
+}
+
+extern "C" const char* parakeet_capi_speaker_registry_last_error(const parakeet_speaker_registry* reg) {
+    return reg ? reg->last_error.c_str() : "";
+}
+
+extern "C" int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, parakeet_ctx* speaker,
+                                            const char* name, const float* pcm, int n, int sample_rate) {
+    if (!speaker) return 1;
+    try {
+        if (!require_speaker(speaker)) return 1;
+        if (!reg) { speaker->last_error = "registry is NULL"; return 1; }
+        if (!name || !*name) { speaker->last_error = "speaker name is empty"; return 1; }
+        std::vector<float> emb;
+        if (!speaker_embed_pcm(speaker, pcm, n, sample_rate, emb)) return 1;
+        reg->reg.enroll(name, emb);
+        speaker->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        speaker->last_error = e.what();
+    } catch (...) {
+        speaker->last_error = "unknown error";
+    }
+    return 1;
+}
+
+extern "C" int parakeet_capi_speaker_registry_save(const parakeet_speaker_registry* reg, const char* path) {
+    if (!reg) return 1;
+    auto* mreg = const_cast<parakeet_speaker_registry*>(reg);   // only last_error is written
+    if (!path || !*path) { mreg->last_error = "path is empty"; return 1; }
+    try {
+        // Written to <path>.tmp and moved over the target, so a failed save
+        // never costs the caller the registry file they already had.
+        std::string err;
+        if (!pk::write_file_atomic(path, reg->reg.serialize(), &err)) {
+            mreg->last_error = err;
+            return 1;
+        }
+        mreg->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        mreg->last_error = e.what();
+    } catch (...) {
+        mreg->last_error = "unknown error";
+    }
+    return 1;
+}
+
+extern "C" parakeet_speaker_registry* parakeet_capi_speaker_registry_load(const char* path) {
+    if (!path) return nullptr;
+    try {
+        std::FILE* f = std::fopen(path, "rb");
+        if (!f) return nullptr;
+        std::string blob;
+        char buf[4096];
+        size_t got;
+        while ((got = std::fread(buf, 1, sizeof(buf), f)) > 0) blob.append(buf, got);
+        const bool err = std::ferror(f) != 0;
+        std::fclose(f);
+        if (err) return nullptr;
+        auto* r = new (std::nothrow) parakeet_speaker_registry();
+        if (!r) return nullptr;
+        try {
+            r->reg = pk::SpeakerRegistry::deserialize(blob);
+        } catch (...) {
+            delete r;
+            return nullptr;
+        }
+        return r;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" char* parakeet_capi_speaker_identify_pcm_json(parakeet_speaker_registry* reg, parakeet_ctx* speaker,
+                                                         const float* pcm, int n, int sample_rate) {
+    if (!speaker) return nullptr;
+    try {
+        if (!require_speaker(speaker)) return nullptr;
+        if (!reg) { speaker->last_error = "registry is NULL"; return nullptr; }
+        std::vector<float> emb;
+        if (!speaker_embed_pcm(speaker, pcm, n, sample_rate, emb)) return nullptr;
+        const pk::SpeakerIdOpts d;
+        const pk::SpeakerMatch m = reg->reg.identify(emb, d.accept_threshold, d.margin);
+        std::string j = "{\"name\":";
+        pk::append_json_string(j, m.name);
+        j += ",\"score\":";
+        pk::append_json_float(j, "%.4f", m.score);
+        j += '}';
+        speaker->last_error.clear();
+        return dup_to_c(j);
+    } catch (const std::exception& e) {
+        speaker->last_error = e.what();
+    } catch (...) {
+        speaker->last_error = "unknown error";
+    }
+    return nullptr;
+}
+
+extern "C" char* parakeet_capi_transcribe_and_diarize_named_json(
+    parakeet_ctx* asr_ctx, parakeet_ctx* diar_ctx, parakeet_ctx* speaker,
+    parakeet_speaker_registry* registry, const float* samples, int n_samples, int sample_rate) {
+    try {
+        if (!speaker) return nullptr;
+        if (!require_speaker(speaker)) return nullptr;
+        if (!registry) { speaker->last_error = "speaker identification needs a registry"; return nullptr; }
+        std::vector<pk::SpeakerWord> words;
+        std::vector<pk::SpeakerSegment> segs;
+        std::vector<float> pcm16k;
+        int n_speakers = 0;
+        if (!run_sas(asr_ctx, diar_ctx, samples, n_samples, sample_rate, words, n_speakers, &segs, &pcm16k))
+            return nullptr;
+        const int rd = registry->reg.dim();
+        if (rd != 0 && rd != speaker->speaker->dim()) {
+            speaker->last_error = "registry holds " + std::to_string(rd) +
+                                  "-value embeddings, this model produces " +
+                                  std::to_string(speaker->speaker->dim());
+            return nullptr;
+        }
+        std::map<int, pk::SlotName> names;
+        try {
+            names = pk::identify_offline(pcm16k, segs, speaker->speaker->embedder(), registry->reg,
+                                         pk::SpeakerIdOpts{});
+        } catch (const std::exception& e) {
+            speaker->last_error = e.what();
+            return nullptr;
+        }
+        for (pk::SpeakerWord& w : words) {
+            auto it = names.find(w.speaker);
+            if (w.speaker >= 0 && it != names.end()) {
+                w.name = it->second.name;
+                w.name_score = it->second.score;
+            }
+        }
+        const std::vector<pk::SpeakerUtterance> utts = pk::group_speaker_words(words);
+        std::string s = "{\"speakers\":";
+        pk::append_json_int(s, n_speakers);
+        s += ",\"names\":{";
+        bool first = true;
+        for (const auto& kv : names) {
+            if (!first) s += ',';
+            first = false;
+            s += "\"" + std::to_string(kv.first) + "\":{\"name\":";
+            pk::append_json_string(s, kv.second.name);
+            s += ",\"score\":";
+            pk::append_json_float(s, "%.4f", kv.second.score);
+            s += '}';
+        }
+        s += "},\"utterances\":[";
+        for (size_t i = 0; i < utts.size(); ++i) {
+            if (i) s += ',';
+            append_speaker_item(s, utts[i], "%.2f", &names);
+        }
+        s += "],\"words\":[";
+        for (size_t i = 0; i < words.size(); ++i) {
+            if (i) s += ',';
+            append_speaker_item(s, words[i], "%.3f", &names);
+        }
+        s += "]}";
+        speaker->last_error.clear();
+        return dup_to_c(s);
+    } catch (const std::exception& e) {
+        if (speaker) speaker->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        if (speaker) speaker->last_error = "unknown error";
+        return nullptr;
+    }
+}
