@@ -132,6 +132,14 @@ public:
     const std::vector<std::string>& tokenizer_pieces() const { return cfg_.tokenizer_pieces; }
     ggml_tensor* tensor(const std::string& name) const; // nullptr if absent
     ggml_context* ggml_ctx() const { return ctx_; }
+    // True iff any tensor name ends with suffix (a scan of every tensor).
+    bool has_tensor_with_suffix(const std::string& suffix) const {
+        for(const auto& kv : tensors_){
+            const std::string& n = kv.first;
+            if(n.size() >= suffix.size() && n.compare(n.size()-suffix.size(), suffix.size(), suffix)==0) return true;
+        }
+        return false;
+    }
 
     // Give every weight tensor a CPU backend buffer (ONCE), so graphs can
     // reference the loader's tensors DIRECTLY as leaves with zero per-call

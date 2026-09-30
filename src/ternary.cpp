@@ -248,6 +248,16 @@ void op_matmul(ggml_tensor* dst, int ith, int nth, void* ud) {
 
 }  // namespace
 
+std::string ternary_flag_consistency_error(const ModelLoader& ml) {
+    const bool packed = ml.has_tensor_with_suffix(".qweight");
+    const bool flag = ml.config().ternary.present;
+    if (packed && !flag)
+        return "this GGUF holds packed ternary tensors (.qweight) but parakeet.ternary.present is not set";
+    if (flag && !packed)
+        return "parakeet.ternary.present is set but the GGUF holds no packed ternary tensors (.qweight)";
+    return "";
+}
+
 bool has_ternary(const ModelLoader& ml, const std::string& base) {
     return ml.tensor(base + ".qweight") != nullptr;
 }

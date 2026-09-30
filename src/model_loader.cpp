@@ -210,6 +210,15 @@ bool ModelLoader::load(const std::string& path){
     cfg_.n_fft       = kv_u32(gguf_, "parakeet.preprocessor.n_fft");
     cfg_.win_length  = kv_u32(gguf_, "parakeet.preprocessor.win_length");
     cfg_.hop_length  = kv_u32(gguf_, "parakeet.preprocessor.hop_length");
+    if(cfg_.vad.present){
+        const double enc_frame = (double)cfg_.hop_length * (double)cfg_.subsampling_factor / (double)cfg_.sample_rate;
+        const double ratio = enc_frame > 0.0 ? (double)cfg_.vad.frame_sec / enc_frame : 0.0;
+        if(!(enc_frame > 0.0) || std::fabs(ratio - std::round(ratio)) > 1e-3 || std::round(ratio) < 1.0){
+            PK_LOG("invalid VAD config: frame_sec=%g is not a whole multiple of the encoder frame (%g s)",
+                   (double)cfg_.vad.frame_sec, enc_frame);
+            return false;
+        }
+    }
     cfg_.preemph     = kv_f32(gguf_, "parakeet.preprocessor.preemph", 0.0f);
     cfg_.mag_power   = kv_f32(gguf_, "parakeet.preprocessor.mag_power", 2.0f);
     cfg_.normalize   = kv_str(gguf_, "parakeet.preprocessor.normalize", "per_feature");

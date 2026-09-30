@@ -195,7 +195,31 @@ static void test_degenerate_opts() {
     CHECK(s.size() == 1);
 }
 
+static void test_nonfinite_and_huge_opts() {
+    const double bads[] = {INFINITY, -INFINITY, NAN, 1e300, 1e7};
+    for (double v : bads) {
+        for (int which = 0; which < 3; ++which) {
+            SegmenterOpts o;
+            if (which == 0) o.min_seg_sec = v;
+            else if (which == 1) o.min_pause_sec = v;
+            else o.max_seg_sec = v;
+            auto s = segment_by_vad(std::vector<float>(2000, 0.0f), 100.0, o);
+            CHECK(s.size() == 1);
+            if (s.size() == 1) CHECK(s[0].start == 0.0 && s[0].end == 100.0);
+        }
+    }
+    const float thr[] = {INFINITY, -INFINITY, NAN};
+    for (float t : thr) {
+        SegmenterOpts o;
+        o.threshold = t;
+        auto s = segment_by_vad(std::vector<float>(2000, 0.0f), 100.0, o);
+        CHECK(s.size() == 1);
+        if (s.size() == 1) CHECK(s[0].start == 0.0 && s[0].end == 100.0);
+    }
+}
+
 int main() {
+    test_nonfinite_and_huge_opts();
     test_degenerate_opts();
     test_short_is_single();
     test_all_speech_hard_cuts();

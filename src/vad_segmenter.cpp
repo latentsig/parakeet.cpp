@@ -6,12 +6,20 @@
 
 namespace pk {
 
+namespace {
+// Above this many seconds a frame count could overflow int64.
+constexpr double kMaxSec = 1e6;
+}
+
 std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total_sec,
                                        const SegmenterOpts& o) {
     std::vector<VadSegment> out;
     // Degenerate options: no usable frame grid, so do not cut at all.
     if (!(o.frame_sec > 0.0) || !std::isfinite(o.frame_sec) || !std::isfinite(o.max_seg_sec) ||
-        !(o.max_seg_sec > 2.0 * o.frame_sec) || !std::isfinite(total_sec)) {
+        !(o.max_seg_sec > 2.0 * o.frame_sec) || !std::isfinite(total_sec) ||
+        !std::isfinite(o.threshold) || !std::isfinite(o.min_seg_sec) ||
+        !std::isfinite(o.min_pause_sec) || o.max_seg_sec > kMaxSec || o.min_seg_sec > kMaxSec ||
+        o.min_pause_sec > kMaxSec) {
         out.push_back({0.0, total_sec});
         return out;
     }

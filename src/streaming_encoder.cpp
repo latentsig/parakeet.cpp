@@ -29,7 +29,7 @@ static ggml_tensor* clone_weight_opt(ggml_context* ctx, const ModelLoader& ml,
 }
 
 StreamingEncoder::StreamingEncoder(const ModelLoader& ml) : ml_(ml) {
-    if (ml.config().ternary.present)
+    if (ml.config().ternary.present || ml.has_tensor_with_suffix(".qweight"))
         throw std::runtime_error("streaming does not support packed ternary GGUFs; convert with --ternary dequant");
     const ParakeetConfig& c = ml.config();
     d_model_     = (int)c.d_model;

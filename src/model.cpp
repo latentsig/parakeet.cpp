@@ -56,14 +56,14 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     if (m->loader_.config().arch == "diarization") {
         return nullptr;
     }
-    // A GGUF that carries packed tensors but does not say so would skip the GPU
+    // A GGUF whose packed tensors and ternary flag disagree would skip the GPU
     // refusal and the validation below, so refuse it outright.
-    if (!m->loader_.config().ternary.present &&
-        (m->loader_.tensor("encoder.layers.0.self_attn.linear_q.qweight") ||
-         m->loader_.tensor("encoder.layers.0.feed_forward1.linear1.qweight"))) {
-        PK_LOG("this GGUF holds packed ternary tensors (.qweight) but parakeet.ternary.present is not set; "
-               "refusing to load it");
-        return nullptr;
+    {
+        const std::string err = ternary_flag_consistency_error(m->loader_);
+        if (!err.empty()) {
+            PK_LOG("%s; refusing to load it", err.c_str());
+            return nullptr;
+        }
     }
     // Packed ternary weights run on the CPU kernel only. Fail at load with a
     // clear message instead of crashing inside a GPU graph.
@@ -311,9 +311,6 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
         (double)cfg.hop_length * (double)cfg.subsampling_factor / (double)cfg.sample_rate;
     if (!(enc_frame_sec > 0.0) || !std::isfinite(enc_frame_sec))
         throw std::runtime_error("invalid encoder frame size");
-    const double ratio = opts.frame_sec / enc_frame_sec;
-    if (std::fabs(ratio - std::round(ratio)) > 1e-3 || std::round(ratio) < 1.0)
-        throw std::runtime_error("VAD frame size is not a multiple of the encoder frame");
     const double total_sec = (double)pcm16k.size() / 16000.0;
     const std::vector<float> p = m.vad_probabilities(pcm16k);
     const std::vector<VadSegment> segs = segment_by_vad(p, total_sec, opts);

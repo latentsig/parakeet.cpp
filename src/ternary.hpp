@@ -79,6 +79,11 @@ bool has_ternary(const ModelLoader& ml, const std::string& base);
 ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std::string& base,
                             ggml_tensor* x);
 
+// "" when parakeet.ternary.present agrees with the tensors: a packed tensor
+// (any name ending in .qweight) exists iff the flag is set. Otherwise a message
+// naming the mismatch. Scans every tensor, not just layer 0.
+std::string ternary_flag_consistency_error(const ModelLoader& ml);
+
 // Validate and repack every packed linear of the encoder up front, so graph
 // building never throws. Throws std::runtime_error on a malformed or
 // half-converted file.

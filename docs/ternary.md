@@ -55,6 +55,9 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
 
 ## Limits
 
+- A packed tensor anywhere in the file (any name ending in `.qweight`) while
+  `parakeet.ternary.present` is false is refused at load, and so is the flag set with no packed
+  tensors. Every tensor name is scanned, not only layer 0.
 - CPU only. Loading a packed GGUF with a GPU backend active fails with a
   message; re-convert with `--ternary dequant` to use a GPU.
 - The kernel is chosen at run time. x86-64 with AVX2 or AVX-512 VNNI and aarch64 with the
