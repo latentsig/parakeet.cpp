@@ -224,9 +224,12 @@ registry returns nonzero with no message.
 `diarize_named_pcm_json` diarizes the clip and names the speakers, with no ASR
 model. The result is the `parakeet_capi_diarize_pcm` document plus a `"names"`
 key, for example `{"0":{"name":"ada","score":0.93}}`. `names` has one entry per
-diarization slot that has audio; a slot with no matching voice has
-`"name":""`. `accept_threshold` is a cosine in [-1, 1] and `margin` is the
-runner-up margin in [0, 1). A value of 0 keeps the default (0.5 and 0.05), so
+diarization slot that has a segment. `"name":""` (score 0) means no voice
+matched, or the slot had too little clean speech (under the identifier's 2 s
+minimum, or the audio overlapped another speaker). `accept_threshold` is a
+cosine in [-1, 1] and `margin` is how far the best match must beat the
+runner-up; it must be 0 or more (a negative value is rejected with "invalid
+speaker options"). A value of 0 for either keeps the default (0.5 and 0.05), so
 exactly 0 cannot be requested. Any sample rate works; the audio is resampled
 to 16 kHz. It returns NULL on error. The message is on `diar` for a wrong
 context kind or bad samples, and on `speaker` for a wrong context kind, a NULL
@@ -240,6 +243,8 @@ parakeet_speaker_registry* reg = parakeet_capi_speaker_registry_new();
 if (parakeet_capi_speaker_registry_add_embedding(reg, "ada", ada_emb, dim) ||
     parakeet_capi_speaker_registry_add_embedding(reg, "bob", bob_emb, dim)) {
     fprintf(stderr, "%s\n", parakeet_capi_speaker_registry_last_error(reg));
+    parakeet_capi_speaker_registry_free(reg);
+    return 1;
 }
 char* json = parakeet_capi_diarize_named_pcm_json(diar, speaker, reg, pcm, n_pcm,
                                                   16000, 0.0f, 0.0f);
@@ -247,7 +252,8 @@ if (json) {
     puts(json);
     parakeet_capi_free_string(json);
 } else {
-    fprintf(stderr, "%s\n", parakeet_capi_last_error(speaker));
+    fprintf(stderr, "%s / %s\n", parakeet_capi_last_error(speaker),
+            parakeet_capi_last_error(diar));
 }
 parakeet_capi_speaker_registry_free(reg);
 ```

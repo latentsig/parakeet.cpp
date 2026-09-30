@@ -660,9 +660,11 @@ char* parakeet_capi_transcribe_and_diarize_named_json(parakeet_ctx* asr, parakee
 
 // Diarization with speaker names and no ASR model: the parakeet_capi_diarize_pcm
 // document plus a "names" key, {"0":{"name":"ada","score":0.93},...}, one entry
-// per diarization slot that has audio ("name":"" for a slot with no matching
-// voice). `accept_threshold` is a cosine in [-1, 1] and `margin` the runner-up
-// margin of the identifier; 0 keeps its default (0.5 and 0.05). Any sample rate
+// per diarization slot that has a segment ("name":"" with score 0 means no
+// voice matched, or too little clean speech: under the identifier's 2 s
+// minimum, or overlapped by another speaker). `accept_threshold` is a cosine in
+// [-1, 1] and `margin` how far the best match must beat the runner-up; it must
+// be 0 or more. 0 for either keeps its default (0.5 and 0.05). Any sample rate
 // (resampled to 16 kHz like the other PCM entry points). Returns NULL on error,
 // with the message on `diar` (a wrong kind, bad samples) or on `speaker` (a
 // wrong kind, a NULL or wrong-sized registry, invalid options). Free with
