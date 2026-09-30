@@ -5,7 +5,7 @@ from short clips, and the scene stream and the speaker-attributed ASR output
 then say `Ada:` where they would otherwise say `Speaker 0:`.
 
 It runs a speaker-embedding model from
-[voice-detect.cpp](https://github.com/mudler/voice-detect.cpp), built in as a
+[voice-detect.cpp](https://github.com/localai-org/voice-detect.cpp), built in as a
 static library (`PARAKEET_WITH_VOICEDETECT`, on by default, the same way
 ced.cpp is built in for sound events). `pk::SpeakerEncoder`
 (`src/speaker_encoder.hpp`) is the only parakeet code that talks to it.
