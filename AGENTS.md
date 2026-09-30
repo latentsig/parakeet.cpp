@@ -154,7 +154,7 @@ docs/
   parity.md         , full model coverage matrix + per-stage tensor parity
   diarization.md    , speaker diarization + speaker-attributed ASR: parity, C-API, speed
   sound.md          , sound-event detection (CED) and the combined scene stream
-  speaker.md        , speaker identification: enroll, scene naming, C-API v9, measured numbers
+  speaker.md        , speaker identification: enroll, scene naming, C-API v9 and v10, measured numbers
 .github/workflows/
   ci.yml            , build job (per-push) + closed-loop job (pull_request + dispatch)
 ```

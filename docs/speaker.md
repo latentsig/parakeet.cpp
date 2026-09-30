@@ -235,8 +235,12 @@ to 16 kHz. It returns NULL on error. The message is on `diar` for a wrong
 context kind or bad samples, and on `speaker` for a wrong context kind, a NULL
 registry, bad options, or a registry whose embedding size differs from the
 encoder's (`registry holds N-value embeddings, this model produces M`). The
-registry must come from the same kind of encoder as `speaker`. Free the result
-with `parakeet_capi_free_string`.
+registry must come from the same kind of encoder as `speaker`. An empty buffer
+(`n_samples == 0`) is an error here, unlike `parakeet_capi_diarize_pcm`, which
+returns an empty document. The call keeps a copy of the whole recording, so
+memory grows with clip length (about 230 MB per hour of 16 kHz audio), the same
+order as the speaker-attributed ASR call. Free the result with
+`parakeet_capi_free_string`.
 
 ```c
 parakeet_speaker_registry* reg = parakeet_capi_speaker_registry_new();
