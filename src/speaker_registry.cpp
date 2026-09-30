@@ -134,7 +134,7 @@ SpeakerRegistry SpeakerRegistry::deserialize(const std::string& blob) {
     r.get(&dim, 4);
     uint32_t n = 0;
     r.get(&n, 4);
-    if (dim < 0 || dim > kMaxDim || n > kMaxSpeakers)
+    if (dim < 0 || dim > kMaxDim || n > kMaxSpeakers || (dim < 1 && n > 0))
         throw std::runtime_error("speaker registry: implausible header");
     SpeakerRegistry out(dim);
     for (uint32_t i = 0; i < n; ++i) {

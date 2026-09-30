@@ -93,6 +93,15 @@ static void test_bad_enroll() {
     // An all-zero probe is unknown, not an error.
     r.enroll("alice", unit(2, 0));
     CHECK(r.identify({0.0f, 0.0f}, 0.5f, 0.05f).name.empty());
+    // Failed enroll on non-empty registry leaves state unchanged.
+    const int orig_dim = r.dim();
+    const size_t orig_size = r.size();
+    const SpeakerMatch orig_match = r.identify(unit(2, 0), 0.5f, 0.05f);
+    CHECK(throws("alice", unit(3, 0)));   // dim mismatch
+    CHECK(throws("bob", {0.0f, 0.0f}));   // zero vector
+    CHECK(r.dim() == orig_dim && r.size() == orig_size);
+    const SpeakerMatch new_match = r.identify(unit(2, 0), 0.5f, 0.05f);
+    CHECK(new_match.name == orig_match.name && std::fabs(new_match.score - orig_match.score) < 1e-5f);
 }
 
 static void test_remove_and_names() {
@@ -104,6 +113,9 @@ static void test_remove_and_names() {
     CHECK(r.remove("bob"));
     CHECK(!r.remove("bob"));
     CHECK(r.size() == 1);
+    // names() still lists remaining speaker in order after remove.
+    const auto remaining = r.names();
+    CHECK(remaining.size() == 1 && remaining[0] == "alice");
 }
 
 static void test_serialize_roundtrip() {
@@ -141,6 +153,32 @@ static void test_deserialize_corrupt() {
     std::string huge = good;                          // absurd speaker count
     huge[12] = (char)0xff; huge[13] = (char)0xff; huge[14] = (char)0xff; huge[15] = (char)0x7f;
     CHECK(throws(huge));
+    // Corrupt: dim 0 with n > 0 (would cause out-of-bounds write on later enroll).
+    // Build manually: "PKSR" (4 bytes) + version 1 (4 bytes, little-endian) +
+    // dim 0 (4 bytes) + n 1 (4 bytes) + name length 5 (4 bytes) + "alice" (5 bytes) +
+    // count 1 (4 bytes) + 0 floats for sum (since dim is 0).
+    std::string corrupt_dim_zero;
+    corrupt_dim_zero += 'P'; corrupt_dim_zero += 'K'; corrupt_dim_zero += 'S'; corrupt_dim_zero += 'R';
+    // version 1 in little-endian
+    corrupt_dim_zero += (char)0x01; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00;
+    // dim 0 in little-endian
+    corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00;
+    // n 1 in little-endian
+    corrupt_dim_zero += (char)0x01; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00;
+    // name length 5 in little-endian
+    corrupt_dim_zero += (char)0x05; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00;
+    // name "alice"
+    corrupt_dim_zero += "alice";
+    // count 1 in little-endian
+    corrupt_dim_zero += (char)0x01; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00; corrupt_dim_zero += (char)0x00;
+    CHECK(throws(corrupt_dim_zero));
+    // Empty registry (dim 0, n 0) round-trips and accepts normal enroll.
+    SpeakerRegistry empty;
+    const std::string empty_blob = empty.serialize();
+    SpeakerRegistry loaded_empty = SpeakerRegistry::deserialize(empty_blob);
+    CHECK(loaded_empty.dim() == 0 && loaded_empty.size() == 0);
+    loaded_empty.enroll("charlie", {1.0f, 0.0f});
+    CHECK(loaded_empty.size() == 1 && loaded_empty.dim() == 2);
 }
 
 int main() {
