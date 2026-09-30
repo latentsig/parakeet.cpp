@@ -464,7 +464,7 @@ With `redux-keep.gguf` (packed ternary), plain single pass segfaulted after abou
 MichaelSpecter, exit code 139. The backtrace ended in `RelPosAttention::build_graph_local_chunked`.
 
 Cause: above `kLocalThreshold = 8192` frames the encoder switches to the local attention paths. Three of the five
-attention `linear` lambdas (`build_graph_local`, `build_graph_local_chunked`, `build_graph_batched_local_chunked`) read
+attention `linear` lambdas (`build_graph_batched_local`, `build_graph_local`, `build_graph_local_chunked`) read
 only `<base>.weight`, which a packed GGUF does not have, so `ggml_mul_mat` got a null tensor. The earlier synthetic clips
 (218 to 354 s) never reach these paths. All five now go through one helper (`attn_linear` in
 `src/relpos_attention.cpp`), which uses the packed kernel when `<base>.qweight` exists and throws
@@ -476,6 +476,69 @@ print byte-identical transcripts. `tests/test_ternary_long.cpp` forces the same 
 measured before the fix and are not filled in for the seven long talks; those talks (all over about 655 s) still need to
 be re-run.
 
+### Parity with the transformers reference (Ultra)
+
+An independent check that the Ultra conversion and engine reproduce the HF implementation. `ParakeetForTDT` is not in the
+installed transformers 5.3.0, so this used a source checkout that has it (version string 5.10.0.dev0) through
+`PYTHONPATH`. The HF checkpoint has no preprocessor or tokenizer files, so `scripts/hf_reference_transcribe.py` builds a
+`ParakeetFeatureExtractor(feature_size=128, sampling_rate=16000)` (per-feature normalization is built in) and decodes
+token ids with the piece table from our Ultra GGUF. The run is fp32 on CPU with greedy TDT decoding; ours is the F16 GGUF.
+Because the token table comes from our GGUF, this checks the encoder, decoder and search, not the tokenizer.
+
+Same first 20 test utterances of en_us, de_de and fr_fr (60 utterances, 1509 words). Ours scored against the HF
+transcript as reference, after `normalize`, and after dropping the `<unk>` piece, which the HF side prints and we omit:
+
+| Language | Identical after normalize | WER of ours vs HF |
+|---|---:|---:|
+| en_us | 20 of 20 | 0.00 |
+| de_de | 18 of 20 | 0.45 |
+| fr_fr | 18 of 20 | 0.48 |
+| total | 56 of 60 | 0.33 |
+
+The four differing utterances are single-word choices near a tie (for example `Hirnschadens` against `Höhenschadens`,
+`Laka` against `Lakas`, `vient` against `viant`, and `dix-sept` against `17`). The F16 weights in the GGUF against the fp32 weights in HF are a plausible cause, but I did not test that, for example by converting an
+F32 GGUF.
+
+Both implementations scored against the FLEURS references (same scorer as above, `<unk>` left in the HF text, where the
+`unk` word counts as an error):
+
+| Language | Ours (F16 GGUF) | HF transformers (fp32) |
+|---|---:|---:|
+| en_us | 3.64 | 3.64 |
+| de_de | 3.56 | 3.78 |
+| fr_fr | 5.13 | 6.09 |
+| mean of the three | 4.11 | 4.50 |
+
+The fr_fr gap on the HF side comes from `<unk>` pieces that the HF text prints (four in the 20 utterances) and we drop; it is a
+decoding detail, not a model difference.
+
+### Commands
+
+```
+# subsets (stream from the Hub, no token; only 16 kHz wavs, references and manifests are written, under 1 GB in total)
+python3 scripts/fetch_fleurs_subset.py --out /tmp/val/fleurs --n 50
+python3 scripts/fetch_tedlium_longform.py --out /tmp/val/ted
+
+# FLEURS WER for the four models (bench --json keeps the hypotheses per language)
+python3 scripts/eval_manifest_wer.py --out /tmp/val/fleurs_res --threads 8 \
+    --model v3=<tdt-0.6b-v3-f16.gguf> --model ultra=<ultra-f16.gguf> \
+    --model redux=<redux-keep.gguf> --model reduxdeq=<redux-deq.gguf> /tmp/val/fleurs/*/manifest.tsv
+
+# TED-LIUM plain and --vad, one command per model (records WER, wall time, peak RSS; a crash is recorded as FAIL)
+python3 scripts/eval_longform_talks.py --model <gguf> --dir /tmp/val/ted --save /tmp/val/ted_res/<name>
+
+# HF transformers reference for Ultra, then compare
+PYTHONPATH=<transformers checkout>/src python3 scripts/hf_reference_transcribe.py \
+    --hf-dir <hf ultra dir> --gguf <ultra-f16.gguf> --out /tmp/val/spike_hf /tmp/val/spike/{en_us,de_de,fr_fr}/manifest.tsv
+python3 scripts/compare_hyps.py /tmp/val/spike_res/ultra /tmp/val/spike_hf
+```
+
+The FLEURS run used `--threads 2` for most of the sweep instead of 8, because the machine was heavily loaded and 8 spinning
+threads were much slower than 2 there; greedy decoding does not depend on the thread count except for float summation
+order, which was not checked for any change in a transcript.
+
+Limits of this section:
+- 50 utterances per language is a sample, not the full FLEURS test split; per-language numbers carry about a 1 point noise band.
 - The normalizer is a plain one, so numbers, hyphenation and non-Latin scripts add errors that the leaderboard normalizer
   would remove; compare models against each other, not against upstream.
 - The TED-LIUM set has 11 talks, one of them 5.5 s long; a per-talk difference under 0.2 points is not meaningful.

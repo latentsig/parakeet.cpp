@@ -1,7 +1,7 @@
 // Packed ternary Redux through the local (banded) and chunked attention paths.
 //
 // Regression for a segfault on long audio: three attention `linear` lambdas
-// (build_graph_local, build_graph_local_chunked, build_graph_batched_local_chunked)
+// (build_graph_batched_local, build_graph_local, build_graph_local_chunked)
 // read only `<base>.weight`, which does not exist in a packed GGUF, and passed a
 // null tensor to ggml_mul_mat. Long audio (encoder frames > 8192, about 655 s)
 // switches to local attention automatically; PARAKEET_ATT_CONTEXT forces the same
@@ -88,7 +88,7 @@ int main() {
 
     int failures = 0;
     // Force local attention (window 64) on short audio: single item goes through
-    // build_graph_local_chunked, the batch through build_graph_batched_local_chunked.
+    // build_graph_local_chunked, the batch through the batched local path.
     setenv("PARAKEET_ATT_CONTEXT", "64", 1);
     Result rd, rk;
     if (!run(deq, a.samples, b.samples, rd) || !run(keep, a.samples, b.samples, rk)) return 1;
