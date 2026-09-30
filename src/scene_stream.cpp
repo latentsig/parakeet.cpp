@@ -12,6 +12,13 @@ namespace pk {
 SceneStream::SceneStream(const SceneParts& p) {
     if (!p.asr && !p.diar && !p.tagger)
         throw std::invalid_argument("scene stream needs at least one model");
+    if (p.speaker_embed) {
+        if (!p.diar) throw std::invalid_argument("speaker identification needs a diarization model");
+        if (!p.registry) throw std::invalid_argument("speaker identification needs a registry");
+        const std::string err = validate_speaker_opts(p.speaker_opts);
+        if (!err.empty()) throw std::invalid_argument("invalid speaker options: " + err);
+        speaker_ = std::make_unique<SpeakerIdentifier>(p.speaker_embed, p.registry, p.speaker_opts);
+    }
     if (p.diar) diar_ = std::make_unique<DiarPcmStream>(*p.diar, p.diar_latency);
     if (p.asr) {
         const Model* m = p.asr;
@@ -38,6 +45,17 @@ SceneUpdate SceneStream::feed(const float* pcm, int n, bool is_last) {
             u.speakers.push_back({c.speaker, c.start, c.end});
         }
     }
+    if (speaker_) {
+        part_ = ScenePart::Speaker;
+        speaker_->push_pcm(pcm, n);
+        std::vector<SpeakerSegment> closed_segs, open_segs;
+        for (const auto& c : closed) closed_segs.push_back({c.speaker, c.start, c.end});
+        for (const auto& o : diar_->open_segments()) open_segs.push_back({o.speaker, o.start, o.end});
+        speaker_->update(closed_segs, open_segs, is_last);
+        u.names = speaker_->names();
+        // A failure past this point is charged to the next part.
+        part_ = asr_ ? ScenePart::Asr : ScenePart::Diarization;
+    }
     if (asr_) {
         asr_->push(pcm, n);
         // With diarization, ASR follows how far diarization has got, and only
@@ -54,6 +72,12 @@ SceneUpdate SceneStream::feed(const float* pcm, int n, bool is_last) {
             if (diar_)
                 for (const auto& o : diar_->open_segments()) segs.push_back({o.speaker, o.start, o.end});
             u.words = merge_asr_diarization(committed, segs);
+            if (speaker_)
+                for (SpeakerWord& w : u.words) {
+                    const SlotName sn = speaker_->name(w.speaker);
+                    w.name = sn.name;
+                    w.name_score = sn.score;
+                }
             u.utterances = group_speaker_words(u.words);
             // Segments that ended before the commit point can no longer match a word.
             const double commit_sec = asr_->commit_sec();

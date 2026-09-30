@@ -23,6 +23,9 @@ struct SceneParts {
     DiarLatency diar_latency = DiarLatency::Model;
     CedTagger* tagger = nullptr;     // sound events
     SoundOpts sound;                 // sound events
+    SpeakerEmbed speaker_embed;      // speaker identification; needs diar and registry
+    const SpeakerRegistry* registry = nullptr;   // borrowed, must outlive the stream
+    SpeakerIdOpts speaker_opts;
 };
 
 // What one feed finalized. All times are seconds on the stream clock.
@@ -46,14 +49,14 @@ struct SceneUpdate {
 };
 
 // The part running when feed() threw, so a caller can attribute the error.
-enum class ScenePart { None, Diarization, Asr, Sound };
+enum class ScenePart { None, Diarization, Asr, Sound, Speaker };
 
 // Speech, speakers and sound events over one live 16 kHz mono PCM stream.
 // Each feed gives the PCM to every part, then collects what each one
 // finalized. Not thread-safe.
 //
-// Error paths: feed() runs diarization, then ASR, then the sound part, in
-// that order, and does not catch between them, so a part that throws loses
+// Error paths: feed() runs diarization, then the speaker part (when there
+// is one), then ASR, then the sound part, in that order, and does not catch between them, so a part that throws loses
 // the rest of that call. If the sound part throws, anything diarization or
 // ASR already finalized in this call (including words the commit window
 // released) is lost with it, not returned before the exception propagates.
@@ -63,6 +66,9 @@ enum class ScenePart { None, Diarization, Asr, Sound };
 // (diarization takes the is_last chunk before ASR or sound run), so the
 // stream ends without flushing whatever the throwing part (or anything
 // after it) would otherwise have flushed on that final call.
+//
+// If the speaker part throws, ASR and sound for that chunk are skipped like
+// any other part that throws.
 //
 // After a feed() that throws, later timestamps may be misaligned: the parts
 // that did not see the failed chunk lag behind the ones that did. Callers
@@ -88,6 +94,7 @@ private:
     std::unique_ptr<DiarPcmStream> diar_;
     std::unique_ptr<AsrCommitter> asr_;
     std::unique_ptr<SoundStream> sound_;
+    std::unique_ptr<SpeakerIdentifier> speaker_;
     std::vector<SpeakerSegment> segs_;   // closed diarization segments not yet behind the commit point
     double t_ = 0.0;                     // stream time consumed
     bool finished_ = false;
