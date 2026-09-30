@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "backend.hpp"
 #include "ggml.h"
 #include "model_loader.hpp"
 
@@ -17,8 +18,10 @@ std::vector<float> load_f32(const ModelLoader& ml, const std::string& name, size
     if (!t) throw std::runtime_error("VAD head: missing tensor " + name);
     if (t->type != GGML_TYPE_F32 || (size_t)ggml_nelements(t) != expect)
         throw std::runtime_error("VAD head: unexpected type or size for " + name);
-    const float* d = static_cast<const float*>(t->data);
-    return std::vector<float>(d, d + expect);
+    // The tensor may live in device memory: read it through the backend.
+    std::vector<float> out;
+    weight_to_host_f32(ml, name.c_str(), out);
+    return out;
 }
 
 }  // namespace

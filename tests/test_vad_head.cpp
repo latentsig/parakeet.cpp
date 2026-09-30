@@ -15,41 +15,66 @@ static int failures = 0;
 static bool near(float a, float b) { return std::fabs(a - b) < 1e-5f; }
 static float sig(float z) { return 1.0f / (1.0f + std::exp(-z)); }
 
-// d_in = 2, hidden = 2, kernel = 3. proj = identity. ctx: out0 = center tap of
-// in0, out1 = left tap (t-1) of in1. out = [1, 1], bias -1.
+// d_in = 2, hidden = 2, kernel = 3, deliberately asymmetric so a transposed
+// [in][out] indexing bug cannot pass.
+//   proj: h0 = x0 + 2*x1 + 0.5, h1 = x1 - 0.5
+//   ctx (taps kk = 0, 1, 2 are t-1, t, t+1):
+//     o0 = 1 * in1(t) + 2 * in0(t+1) + 0.25      (o != i, and a right-hand tap)
+//     o1 = 1 * in0(t-1) - 0.5                    (o != i, left tap)
+//   out: z = 0.1 * o0 + 0.05 * o1 - 0.5
 static VadWeights tiny() {
     VadWeights w;
     w.d_in = 2; w.hidden = 2; w.kernel = 3;
-    w.proj_w = {1, 0, 0, 1};
-    w.proj_b = {0, 0};
+    w.proj_w = {1, 2, 0, 1};
+    w.proj_b = {0.5f, -0.5f};
     w.ctx_w.assign(2 * 2 * 3, 0.0f);
-    w.ctx_w[(0 * 2 + 0) * 3 + 1] = 1.0f;   // o=0, i=0, kk=1 (center)
-    w.ctx_w[(1 * 2 + 1) * 3 + 0] = 1.0f;   // o=1, i=1, kk=0 (t-1)
-    w.ctx_b = {0, 0};
-    w.out_w = {1, 1};
-    w.out_b = -1.0f;
+    w.ctx_w[(0 * 2 + 1) * 3 + 1] = 1.0f;   // o=0, i=1, kk=1 (center)
+    w.ctx_w[(0 * 2 + 0) * 3 + 2] = 2.0f;   // o=0, i=0, kk=2 (t+1)
+    w.ctx_w[(1 * 2 + 0) * 3 + 0] = 1.0f;   // o=1, i=0, kk=0 (t-1)
+    w.ctx_b = {0.25f, -0.5f};
+    w.out_w = {0.1f, 0.05f};
+    w.out_b = -0.5f;
     return w;
 }
 
+// x = (1,0), (0,1), (2,1). After proj, before ReLU:
+//   t0: (1.5, -0.5)   t1: (2.5, 0.5)   t2: (4.5, 0.5)
+// after ReLU h1: t0 (1.5, 0), t1 (2.5, 0.5), t2 (4.5, 0.5).
+// ctx pre-activation (right pad and left pad are zero):
+//   t0: o0 = h1[0][1] + 2*h1[1][0] + 0.25 = 0 + 5 + 0.25 = 5.25
+//       o1 = (left pad 0) - 0.5 = -0.5
+//   t1: o0 = 0.5 + 2*4.5 + 0.25 = 9.75      o1 = h1[0][0] - 0.5 = 1.0
+//   t2: o0 = 0.5 + (right pad 0) + 0.25 = 0.75   o1 = h1[1][0] - 0.5 = 2.0
+static const float kX[] = {1, 0,   0, 1,   2, 1};
+
 static void test_plain_variant() {
-    const float x[] = {1, 2,   0, 3,   2, 0};  // T = 3
     VadVariant v;  // relu after proj, no residual, relu after ctx
     v.relu_after_proj = true; v.residual = false; v.relu_after_ctx = true;
-    const auto p = VadHead::run(tiny(), v, x, 3);
+    const auto p = VadHead::run(tiny(), v, kX, 3);
     CHECK(p.size() == 3);
-    CHECK(near(p[0], sig(0.0f)));
-    CHECK(near(p[1], sig(1.0f)));
-    CHECK(near(p[2], sig(4.0f)));
+    // ReLU after ctx: t0 (5.25, 0), t1 (9.75, 1.0), t2 (0.75, 2.0)
+    // z0 = 0.1*5.25 + 0.05*0    - 0.5 = 0.025
+    // z1 = 0.1*9.75 + 0.05*1.0  - 0.5 = 0.525
+    // z2 = 0.1*0.75 + 0.05*2.0  - 0.5 = -0.325
+    CHECK(near(p[0], sig(0.025f)));
+    CHECK(near(p[1], sig(0.525f)));
+    CHECK(near(p[2], sig(-0.325f)));
 }
 
 static void test_residual_variant() {
-    const float x[] = {1, 2,   0, 3,   2, 0};
     VadVariant v;
     v.relu_after_proj = true; v.residual = true; v.relu_after_ctx = true;
-    const auto p = VadHead::run(tiny(), v, x, 3);
-    CHECK(near(p[0], sig(3.0f)));
-    CHECK(near(p[1], sig(4.0f)));
-    CHECK(near(p[2], sig(6.0f)));
+    const auto p = VadHead::run(tiny(), v, kX, 3);
+    // Residual adds h1 (post-ReLU) before the ReLU after ctx:
+    //   t0: (5.25+1.5, -0.5+0)   = (6.75, -0.5 -> 0)
+    //   t1: (9.75+2.5, 1.0+0.5)  = (12.25, 1.5)
+    //   t2: (0.75+4.5, 2.0+0.5)  = (5.25, 2.5)
+    // z0 = 0.675 - 0.5 = 0.175
+    // z1 = 1.225 + 0.075 - 0.5 = 0.8
+    // z2 = 0.525 + 0.125 - 0.5 = 0.15
+    CHECK(near(p[0], sig(0.175f)));
+    CHECK(near(p[1], sig(0.8f)));
+    CHECK(near(p[2], sig(0.15f)));
 }
 
 static void test_relu_matters() {
@@ -59,8 +84,13 @@ static void test_relu_matters() {
     without.relu_after_proj = false; without.relu_after_ctx = false;
     const auto a = VadHead::run(tiny(), with, x, 1);
     const auto b = VadHead::run(tiny(), without, x, 1);
-    CHECK(near(a[0], sig(-1.0f)));              // everything clipped to 0, bias only
-    CHECK(near(b[0], sig(-1.0f + -1.0f)));      // center tap of in0 = -1, left tap of in1 = 0 (pad)
+    // with ReLUs: proj pre (-1-4+0.5, -2-0.5) = (-4.5, -2.5) -> h1 = (0, 0);
+    //   ctx (0.25, -0.5) -> ReLU (0.25, 0); z = 0.025 - 0.5 = -0.475
+    CHECK(near(a[0], sig(-0.475f)));
+    // without: h1 = (-4.5, -2.5). T = 1 so only the center tap is in range:
+    //   o0 = in1 + 0.25 = -2.5 + 0.25 = -2.25, o1 = -0.5 (its tap is padding)
+    //   z = 0.1*-2.25 + 0.05*-0.5 - 0.5 = -0.225 - 0.025 - 0.5 = -0.75
+    CHECK(near(b[0], sig(-0.75f)));
 }
 
 static void test_from_index() {
