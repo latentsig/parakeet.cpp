@@ -40,6 +40,17 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
    vector lane, so a group sum for 16 rows comes out in one vector with no
    horizontal reduction. The exact layout is in `TernaryWeight` in
    `src/ternary.hpp`. Nothing is dequantized per call.
+   The repack decodes the upstream bytes with a 256 entry table (five
+   trits per byte) and weights are repacked in parallel on up to
+   min(cores, 8) threads. `PARAKEET_REPACK_THREADS=N` overrides the count; 1
+   forces the serial path. The output is byte-identical to the earlier scalar
+   code, which `tests/test_ternary.cpp` keeps as `repack_reference`. Measured
+   on packed Redux (`parakeet-cli bench`, `load_ms`, `taskset -c 0-7`, 5 runs,
+   load average 2.3 to 3.0): 866 ms min / 868 ms median before, 74 ms min /
+   76 ms median after; with `PARAKEET_REPACK_THREADS=1`, 204 ms min / 208 ms
+   median. In-process, 264 weights of 4096x1024 and 1024x4096 take 1414 ms
+   (old code) against 210 ms (table, one thread) and 29 ms (8 threads);
+   `bench_ternary repack` reproduces this.
 2. At run time the activations of each ternary linear are quantized to int8
    per token (one float scale and one int32 sum per 128-column group). The
    scalar version defines the bytes; the AVX-512 and AVX2 versions write the
