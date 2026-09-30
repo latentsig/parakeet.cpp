@@ -213,7 +213,84 @@ static void test_quant_identical() {
     }
 }
 
+// The repack as it was before the lookup table version: an independent scalar
+// reference (per byte v % 3, v /= 3, then bit-plane packing one element at a time).
+static void repack_reference(const uint8_t* q, const uint16_t* s, int N, int K, TernaryWeight& out) {
+    const int G = K / kTernaryGroup;
+    const int nb = (K + 4) / 5;
+    out.N = N;
+    out.K = K;
+    const int B = out.row_blocks();
+    out.planes.assign((size_t)B * G * 512, 0);
+    out.scales.assign((size_t)B * G * kTernaryRowBlock, 0.0f);
+    std::vector<uint8_t> row(K);
+    for (int n = 0; n < N; ++n) {
+        const int b = n / kTernaryRowBlock, i = n % kTernaryRowBlock;
+        for (int g = 0; g < G; ++g)
+            out.scales[((size_t)b * G + g) * kTernaryRowBlock + i] = ggml_fp16_to_fp32(s[(size_t)n * G + g]);
+        const uint8_t* qr = q + (size_t)n * nb;
+        for (int bb = 0; bb < nb; ++bb) {
+            int v = qr[bb];
+            for (int d = 0; d < 5; ++d) {
+                const int k = bb * 5 + d;
+                if (k < K) row[k] = (uint8_t)(v % 3);
+                v /= 3;
+            }
+        }
+        for (int k = 0; k < K; ++k) {
+            const int g = k / kTernaryGroup, r = k % kTernaryGroup;
+            const int st = r / 16, p = (r % 16) / 4, j = r % 4;
+            out.planes[((size_t)b * G + g) * 512 + (size_t)st * 64 + 4 * i + j] |= (uint8_t)(row[k] << (2 * p));
+        }
+    }
+}
+
+static void test_repack_equivalence() {
+    std::mt19937 rng(77);
+    int cases = 0;
+    for (int N : {1, 2, 3, 5, 15, 16, 17, 31, 32, 33, 37, 64, 80, 1024, 4096})
+        for (int K : {128, 256, 384, 1024, 4096}) {
+            if ((size_t)N * K > (size_t)1024 * 1024 && K != 1024) continue;  // keep the runtime sane
+            const int nb = (K + 4) / 5, G = K / kTernaryGroup;
+            // mode 0 random valid, 1 all 0, 2 all 2, 3 all 1, 4 alternating 0/2, 5 any byte 0..255 (invalid too)
+            for (int mode = 0; mode < 6; ++mode) {
+                std::vector<uint8_t> q((size_t)N * nb);
+                for (size_t x = 0; x < q.size(); ++x) {
+                    int v;
+                    switch (mode) {
+                        case 0: v = (int)(rng() % 243); break;
+                        case 1: v = 0; break;
+                        case 2: v = 242; break;  // digits 2 2 2 2 2
+                        case 3: v = 121; break;  // digits 1 1 1 1 1
+                        case 4: v = (x & 1) ? 242 : 0; break;
+                        default: v = (int)(rng() % 256); break;
+                    }
+                    q[x] = (uint8_t)v;
+                }
+                std::vector<uint16_t> sc((size_t)N * G);
+                for (size_t x = 0; x < sc.size(); ++x) {
+                    // random F16 bit patterns, including denormals, large values, inf and nan
+                    uint16_t h = (uint16_t)rng();
+                    if (x % 7 == 0) h = (uint16_t)(rng() % 0x400);          // denormal
+                    else if (x % 11 == 0) h = (uint16_t)(0x7000 + rng() % 0xC00);  // large
+                    sc[x] = h;
+                }
+                TernaryWeight a, b;
+                repack_reference(q.data(), sc.data(), N, K, a);
+                ternary_repack(q.data(), sc.data(), N, K, b);
+                const bool same = a.N == b.N && a.K == b.K && a.planes == b.planes &&
+                                  a.scales.size() == b.scales.size() &&
+                                  std::memcmp(a.scales.data(), b.scales.data(), a.scales.size() * 4) == 0;
+                if (!same) std::fprintf(stderr, "repack mismatch N=%d K=%d mode=%d\n", N, K, mode);
+                CHECK(same);
+                ++cases;
+            }
+        }
+    std::printf("repack equivalence: %d cases identical to the reference\n", cases);
+}
+
 int main() {
+    test_repack_equivalence();
     const Case cases[] = {{8, 128, 1}, {16, 256, 3}, {37, 1024, 5}, {64, 4096, 4}, {5, 384, 7}, {1, 128, 1},
                           {48, 1024, 13}, {80, 512, 200}, {40, 1024, 9, true}, {7, 4096, 3, true}};
     unsigned seed = 1;

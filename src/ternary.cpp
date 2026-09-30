@@ -1,6 +1,9 @@
 #include "ternary.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <exception>
+#include <thread>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -16,6 +19,31 @@
 
 namespace pk {
 
+namespace {
+
+// For every byte value 0..255 its five base-3 digits, least significant first,
+// computed exactly like the scalar reference (v % 3, v /= 3), so the invalid
+// bytes 243..255 give the same digits as before.
+struct TritTable {
+    uint8_t d[256][5];
+    TritTable() {
+        for (int b = 0; b < 256; ++b) {
+            int v = b;
+            for (int i = 0; i < 5; ++i) {
+                d[b][i] = (uint8_t)(v % 3);
+                v /= 3;
+            }
+        }
+    }
+};
+
+const TritTable& trit_table() {
+    static const TritTable t;  // thread safe initialization
+    return t;
+}
+
+}  // namespace
+
 void ternary_repack(const uint8_t* q, const uint16_t* s, int N, int K, TernaryWeight& out) {
     GGML_ASSERT(K > 0 && K % kTernaryGroup == 0);
     const int G = K / kTernaryGroup;
@@ -25,24 +53,24 @@ void ternary_repack(const uint8_t* q, const uint16_t* s, int N, int K, TernaryWe
     const int B = out.row_blocks();
     out.planes.assign((size_t)B * G * 512, 0);
     out.scales.assign((size_t)B * G * kTernaryRowBlock, 0.0f);
-    std::vector<uint8_t> row(K);
+    const TritTable& tab = trit_table();
+    // 5 spare bytes: the last upstream byte may hold digits past K, written and ignored
+    std::vector<uint8_t> row((size_t)K + 8);
     for (int n = 0; n < N; ++n) {
         const int b = n / kTernaryRowBlock, i = n % kTernaryRowBlock;
         for (int g = 0; g < G; ++g)
             out.scales[((size_t)b * G + g) * kTernaryRowBlock + i] = ggml_fp16_to_fp32(s[(size_t)n * G + g]);
         const uint8_t* qr = q + (size_t)n * nb;
-        for (int bb = 0; bb < nb; ++bb) {
-            int v = qr[bb];
-            for (int d = 0; d < 5; ++d) {
-                const int k = bb * 5 + d;
-                if (k < K) row[k] = (uint8_t)(v % 3);
-                v /= 3;
+        for (int bb = 0; bb < nb; ++bb) std::memcpy(&row[(size_t)bb * 5], tab.d[qr[bb]], 5);
+        for (int g = 0; g < G; ++g) {
+            const uint8_t* src = row.data() + (size_t)g * kTernaryGroup;
+            uint8_t* dst = out.planes.data() + ((size_t)b * G + g) * 512 + 4 * i;
+            // step st, byte j: the four codes at 16*st + 4*p + j, p = 0..3, in bit pairs
+            for (int st = 0; st < 8; ++st) {
+                const uint8_t* e = src + st * 16;
+                for (int j = 0; j < 4; ++j)
+                    dst[st * 64 + j] = (uint8_t)(e[j] | (e[4 + j] << 2) | (e[8 + j] << 4) | (e[12 + j] << 6));
             }
-        }
-        for (int k = 0; k < K; ++k) {
-            const int g = k / kTernaryGroup, r = k % kTernaryGroup;
-            const int st = r / 16, p = (r % 16) / 4, j = r % 4;
-            out.planes[((size_t)b * G + g) * 512 + (size_t)st * 64 + 4 * i + j] |= (uint8_t)(row[k] << (2 * p));
         }
     }
 }
@@ -201,28 +229,68 @@ void validate_ternary_tensors(const ggml_tensor* q, const ggml_tensor* s, const 
                                  std::to_string(expK) + ")");
 }
 
-const TernaryWeight& weight_for(const ModelLoader& ml, const std::string& base,
-                                int64_t expN = -1, int64_t expK = -1) {
+TernaryStore& store_of(const ModelLoader& ml) {
     static std::mutex init_mu;
-    TernaryStore* store;
-    {
-        std::lock_guard<std::mutex> lk(init_mu);
-        auto& slot = ml.ternary_store();
-        if (!slot) slot = std::make_shared<TernaryStore>();
-        store = static_cast<TernaryStore*>(slot.get());
+    std::lock_guard<std::mutex> lk(init_mu);
+    auto& slot = ml.ternary_store();
+    if (!slot) slot = std::make_shared<TernaryStore>();
+    return *static_cast<TernaryStore*>(slot.get());
+}
+
+// Looks the two tensors up and validates them; throws on a malformed pair.
+struct TernaryJob {
+    std::string base;
+    const uint8_t* q = nullptr;
+    const uint16_t* s = nullptr;
+    int N = 0, K = 0;
+    std::unique_ptr<TernaryWeight> out;
+    std::exception_ptr err;
+    void run() {
+        try {
+            out = std::make_unique<TernaryWeight>();
+            ternary_repack(q, s, N, K, *out);
+        } catch (...) {
+            err = std::current_exception();
+        }
     }
-    std::lock_guard<std::mutex> lk(store->mu);
-    auto it = store->weights.find(base);
-    if (it != store->weights.end()) return *it->second;
+};
+
+TernaryJob make_job(const ModelLoader& ml, const std::string& base, int64_t expN, int64_t expK) {
     const ggml_tensor* q = ml.tensor(base + ".qweight");
     const ggml_tensor* s = ml.tensor(base + ".scales");
     if (!q || !s) throw std::runtime_error("ternary: missing " + base + ".qweight/.scales");
     validate_ternary_tensors(q, s, base, expN, expK);
-    const int N = (int)q->ne[1];
-    const int K = (int)s->ne[0] * kTernaryGroup;
-    auto w = std::make_unique<TernaryWeight>();
-    ternary_repack(static_cast<const uint8_t*>(q->data), static_cast<const uint16_t*>(s->data), N, K, *w);
-    return *store->weights.emplace(base, std::move(w)).first->second;
+    TernaryJob j;
+    j.base = base;
+    j.q = static_cast<const uint8_t*>(q->data);
+    j.s = static_cast<const uint16_t*>(s->data);
+    j.N = (int)q->ne[1];
+    j.K = (int)s->ne[0] * kTernaryGroup;
+    return j;
+}
+
+const TernaryWeight& weight_for(const ModelLoader& ml, const std::string& base,
+                                int64_t expN = -1, int64_t expK = -1) {
+    TernaryStore& store = store_of(ml);
+    std::lock_guard<std::mutex> lk(store.mu);
+    auto it = store.weights.find(base);
+    if (it != store.weights.end()) return *it->second;
+    TernaryJob j = make_job(ml, base, expN, expK);
+    j.run();
+    if (j.err) std::rethrow_exception(j.err);
+    return *store.weights.emplace(base, std::move(j.out)).first->second;
+}
+
+// Worker count for the load-time repack: PARAKEET_REPACK_THREADS, else
+// min(hardware_concurrency, 8). 1 selects the serial path.
+int repack_threads() {
+    if (const char* e = std::getenv("PARAKEET_REPACK_THREADS")) {
+        char* end = nullptr;
+        const long v = std::strtol(e, &end, 10);
+        if (end != e && v >= 1) return (int)std::min<long>(v, 256);
+    }
+    const unsigned hc = std::thread::hardware_concurrency();
+    return (int)std::min(hc ? hc : 1u, 8u);
 }
 
 // Op 1: per-row int8 quantization of the activations. dst is I8, ne0 = row bytes.
@@ -292,16 +360,43 @@ void ternary_prepare(const ModelLoader& ml) {
         {"self_attn.linear_pos", d, d},    {"conv.pointwise_conv1", 2 * d, d},
         {"conv.pointwise_conv2", d, d}};
     const int n_layers = (int)cfg.n_layers;
+    // Validate everything serially and in layer order (the first error is the
+    // one reported), then repack the queued weights on a small thread pool.
+    TernaryStore& store = store_of(ml);
+    std::vector<TernaryJob> jobs;
     for (int i = 0; i < n_layers; ++i) {
         for (const Lin2& l : kLinears) {
             const std::string base = "encoder.layers." + std::to_string(i) + "." + l.name;
             if (has_ternary(ml, base)) {
-                weight_for(ml, base, l.N, l.K);
+                {
+                    std::lock_guard<std::mutex> lk(store.mu);
+                    if (store.weights.count(base)) continue;
+                }
+                jobs.push_back(make_job(ml, base, l.N, l.K));
             } else if (!ml.tensor(base + ".weight")) {
                 throw std::runtime_error("ternary: missing weight " + base);
             }
         }
     }
+    std::atomic<size_t> next{0};
+    auto worker = [&jobs, &next] {
+        for (size_t k; (k = next.fetch_add(1)) < jobs.size();) jobs[k].run();
+    };
+    const int nthreads = (int)std::min<size_t>((size_t)repack_threads(), jobs.size());
+    std::vector<std::thread> pool;
+    for (int t = 1; t < nthreads; ++t) {
+        try {
+            pool.emplace_back(worker);
+        } catch (...) {
+            break;  // could not start more threads: the ones running (and this one) drain the queue
+        }
+    }
+    worker();
+    for (std::thread& th : pool) th.join();
+    for (TernaryJob& j : jobs)
+        if (j.err) std::rethrow_exception(j.err);
+    std::lock_guard<std::mutex> lk(store.mu);
+    for (TernaryJob& j : jobs) store.weights.emplace(j.base, std::move(j.out));
     if (std::strcmp(ternary_kernel_name(), "scalar") == 0)
         PK_LOG("packed ternary weights are running on the slow scalar kernel on this CPU/build "
                "(about 1 GMAC/s); re-convert with --ternary dequant for speed");
