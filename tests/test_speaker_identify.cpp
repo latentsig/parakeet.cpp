@@ -2,6 +2,7 @@
 //
 //   PARAKEET_TEST_DIAR_GGUF   diarization GGUF   (required, else skip 77)
 //   PARAKEET_TEST_VD_GGUF     speaker encoder GGUF (required, else skip 77)
+//   PARAKEET_TEST_GGUF        ASR GGUF (optional: enables the named-utterance block)
 //
 // Enrolls the two voices of tests/fixtures/two_speakers.wav (LibriSpeech 1272 = A,
 // 2086 = B) from their first turns, then streams the whole file and checks the
@@ -13,6 +14,7 @@
 // 0.50-5.52 and 14.78-18.75, B 6.85-13.49 and 20.10-23.60.
 #include "audio_io.hpp"
 #include "diarization.hpp"
+#include "model.hpp"
 #include "scene_stream.hpp"
 #include "speaker_encoder.hpp"
 
@@ -149,6 +151,46 @@ int main() {
         SceneStream s(plain);
         const SceneUpdate u = s.feed(wav.samples.data(), (int)wav.samples.size(), true);
         CHECK(u.names.empty());
+    }
+
+    // ASR + diarization + speaker: the utterances themselves carry names. Words
+    // committed before a slot is identified keep their earlier (empty) name, so an
+    // empty name is allowed; the other voice's name never is.
+    if (const char* asr_path = std::getenv("PARAKEET_TEST_GGUF")) {
+        auto asr = Model::load(asr_path);
+        if (!asr) { std::fprintf(stderr, "FAIL: load asr\n"); return 1; }
+        SpeakerRegistry areg;
+        CHECK(enc->embed(b0.data(), (int)b0.size(), e)); areg.enroll("second_voice", e);
+        CHECK(enc->embed(a0.data(), (int)a0.size(), e)); areg.enroll("first_voice", e);
+        SceneParts parts;
+        parts.asr = asr.get();
+        parts.diar = diar.get();
+        parts.speaker_embed = enc->embedder();
+        parts.registry = &areg;
+        SceneStream stream(parts);
+        std::vector<SpeakerUtterance> utts;
+        const int chunk = 3200;
+        const int n = (int)wav.samples.size();
+        for (int lo = 0; lo < n; lo += chunk) {
+            const int len = std::min(chunk, n - lo);
+            const SceneUpdate u = stream.feed(wav.samples.data() + lo, len, lo + len >= n);
+            utts.insert(utts.end(), u.utterances.begin(), u.utterances.end());
+        }
+        CHECK(!utts.empty());
+        int named0 = 0, named1 = 0, wrong = 0;
+        for (const auto& u : utts) {
+            if (std::getenv("PK_TEST_DEBUG"))
+                std::fprintf(stderr, "UTT slot%d '%s' start=%.2f '%s'\n", u.speaker, u.name.c_str(),
+                             u.start, u.text.c_str());
+            if (u.speaker == 0 && u.name == "first_voice") ++named0;
+            if (u.speaker == 1 && u.name == "second_voice") ++named1;
+            if ((u.speaker == 0 && u.name == "second_voice") ||
+                (u.speaker == 1 && u.name == "first_voice"))
+                ++wrong;
+        }
+        CHECK(named0 >= 1);
+        CHECK(named1 >= 1);
+        CHECK(wrong == 0);
     }
 
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }

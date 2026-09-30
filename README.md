@@ -117,6 +117,7 @@ cmake --build build-shared -j
 | `PARAKEET_GGML_VULKAN`   | OFF     | Forward GGML_VULKAN to the submodule       |
 | `PARAKEET_GGML_HIP`      | OFF     | Forward GGML_HIP (ROCm) to the submodule   |
 | `PARAKEET_WITH_CED`      | ON      | Sound-event detection through ced.cpp      |
+| `PARAKEET_WITH_VOICEDETECT` | ON   | Speaker identification through voice-detect.cpp |
 
 To build for a GPU backend, forward its flag, e.g. Apple Metal:
 
@@ -336,6 +337,15 @@ parakeet-cli scene --model asr.gguf --diar diar.gguf --sound ced-base-q8_0.gguf 
 
 See [`docs/sound.md`](docs/sound.md) for the CED GGUFs, the sound and scene
 stream C-API (ABI v8), and the `--sound-model` server option.
+
+### Naming speakers
+
+With a voice-detect.cpp speaker encoder (`PARAKEET_WITH_VOICEDETECT`, on by
+default) the scene stream can say who is talking instead of `Speaker 0`.
+Enroll each person from a short clip with `parakeet-cli enroll`, then pass
+`--speakers <speaker.gguf> --registry <file>` to `scene`. Only one two-voice
+fixture has been measured so far. See [`docs/speaker.md`](docs/speaker.md) for
+the models, the commands, the C-API (ABI v9) and what is still untested.
 
 ---
 
