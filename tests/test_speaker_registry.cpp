@@ -181,6 +181,31 @@ static void test_deserialize_corrupt() {
     CHECK(loaded_empty.size() == 1 && loaded_empty.dim() == 2);
 }
 
+// A NaN or Inf embedding is refused like an all-zero one, and a NaN probe is unknown.
+static void test_non_finite() {
+    SpeakerRegistry r;
+    r.enroll("alice", unit(2, 0));
+    const SpeakerMatch before = r.identify(unit(2, 0), 0.5f, 0.05f);
+    auto throws = [&](const std::string& n, const std::vector<float>& e, std::string* msg) {
+        try { r.enroll(n, e); } catch (const std::invalid_argument& ex) { *msg = ex.what(); return true; }
+        return false;
+    };
+    std::string msg;
+    CHECK(throws("bob", {std::nanf(""), 1.0f}, &msg));
+    CHECK(msg.find("not finite") != std::string::npos);
+    CHECK(throws("bob", {INFINITY, 0.0f}, &msg));
+    CHECK(throws("alice", {-INFINITY, 1.0f}, &msg));   // also for a name already enrolled
+    CHECK(r.size() == 1 && r.dim() == 2);
+    const SpeakerMatch after = r.identify(unit(2, 0), 0.5f, 0.05f);
+    CHECK(after.name == before.name && std::fabs(after.score - before.score) < 1e-6f);
+    const SpeakerMatch nan_probe = r.identify({std::nanf(""), 1.0f}, 0.5f, 0.05f);
+    CHECK(nan_probe.name.empty());
+    CHECK(r.identify({INFINITY, 0.0f}, 0.5f, 0.05f).name.empty());
+    SpeakerRegistry empty;   // a failed first enroll does not fix the dimension
+    try { empty.enroll("x", {std::nanf(""), 0.0f, 0.0f}); } catch (const std::invalid_argument&) {}
+    CHECK(empty.size() == 0 && empty.dim() == 0);
+}
+
 int main() {
     test_enroll_and_identify();
     test_centroid_averages_enrollments();
@@ -191,6 +216,7 @@ int main() {
     test_remove_and_names();
     test_serialize_roundtrip();
     test_deserialize_corrupt();
+    test_non_finite();
     if (failures) { std::fprintf(stderr, "%d failure(s)\n", failures); return 1; }
     std::printf("test_speaker_registry: PASS\n");
     return 0;

@@ -1451,7 +1451,8 @@ static const char* kSceneUsage =
     "[--sound <ced.gguf>] [--speakers <speaker.gguf> --registry <file> "
     "[--speaker-threshold F]] --input <wav|-> "
     "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
-    "[--show-speech] [--json]\n";
+    "[--show-speech] [--json]\n"
+    "  --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n";
 
 // parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>]
 //                    [--speakers <speaker.gguf> --registry <file> [--speaker-threshold F]]
@@ -1735,6 +1736,7 @@ int main(int argc, char** argv) {
         "[--speaker-threshold F]] --input <wav|-> "
         "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
         "[--show-speech] [--json]\n"
+        "      --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n"
         "  parakeet-cli enroll --model <speaker.gguf> --name <name> "
         "--input <wav> [--input <wav> ...] --registry <file>\n");
     return 2;

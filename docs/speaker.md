@@ -34,12 +34,23 @@ Use a speaker-encoder GGUF from
 [`mudler/voice-detect-gguf`](https://huggingface.co/mudler/voice-detect-gguf).
 The four speaker encoders are:
 
-| Model | Embedding size | f32 GGUF size |
-| --- | --- | --- |
-| WeSpeaker ResNet34 | 256 | 26.5 MB |
-| CAM++ (3D-Speaker, zh-cn) | 192 | 27.7 MB |
-| ECAPA-TDNN (SpeechBrain, VoxCeleb) | 192 | 83.2 MB |
-| ERes2Net (3D-Speaker, base) | 512 | 39.5 MB |
+| Model | Embedding size | f32 GGUF size | Starting threshold |
+| --- | --- | --- | --- |
+| WeSpeaker ResNet34 | 256 | 26.5 MB | 0.5 |
+| CAM++ (3D-Speaker, zh-cn) | 192 | 27.7 MB | 0.5 |
+| ECAPA-TDNN (SpeechBrain, VoxCeleb) | 192 | 83.2 MB | 0.7 |
+| ERes2Net (3D-Speaker, base) | 512 | 39.5 MB | not measured |
+
+Start with WeSpeaker ResNet34: it kept the two voices furthest apart in the
+measurements below. The starting threshold is the `accept_threshold` to begin
+with (`--speaker-threshold` on the command line). The default is 0.5, which is
+right for WeSpeaker and CAM++ here, but ECAPA scored a voice that was not
+enrolled at 0.566, so it needs about 0.7 (0.13 above that impostor and 0.26
+below the lowest genuine ECAPA score). These numbers come from one fixture,
+where the enrollment clips and the test audio share a recording and genuine
+scores were 0.92 to 0.98. Expect lower genuine scores when enrollment and test
+audio come from different sessions or microphones, and check the threshold on
+your own audio.
 
 The repository also holds age, gender and emotion models. They are not
 speaker encoders and cannot be used here (`SpeakerEncoder::load` returns null
@@ -69,9 +80,9 @@ and added to when it exists. Nothing is written unless every clip embedded.
 The number printed is the clips enrolled by that command, not the total for
 that name.
 
-I cut three clips out of `tests/fixtures/two_speakers.wav` (voice A at
-0.6 to 4.6 s and 14.9 to 18.5 s, voice B at 6.9 to 10.9 s) and enrolled them
-with WeSpeaker ResNet34. Real output:
+The example below uses three clips cut out of
+`tests/fixtures/two_speakers.wav` (voice A at 0.6 to 4.6 s and 14.9 to 18.5 s,
+voice B at 6.9 to 10.9 s), enrolled with WeSpeaker ResNet34. Real output:
 
 ```
 $ parakeet-cli enroll --model wespeaker_resnet34_f32.gguf --name Ada --input a.wav --registry reg.bin
@@ -83,7 +94,10 @@ enrolled Ada (2 clip(s)), registry has 2 speaker(s)
 ```
 
 Enrolling a name again refines that voice (the centroid moves) and does not
-add a second speaker.
+add a second speaker. The same voice enrolled under two names comes out
+unknown: both names match about equally well, so neither beats the other by
+the margin. Names are compared exactly, so near-duplicate names (`Ada` and
+`ada`, or a trailing space) count as two speakers.
 
 ## Scene with names
 
@@ -127,8 +141,10 @@ different embedding size, model that fails to load).
 
 ## The timing rule
 
-A slot needs some clean audio before it can be named (2 s by default), so a
-word can be committed before its slot is identified. Such a word keeps the
+A slot needs some clean audio before it can be named (2 s by default). That
+audio is collected while the slot is still talking, not only after it pauses,
+so a speaker who talks without a break is named during that first turn. Still,
+a word can be committed before its slot is identified. Such a word keeps the
 label it had when it was committed (empty name, rendered as `Speaker N`), and
 it is not rewritten later. The `names` map in each update, and `active`, carry
 the current identity of each slot. In the run above every utterance was named
@@ -150,7 +166,8 @@ the C-API through the `speaker_*` fields of `parakeet_scene_opts`, and on the
 command line with `--speaker-threshold` (only `accept_threshold`).
 
 `accept_threshold` is a starting point, not a tuned value. It depends on the
-encoder, see the numbers below.
+encoder: see the starting threshold column in "Which GGUFs work" and the
+numbers below.
 
 ## C-API (ABI v9)
 
@@ -205,7 +222,13 @@ read-speech LibriSpeech voices (1272 and 2086) alternating A-B-A-B. Nothing
 else has been run.
 
 Clip-to-clip cosine between two clips of one voice, and between clips of two
-different voices:
+different voices. Each clip is a whole turn, as in
+`tests/test_speaker_encoder.cpp`: voice A 0.6 to 5.4 s and 14.9 to 18.7 s,
+voice B 6.9 to 10.7 s and 20.2 to 23.5 s. "Same voice" averages the A pair and
+the B pair, "different voices" averages the four A-B pairs. The design spike
+measured 2 s windows of the same file instead, and shorter windows give lower
+numbers (for example WeSpeaker 0.585 same voice), so the two sets differ but
+do not disagree.
 
 | Encoder | same voice | different voices |
 | --- | --- | --- |

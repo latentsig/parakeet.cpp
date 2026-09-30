@@ -15,11 +15,14 @@ constexpr uint32_t kMaxSpeakers = 1u << 20;
 constexpr uint32_t kMaxNameLen = 4096;
 constexpr int kMaxDim = 1 << 16;
 
-// L2-normalized copy; empty when the norm is 0.
+// L2-normalized copy; empty when the norm is 0 or a value is NaN or Inf.
 std::vector<float> normalized(const std::vector<float>& v) {
     double n2 = 0.0;
-    for (float x : v) n2 += (double)x * x;
-    if (n2 <= 0.0) return {};
+    for (float x : v) {
+        if (!std::isfinite(x)) return {};
+        n2 += (double)x * x;
+    }
+    if (!(n2 > 0.0) || !std::isfinite(n2)) return {};
     const float inv = (float)(1.0 / std::sqrt(n2));
     std::vector<float> out(v.size());
     for (size_t i = 0; i < v.size(); ++i) out[i] = v[i] * inv;
@@ -54,7 +57,7 @@ void SpeakerRegistry::enroll(const std::string& name, const std::vector<float>& 
         throw std::invalid_argument("speaker embedding has " + std::to_string(emb.size()) +
                                     " values, registry expects " + std::to_string(dim_));
     const std::vector<float> n = normalized(emb);
-    if (n.empty()) throw std::invalid_argument("speaker embedding is all zero");
+    if (n.empty()) throw std::invalid_argument("speaker embedding is all zero or not finite");
     if (dim_ == 0) dim_ = (int)emb.size();
     for (Entry& e : entries_) {
         if (e.name != name) continue;
