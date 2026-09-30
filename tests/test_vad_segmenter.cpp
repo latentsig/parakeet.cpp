@@ -176,7 +176,27 @@ static void test_exact_totals() {
     }
 }
 
+static void test_degenerate_opts() {
+    const double bad[] = {0.0, -0.08, INFINITY, NAN};
+    for (double fs : bad) {
+        SegmenterOpts o;
+        o.frame_sec = fs;
+        auto s = segment_by_vad(std::vector<float>(100, 0.0f), 100.0, o);
+        CHECK(s.size() == 1);
+        if (s.size() == 1) CHECK(s[0].start == 0.0 && s[0].end == 100.0);
+    }
+    SegmenterOpts o;
+    o.max_seg_sec = 0.05;  // smaller than a frame
+    auto s = segment_by_vad(std::vector<float>(100, 0.0f), 100.0, o);
+    CHECK(s.size() == 1);
+    o = SegmenterOpts();
+    o.max_seg_sec = NAN;
+    s = segment_by_vad(std::vector<float>(100, 0.0f), 100.0, o);
+    CHECK(s.size() == 1);
+}
+
 int main() {
+    test_degenerate_opts();
     test_short_is_single();
     test_all_speech_hard_cuts();
     test_cuts_land_in_pauses();

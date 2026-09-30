@@ -186,6 +186,13 @@ bool ModelLoader::load(const std::string& path){
         cfg_.vad.hidden    = kv_u32(gguf_, "parakeet.vad.hidden", 0);
         cfg_.vad.kernel    = kv_u32(gguf_, "parakeet.vad.kernel", 0);
         cfg_.vad.frame_sec = kv_f32(gguf_, "parakeet.vad.frame_sec", 0.08f);
+        if(!std::isfinite(cfg_.vad.frame_sec) || !(cfg_.vad.frame_sec > 0.0f) ||
+           cfg_.vad.d_in==0 || cfg_.vad.hidden==0 || cfg_.vad.kernel==0 || (cfg_.vad.kernel % 2)==0){
+            PK_LOG("invalid VAD config: frame_sec=%g d_in=%u hidden=%u kernel=%u (need finite frame_sec > 0, "
+                   "non-zero sizes and an odd kernel)", (double)cfg_.vad.frame_sec,
+                   (unsigned)cfg_.vad.d_in, (unsigned)cfg_.vad.hidden, (unsigned)cfg_.vad.kernel);
+            return false;
+        }
     }
     if(cfg_.att_context_style != "regular"){
         StreamingCfg& s = cfg_.streaming;

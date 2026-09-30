@@ -332,7 +332,7 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
         s.pcm.assign(pcm16k.begin() + (std::ptrdiff_t)a, pcm16k.begin() + (std::ptrdiff_t)b);
         if (s.pcm.size() < 3200) s.pcm.resize(3200, 0.0f);  // 0.2 s minimum
         s.start_sec = segs[i].start;
-        s.start_frame = (int)std::llround(segs[i].start / opts.frame_sec);
+        s.start_frame = (int)std::llround(segs[i].start / enc_frame_sec);
         out.push_back(std::move(s));
     }
     return out;

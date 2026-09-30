@@ -1,6 +1,7 @@
 #include "parakeet.h"
 #include "parakeet_capi.h"
 #include "model.hpp"
+#include <cmath>
 #include "model_loader.hpp"
 #include "audio_io.hpp"
 #include "streaming.hpp"
@@ -242,7 +243,7 @@ static int cmd_transcribe(int argc, char** argv) {
     auto parse_pos = [](const char* str, double& out) {
         char* end = nullptr;
         out = std::strtod(str, &end);
-        return end != str && *end == '\0' && out > 0.0;
+        return end != str && *end == '\0' && std::isfinite(out) && out > 0.0;
     };
     bool score_norm = true;
     int beam_size = 0;

@@ -9,6 +9,12 @@ namespace pk {
 std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total_sec,
                                        const SegmenterOpts& o) {
     std::vector<VadSegment> out;
+    // Degenerate options: no usable frame grid, so do not cut at all.
+    if (!(o.frame_sec > 0.0) || !std::isfinite(o.frame_sec) || !std::isfinite(o.max_seg_sec) ||
+        !(o.max_seg_sec > 2.0 * o.frame_sec) || !std::isfinite(total_sec)) {
+        out.push_back({0.0, total_sec});
+        return out;
+    }
     if (total_sec <= o.max_seg_sec) {
         out.push_back({0.0, total_sec});
         return out;
