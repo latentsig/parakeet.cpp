@@ -1415,14 +1415,22 @@ static int cmd_enroll(int argc, char** argv) {
         }
         ++clips;
     }
+    // Write next to the target and rename, so a failed write never costs the
+    // user the registry they already had.
     const std::string out_blob = reg.serialize();
-    FILE* out = std::fopen(registry_path.c_str(), "wb");
-    if (!out || std::fwrite(out_blob.data(), 1, out_blob.size(), out) != out_blob.size()) {
+    const std::string tmp_path = registry_path + ".tmp";
+    FILE* out = std::fopen(tmp_path.c_str(), "wb");
+    bool ok = out != nullptr;
+    if (out) {
+        ok = std::fwrite(out_blob.data(), 1, out_blob.size(), out) == out_blob.size();
+        if (std::fclose(out) != 0) ok = false;
+    }
+    if (ok && std::rename(tmp_path.c_str(), registry_path.c_str()) != 0) ok = false;
+    if (!ok) {
+        std::remove(tmp_path.c_str());
         std::fprintf(stderr, "parakeet-cli enroll: cannot write %s\n", registry_path.c_str());
-        if (out) std::fclose(out);
         return 1;
     }
-    std::fclose(out);
     std::printf("enrolled %s (%d clip(s)), registry has %zu speaker(s)\n", name.c_str(), clips,
                 reg.size());
     return 0;

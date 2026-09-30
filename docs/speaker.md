@@ -42,9 +42,10 @@ The four speaker encoders are:
 | ERes2Net (3D-Speaker, base) | 512 | 39.5 MB |
 
 The repository also holds age, gender and emotion models. They are not
-speaker encoders and cannot be used here (`SpeakerEncoder::load` returns null for a GGUF with no speaker embedding). f16 and
-q8_0 files are published as well; the sizes above are the f32 files I have
-here. ERes2Net has not been run through any of the tests here.
+speaker encoders and cannot be used here (`SpeakerEncoder::load` returns null
+for a GGUF with no speaker embedding). f16 and q8_0 files are published as
+well. Sizes are for the f32 files. ERes2Net has not been run through any of
+the tests here.
 
 A registry belongs to the encoder that made it. The embedding sizes differ, and
 even two encoders with the same size do not share a space, so enroll again if
@@ -111,6 +112,11 @@ the file:
 ```
 "names":{"0":{"name":"Ada","score":0.9752},"1":{"name":"Ben","score":0.9681}}
 ```
+
+The scores in this sample come from enrolling with the whole clips used in the
+example above (Ada from `a.wav` and `a2.wav`, Ben from `b.wav`), so they differ
+a little from the numbers in the measured section, where each voice is enrolled
+from one clip.
 
 An unnamed slot still renders as `Speaker N:`.
 
