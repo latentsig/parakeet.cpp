@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -519,8 +520,14 @@ void ConformerLayer::forward_with_conv(const std::vector<float>& x, int T,
                     return y;
                 };
                 auto linear = [&](ggml_tensor* in, const std::string& nm, bool bias) {
-                    ggml_tensor* W = clone_weight(ctx, ml_, pre + nm + ".weight");
-                    ggml_tensor* y = ggml_mul_mat(ctx, W, in);
+                    ggml_tensor* y;
+                    if (has_ternary(ml_, pre + nm)) {
+                        y = ternary_linear(ctx, ml_, pre + nm, in);
+                    } else {
+                        if (!ml_.tensor(pre + nm + ".weight"))
+                            throw std::runtime_error("missing encoder weight " + pre + nm + ".weight");
+                        y = ggml_mul_mat(ctx, clone_weight(ctx, ml_, pre + nm + ".weight"), in);
+                    }
                     if (bias) { ggml_tensor* B = clone_weight_opt(ctx, ml_, pre + nm + ".bias");
                                 if (B) y = ggml_add(ctx, y, B); }
                     return y;
