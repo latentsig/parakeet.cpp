@@ -679,6 +679,22 @@ char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar, parakeet_ctx* spe
                                            int n_samples, int sample_rate, float accept_threshold,
                                            float margin);
 
+// Opt-in export: same segments/names plus speaker_profiles version 1 (see
+// docs/diarization.md). NULL reg means an empty registry. One clean embedding
+// per usable speaker, never per segment. Does not enroll or mutate reg.
+// Same thresholds, ownership and error conventions as diarize_named_pcm_json.
+char* parakeet_capi_diarize_profiles_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
+    parakeet_speaker_registry* reg, const float* samples, int n_samples, int sample_rate,
+    float accept_threshold, float margin);
+
+// Borrowed "sha256:<64 lowercase hex>" of the loaded speaker GGUF bytes;
+// valid until context free. NULL for NULL/non-speaker contexts. Compare with
+// the trusted server model's identity, NEVER a client-selected model tag.
+// Dimension remains available through parakeet_capi_speaker_dim.
+const char* parakeet_capi_speaker_identity(const parakeet_ctx* speaker);
+
+
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
