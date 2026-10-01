@@ -58,6 +58,15 @@ typedef struct parakeet_ctx parakeet_ctx;
 // v8: sound-event detection (CED), sound_stream_*, scene_stream_*; additive.
 //     A CED GGUF loads into a third parakeet_ctx kind (a "tagger"); no
 //     existing signatures changed.
+// v9: speaker identification (voice-detect.cpp). A voice-detect GGUF loads
+//     into a fourth parakeet_ctx kind (a "speaker" encoder); a
+//     parakeet_speaker_registry holds enrolled voices; the scene stream and
+//     speaker-attributed ASR can name diarized speakers. Additive: no
+//     existing signature changed.
+// v10: raw-embedding enroll (parakeet_capi_speaker_registry_add_embedding)
+//      and diarize-only naming (parakeet_capi_diarize_named_pcm_json), for
+//      callers that keep speaker embeddings themselves. Additive: no
+//      existing signature changed.
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -538,6 +547,7 @@ const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);
 #define PARAKEET_MODEL_KIND_ASR         1
 #define PARAKEET_MODEL_KIND_DIARIZATION 2
 #define PARAKEET_MODEL_KIND_SOUND       3
+#define PARAKEET_MODEL_KIND_SPEAKER     4
 int parakeet_capi_model_kind(const parakeet_ctx* ctx);
 
 // --- Combined scene stream (ABI v8) -----------------------------------------
@@ -551,6 +561,13 @@ typedef struct {
     int diar_latency;            // PARAKEET_DIAR_LATENCY_*, used only with a diar ctx
     parakeet_sound_opts sound;   // used only with a tagger ctx
     int flags;                   // reserved, must be 0
+    // Speaker identification (used only with a speaker ctx and a registry).
+    // Read only when `size` covers them; 0 keeps the default of that field.
+    float speaker_accept_threshold;   // default 0.5
+    float speaker_margin;             // default 0.05
+    float speaker_min_voice_sec;      // default 2.0
+    float speaker_refresh_sec;        // default 3.0
+    float speaker_max_voice_sec;      // default 10.0
 } parakeet_scene_opts;
 void parakeet_capi_scene_opts_default(parakeet_scene_opts* o);
 
@@ -581,6 +598,96 @@ char* parakeet_capi_scene_stream_drain_scores_json(parakeet_scene_stream* s);
 // Last error of this stream, "" if none. Borrowed.
 const char* parakeet_capi_scene_stream_last_error(parakeet_scene_stream* s);
 void  parakeet_capi_scene_stream_free(parakeet_scene_stream* s);
+
+// --- Speaker identification (ABI v9) ----------------------------------------
+// A voice-detect.cpp GGUF (WeSpeaker, CAM++, ECAPA, ERes2Net) loads through
+// parakeet_capi_load into a "speaker" context. A registry holds enrolled
+// voices; it is model specific (the embedding size must match the model that
+// enrolled the voices). Errors are reported on the speaker ctx
+// (parakeet_capi_last_error) unless stated otherwise.
+
+// Embedding size of a speaker ctx; -1 for a context that is not a speaker model.
+int parakeet_capi_speaker_dim(const parakeet_ctx* ctx);
+
+typedef struct parakeet_speaker_registry parakeet_speaker_registry;
+
+// New empty registry, or NULL on out of memory. Free with _free (safe on NULL).
+parakeet_speaker_registry* parakeet_capi_speaker_registry_new(void);
+void parakeet_capi_speaker_registry_free(parakeet_speaker_registry* reg);
+// Number of enrolled speakers; 0 for NULL.
+int parakeet_capi_speaker_registry_size(const parakeet_speaker_registry* reg);
+// Last error of this registry (save/load/enroll bookkeeping), "" if none. Borrowed.
+const char* parakeet_capi_speaker_registry_last_error(const parakeet_speaker_registry* reg);
+
+// Embeds 16 kHz (or resampled) mono PCM with `speaker` and adds it under `name`.
+// Enrolling a name again refines that voice. 0 on success, nonzero on error
+// (empty name, no audio, ctx not a speaker model, embedding size differs from
+// the registry's); the message is on the speaker ctx.
+int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, parakeet_ctx* speaker,
+                                 const char* name, const float* pcm, int n, int sample_rate);
+
+// Add one already-computed speaker embedding to `reg` under `name`, without a
+// speaker model. `dim` must equal the registry's embedding size once it has
+// one (the first successful call fixes it); the values must be finite and not
+// all zero. Calling it again with the same name averages the vectors, like
+// enrolling more clips. Returns 0 on success; nonzero on error, with the
+// message on the registry (parakeet_capi_speaker_registry_last_error). A NULL
+// `reg` returns nonzero with no message. ABI v10.
+int parakeet_capi_speaker_registry_add_embedding(parakeet_speaker_registry* reg, const char* name,
+                                                 const float* embedding, int dim);
+
+// Binary file. 0 on success; nonzero on error (message on the registry).
+int parakeet_capi_speaker_registry_save(const parakeet_speaker_registry* reg, const char* path);
+// NULL when the file is missing or is not a valid registry. Free with _free.
+parakeet_speaker_registry* parakeet_capi_speaker_registry_load(const char* path);
+
+// One-shot identification of a clip: {"name":"alice","score":0.71}, with
+// "name":"" when unknown (score is then the best cosine). NULL on error
+// (message on the speaker ctx). Free with parakeet_capi_free_string.
+char* parakeet_capi_speaker_identify_pcm_json(parakeet_speaker_registry* reg, parakeet_ctx* speaker,
+                                              const float* pcm, int n, int sample_rate);
+
+// Like parakeet_capi_scene_stream_begin, plus speaker naming. A speaker needs a registry and a diarization
+// ctx (a registry without a speaker is ignored). The registry is borrowed:
+// keep it alive and unchanged while the stream runs. Speaker option fields of `o` are honoured only when o->size covers
+// them. With NULL speaker and registry this is exactly
+// parakeet_capi_scene_stream_begin.
+parakeet_scene_stream* parakeet_capi_scene_stream_begin_speaker(parakeet_ctx* asr, parakeet_ctx* diar,
+                                                                 parakeet_ctx* tagger,
+                                                                 parakeet_ctx* speaker,
+                                                                 parakeet_speaker_registry* registry,
+                                                                 const parakeet_scene_opts* o);
+
+// Same document as parakeet_capi_transcribe_and_diarize_json, plus "name" and
+// "name_score" on each utterance and word (empty name = unknown) and a
+// top-level "names" map from slot to {"name","score"}. NULL on error. Free with
+// parakeet_capi_free_string.
+char* parakeet_capi_transcribe_and_diarize_named_json(parakeet_ctx* asr, parakeet_ctx* diar,
+                                                      parakeet_ctx* speaker,
+                                                      parakeet_speaker_registry* registry,
+                                                      const float* samples, int n_samples,
+                                                      int sample_rate);
+
+// Diarization with speaker names and no ASR model: the parakeet_capi_diarize_pcm
+// document plus a "names" key, {"0":{"name":"ada","score":0.93},...}, one entry
+// per diarization slot that has a segment ("name":"" with score 0 means no
+// voice matched, or too little clean speech: under the identifier's 2 s
+// minimum, or overlapped by another speaker). `accept_threshold` is a cosine in
+// [-1, 1] and `margin` how far the best match must beat the runner-up; it must
+// be 0 or more. 0 for either keeps its default (0.5 and 0.05). Any sample rate
+// (resampled to 16 kHz like the other PCM entry points). Returns NULL on error,
+// with the message on `diar` (a wrong kind, bad samples) or on `speaker` (a
+// wrong kind, a NULL or wrong-sized registry, invalid options); both messages
+// are cleared on entry, so only the ctx the failure belongs to has one. NULL
+// `diar` or `speaker` returns NULL with no message. An empty buffer
+// (`n_samples == 0`) is an error here, unlike parakeet_capi_diarize_pcm which
+// returns an empty document. An empty registry gives every slot an empty name.
+// `reg` is only read; it may be shared by concurrent calls as long as nothing
+// adds to it meanwhile. Free with parakeet_capi_free_string. ABI v10.
+char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
+                                           parakeet_speaker_registry* reg, const float* samples,
+                                           int n_samples, int sample_rate, float accept_threshold,
+                                           float margin);
 
 #ifdef __cplusplus
 } // extern "C"

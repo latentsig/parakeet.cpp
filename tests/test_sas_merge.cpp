@@ -226,6 +226,24 @@ static void test_multiple_words_same_speaker() {
     CHECK(utts[0].conf == 0.7f);  // min
 }
 
+// Names travel with words into utterances
+static void test_names_grouped() {
+    std::vector<SpeakerWord> w = {
+        {0, "hello", 0.0f, 0.3f, 0.9f}, {0, "there", 0.35f, 0.6f, 0.8f}, {1, "hi", 1.0f, 1.2f, 0.9f},
+    };
+    w[0].name = "alice"; w[0].name_score = 0.71f;
+    w[1].name = "alice"; w[1].name_score = 0.71f;
+    w[2].name = "";      // slot 1 unknown
+    auto u = group_speaker_words(w);
+    CHECK(u.size() == 2);
+    CHECK(u[0].name == "alice");
+    CHECK(u[0].name_score > 0.7f && u[0].name_score < 0.72f);
+    CHECK(u[1].name.empty());
+    // Aggregate initialization without the new fields still compiles and defaults them.
+    SpeakerWord plain{0, "x", 0.0f, 0.1f, 0.5f};
+    CHECK(plain.name.empty() && plain.name_score == 0.0f);
+}
+
 int main() {
     test_basic_assignment();
     test_dominant_speaker();
@@ -238,6 +256,7 @@ int main() {
     test_empty();
     test_boundary();
     test_multiple_words_same_speaker();
+    test_names_grouped();
 
     if (failures == 0) {
         std::printf("All SAS merge tests passed.\n");

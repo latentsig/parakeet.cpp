@@ -76,6 +76,8 @@ std::vector<SpeakerUtterance> group_speaker_words(
     cur.start   = swords[0].start;
     cur.end     = swords[0].end;
     cur.conf    = swords[0].conf;
+    cur.name       = swords[0].name;
+    cur.name_score = swords[0].name_score;
 
     for (size_t i = 1; i < swords.size(); ++i) {
         const auto& w = swords[i];
@@ -94,6 +96,8 @@ std::vector<SpeakerUtterance> group_speaker_words(
             cur.start   = w.start;
             cur.end     = w.end;
             cur.conf    = w.conf;
+            cur.name       = w.name;
+            cur.name_score = w.name_score;
         }
     }
     result.push_back(cur);

@@ -92,6 +92,9 @@ src/                 libparakeet implementation
                        vad_head.hpp/cpp   , voice-activity head of Ultra/Redux (plain C++ loops), Model::vad_probabilities
                        vad_segmenter.hpp/cpp, pk::segment_by_vad: cut long audio at VAD pauses (SegmenterOpts), used by `transcribe --vad`
                        scene_render.hpp/cpp, pk::SceneRenderer + format_span/is_speech_label: `parakeet-cli scene` text rendering
+                       speaker_registry.hpp/cpp, pk::SpeakerRegistry: enrolled voices (centroid per name), match, binary save/load
+                       speaker_identifier.hpp/cpp, pk::SpeakerIdentifier: names diarization slots from their clean audio; identify_offline
+                       speaker_encoder.hpp/cpp, pk::SpeakerEncoder: the only code that talks to voice-detect.cpp (voicedetect_capi.h)
 examples/cli/        parakeet-cli binary
                        subcommands: info, transcribe (+ --stream), quantize, scene (ASR + diar + sound, one time-ordered feed)
                        sound-window-eval: measures CED short-window accuracy vs whole-clip top-1
@@ -138,6 +141,11 @@ tests/               ctest targets
                        test_sound_capi.cpp     , sound_stream_* C-API (PARAKEET_TEST_CED_GGUF)
                        test_scene_stream.cpp   , pk::SceneStream / scene_stream_* C-API, all three models together (PARAKEET_TEST_GGUF + PARAKEET_TEST_DIAR_GGUF + PARAKEET_TEST_CED_GGUF)
                        test_scene_render.cpp   , SceneRenderer / format_span / is_speech_label (model-independent)
+                       test_speaker_registry.cpp, SpeakerRegistry enroll/match/serialize (model-independent)
+                       test_speaker_identifier.cpp, SpeakerIdentifier with a fake embedder (model-independent)
+                       test_speaker_encoder.cpp, SpeakerEncoder vs voice-detect reference embedding (PARAKEET_TEST_VD_GGUF + PARAKEET_TEST_VD_REF_WAV + PARAKEET_TEST_VD_REF_JSON)
+                       test_speaker_identify.cpp, scene stream names both fixture voices (PARAKEET_TEST_DIAR_GGUF + PARAKEET_TEST_VD_GGUF; PARAKEET_TEST_GGUF adds the named-utterance block)
+                       test_capi_speaker.cpp   , speaker C-API v9 (PARAKEET_TEST_DIAR_GGUF + PARAKEET_TEST_VD_GGUF; PARAKEET_TEST_GGUF optional; PARAKEET_TEST_VD_GGUF_ALT for the size-mismatch check)
                        python/check_convert.py , converter round-trip (model-dependent)
                        python/check_baseline.py, baseline dumper (model-dependent)
                        fixtures/clip.wav       , 2 s 16 kHz mono WAV for stage parity tests
@@ -149,6 +157,9 @@ third_party/         vendored deps
                                    built as a static `ced` target linked into libparakeet, not a separate
                                    process; dr_wav is shared via CED_EXTERNAL_DR_WAV so there is one
                                    DR_WAV_IMPLEMENTATION in the whole build
+                       voice-detect.cpp/, submodule, speaker encoders (PARAKEET_WITH_VOICEDETECT, on by default);
+                                   static `voicedetect` target linked into libparakeet, dr_wav shared via
+                                   VOICEDETECT_EXTERNAL_DR_WAV
                        dr_wav.h  , vendored single header
 models/              output dir for converted GGUFs (gitignored;
                        MANIFEST.md tracks the expected published set)
@@ -158,6 +169,8 @@ docs/
   parity.md         , full model coverage matrix + per-stage tensor parity
   ternary.md        , packed ternary Redux: GGUF form, kernels, limits, measured speed
   diarization.md    , speaker diarization + speaker-attributed ASR: parity, C-API, speed
+  sound.md          , sound-event detection (CED) and the combined scene stream
+  speaker.md        , speaker identification: enroll, scene naming, C-API v9 and v10, measured numbers
 .github/workflows/
   ci.yml            , build job (per-push) + closed-loop job (pull_request + dispatch)
 ```
@@ -180,6 +193,7 @@ cmake -B build -DPARAKEET_BUILD_TESTS=ON -DGGML_NATIVE=ON && cmake --build build
 | `PARAKEET_GGML_VULKAN`   | OFF     | Forward GGML_VULKAN to the submodule       |
 | `PARAKEET_GGML_HIPBLAS`  | OFF     | Forward GGML_HIPBLAS to the submodule      |
 | `PARAKEET_WITH_CED`      | ON      | Sound-event detection through ced.cpp      |
+| `PARAKEET_WITH_VOICEDETECT` | ON   | Speaker identification through voice-detect.cpp |
 
 Use `-DGGML_NATIVE=OFF` when building for CI or portable binaries.
 
@@ -289,6 +303,8 @@ parakeet-cli quantize <in.gguf> <out.gguf> <type>
 parakeet-cli transcribe --model <ultra-or-redux.gguf> --input <long.wav> --vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]
 parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]   # dump VAD head probabilities as t_sec,p
 parakeet-cli scene [--model <asr.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>] --input <audio.wav> [--latency model|low|very_low|ultra_low] [--chunk-ms N] [--show-speech] [--json]
+parakeet-cli scene ... --speakers <speaker.gguf> --registry <file> [--speaker-threshold F]   # names diarized speakers
+parakeet-cli enroll --model <speaker.gguf> --name <name> --input <wav> [--input <wav> ...] --registry <file>
 ```
 
 `--timestamps` prints one `<start>-<end>  <word>  (<conf>)` line per word (also
@@ -350,7 +366,28 @@ parakeet_capi_sound_stream_begin / _feed / _active / _drain_scores_json / _free
 parakeet_capi_free_sound_segments
 parakeet_capi_num_classes
 parakeet_capi_class_label
-parakeet_capi_model_kind        # which kind of ctx (NONE/ASR/DIARIZATION/SOUND)
+parakeet_capi_model_kind        # which kind of ctx (NONE/ASR/DIARIZATION/SOUND/SPEAKER)
+```
+
+Speaker identification (ABI v9, additive; not used by LocalAI yet). A
+voice-detect.cpp speaker GGUF loads into a fourth `parakeet_ctx`
+kind (`PARAKEET_MODEL_KIND_SPEAKER`, 4) through the same `parakeet_capi_load`;
+see `docs/speaker.md`:
+
+```
+parakeet_capi_speaker_dim
+parakeet_capi_speaker_registry_new / _free / _size / _last_error
+parakeet_capi_speaker_enroll
+parakeet_capi_speaker_registry_save / _load
+parakeet_capi_speaker_identify_pcm_json
+parakeet_capi_scene_stream_begin_speaker
+parakeet_capi_transcribe_and_diarize_named_json
+```
+
+```
+# v10 (additive; not used by LocalAI yet)
+parakeet_capi_speaker_registry_add_embedding   # add an embedding computed by the host
+parakeet_capi_diarize_named_pcm_json           # diarization + "names", no ASR model
 ```
 
 Combined scene stream (ABI v8, additive; not used by LocalAI yet). One stream
@@ -494,7 +531,9 @@ See `docs/conversion.md` for the authoritative schema.  Quick summary:
 
 ## ggml submodule
 
-Pinned at v0.13.0 in `third_party/ggml`.  No local patches.  To bump:
+Pinned at v0.13.0 in `third_party/ggml`.  CMake applies the patches in
+`third_party/ggml-patches` in-tree at configure time (`scripts/apply_ggml_patches.sh`),
+so the submodule shows as modified.  To bump:
 1. Update the submodule SHA.
 2. Run `ctest --test-dir build --output-on-failure`.
 3. Fix any API breakage in `src/model_loader.cpp`.

@@ -19,11 +19,14 @@
 #include "ggml.h"
 #include "gguf.h"
 #include "transcription_json.hpp"
+#include "common.hpp"   // pk::write_file_atomic
 #include "diarization.hpp"
 #include "ced_tagger.hpp"
 #include "scene_stream.hpp"
 #include "scene_render.hpp"
 #include "vad_head.hpp"
+#include "speaker_encoder.hpp"
+#include "speaker_registry.hpp"
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -32,9 +35,11 @@
 #include <memory>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -1402,21 +1407,131 @@ static int cmd_bench_decode(int argc, char** argv) {
     return 0;
 }
 
+// Reads a whole file. Returns 0 on success, ENOENT when the path does not
+// exist, EISDIR when it is a directory, else the errno of the failure.
+static int read_file_bytes(const std::string& path, std::string& out) {
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec)) return EISDIR;
+    errno = 0;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return errno ? errno : EIO;
+    out.clear();
+    char buf[4096];
+    size_t k;
+    while ((k = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, k);
+    const int e = std::ferror(f) ? (errno ? errno : EIO) : 0;
+    std::fclose(f);
+    return e;
+}
+
+// One line for a registry file that cannot be read.
+static std::string registry_read_error(const std::string& path, int e) {
+    if (e == EISDIR) return path + " is a directory, not a speaker registry";
+    return "cannot read registry " + path + ": " + std::strerror(e);
+}
+
+static const char* kEnrollUsage =
+    "usage: parakeet-cli enroll --model <speaker.gguf> --name <name> "
+    "--input <wav> [--input <wav> ...] --registry <file>\n";
+
+// parakeet-cli enroll --model <speaker.gguf> --name <name> --input <wav> [--input <wav> ...]
+//                     --registry <file>
+// Embeds each input as one clip of <name> and adds it to the registry file
+// (created when missing). The file is written only after every clip embedded.
+static int cmd_enroll(int argc, char** argv) {
+    std::string model, name, registry_path;
+    std::vector<std::string> inputs;
+    for (int i = 0; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) model = argv[++i];
+        else if (std::strcmp(argv[i], "--name") == 0 && i + 1 < argc) name = argv[++i];
+        else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) inputs.push_back(argv[++i]);
+        else if (std::strcmp(argv[i], "--registry") == 0 && i + 1 < argc) registry_path = argv[++i];
+        else { std::fprintf(stderr, "%s", kEnrollUsage); return 2; }
+    }
+    if (model.empty() || name.empty() || inputs.empty() || registry_path.empty()) {
+        std::fprintf(stderr, "%s", kEnrollUsage);
+        return 2;
+    }
+    if (!pk::SpeakerEncoder::available()) {
+        std::fprintf(stderr, "parakeet-cli: built without speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)\n");
+        return 2;
+    }
+    auto enc = pk::SpeakerEncoder::load(model);
+    if (!enc) {
+        std::fprintf(stderr, "parakeet-cli enroll: failed to load speaker model %s\n", model.c_str());
+        return 1;
+    }
+    pk::SpeakerRegistry reg;
+    std::string blob;
+    const int rerr = read_file_bytes(registry_path, blob);
+    if (rerr != 0 && rerr != ENOENT) {   // only a missing file means "start a new registry"
+        std::fprintf(stderr, "parakeet-cli enroll: %s\n", registry_read_error(registry_path, rerr).c_str());
+        return 1;
+    }
+    if (rerr == 0) {   // add to an existing registry
+        try { reg = pk::SpeakerRegistry::deserialize(blob); }
+        catch (const std::exception& e) {
+            std::fprintf(stderr, "parakeet-cli enroll: %s is not a speaker registry: %s\n",
+                         registry_path.c_str(), e.what());
+            return 1;
+        }
+    }
+    int clips = 0;
+    for (const std::string& in : inputs) {
+        pk::Audio audio;
+        if (!load_audio_arg_16k_mono(in, audio)) {
+            std::fprintf(stderr, "parakeet-cli enroll: failed to load audio %s\n",
+                         input_display_name(in).c_str());
+            return 1;
+        }
+        std::vector<float> emb;
+        if (!enc->embed(audio.samples.data(), (int)audio.samples.size(), emb)) {
+            std::fprintf(stderr, "parakeet-cli enroll: %s: %s\n", input_display_name(in).c_str(),
+                         enc->last_error().c_str());
+            return 1;
+        }
+        try { reg.enroll(name, emb); }
+        catch (const std::exception& e) {
+            std::fprintf(stderr, "parakeet-cli enroll: %s\n", e.what());
+            return 1;
+        }
+        ++clips;
+    }
+    // Written next to the target and moved over it, so a failed write never
+    // costs the user the registry they already had.
+    std::string werr;
+    if (!pk::write_file_atomic(registry_path, reg.serialize(), &werr)) {
+        std::fprintf(stderr, "parakeet-cli enroll: %s\n", werr.c_str());
+        return 1;
+    }
+    std::printf("enrolled %s (%d clip(s)), registry has %zu speaker(s)\n", name.c_str(), clips,
+                reg.size());
+    return 0;
+}
+
 static const char* kSceneUsage =
     "usage: parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] "
-    "[--sound <ced.gguf>] --input <wav|-> "
+    "[--sound <ced.gguf>] [--speakers <speaker.gguf> --registry <file> "
+    "[--speaker-threshold F]] --input <wav|-> "
     "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
-    "[--show-speech] [--json]\n";
+    "[--show-speech] [--json]\n"
+    "  --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n";
 
 // parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>]
+//                    [--speakers <speaker.gguf> --registry <file> [--speaker-threshold F]]
 //                    --input <wav|-> [--latency model|low|very_low|ultra_low]
 //                    [--chunk-ms N] [--show-speech] [--json]
+// --speakers names diarized speakers from the enrolled voices in --registry
+// (made by `parakeet-cli enroll`); it needs --diar and --registry.
 // Streams the WAV through pk::SceneStream (ASR + diarization + sound events,
 // each optional -- at least one is required) and prints a time-ordered
 // transcript with sound annotations. --json prints scene_update_to_json per
 // update (one JSON document per line) instead of the rendered transcript.
 static int cmd_scene(int argc, char** argv) {
     std::string model, diar, sound, input, latency_str;
+    std::string speakers, registry_path;
+    bool have_threshold = false;
+    float speaker_threshold = 0.0f;
     bool json = false;
     bool show_speech = false;
     int chunk_ms = 200;
@@ -1427,6 +1542,19 @@ static int cmd_scene(int argc, char** argv) {
             diar = argv[++i];
         } else if (std::strcmp(argv[i], "--sound") == 0 && i + 1 < argc) {
             sound = argv[++i];
+        } else if (std::strcmp(argv[i], "--speakers") == 0 && i + 1 < argc) {
+            speakers = argv[++i];
+        } else if (std::strcmp(argv[i], "--registry") == 0 && i + 1 < argc) {
+            registry_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--speaker-threshold") == 0 && i + 1 < argc) {
+            char* end = nullptr;
+            const char* txt = argv[++i];
+            speaker_threshold = std::strtof(txt, &end);
+            if (end == txt || *end != '\0') {
+                std::fprintf(stderr, "parakeet-cli scene: --speaker-threshold needs a number, got '%s'\n", txt);
+                return 2;
+            }
+            have_threshold = true;
         } else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
             input = argv[++i];
         } else if (std::strcmp(argv[i], "--latency") == 0 && i + 1 < argc) {
@@ -1478,6 +1606,31 @@ static int cmd_scene(int argc, char** argv) {
         std::fprintf(stderr, "parakeet-cli: built without sound tagging (PARAKEET_WITH_CED=OFF)\n");
         return 2;
     }
+    if (speakers.empty() && (!registry_path.empty() || have_threshold)) {
+        std::fprintf(stderr, "parakeet-cli scene: --registry and --speaker-threshold need --speakers\n");
+        return 2;
+    }
+    pk::SpeakerIdOpts speaker_opts;
+    if (!speakers.empty()) {
+        if (diar.empty()) {
+            std::fprintf(stderr, "parakeet-cli scene: --speakers needs --diar\n");
+            return 2;
+        }
+        if (registry_path.empty()) {
+            std::fprintf(stderr, "parakeet-cli scene: --speakers needs --registry\n");
+            return 2;
+        }
+        if (!pk::SpeakerEncoder::available()) {
+            std::fprintf(stderr, "parakeet-cli: built without speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)\n");
+            return 2;
+        }
+        if (have_threshold) speaker_opts.accept_threshold = speaker_threshold;
+        const std::string bad = pk::validate_speaker_opts(speaker_opts);
+        if (!bad.empty()) {
+            std::fprintf(stderr, "parakeet-cli scene: invalid speaker options: %s\n", bad.c_str());
+            return 2;
+        }
+    }
 
     std::unique_ptr<pk::Model> asr_model;
     if (!model.empty()) {
@@ -1505,6 +1658,36 @@ static int cmd_scene(int argc, char** argv) {
         }
     }
 
+    std::unique_ptr<pk::SpeakerEncoder> speaker_enc;
+    pk::SpeakerRegistry registry;
+    if (!speakers.empty()) {
+        speaker_enc = pk::SpeakerEncoder::load(speakers);
+        if (!speaker_enc) {
+            std::fprintf(stderr, "parakeet-cli scene: failed to load speaker model %s\n",
+                         speakers.c_str());
+            return 1;
+        }
+        std::string blob;
+        const int rerr = read_file_bytes(registry_path, blob);
+        if (rerr != 0) {
+            std::fprintf(stderr, "parakeet-cli scene: %s\n", registry_read_error(registry_path, rerr).c_str());
+            return 1;
+        }
+        try { registry = pk::SpeakerRegistry::deserialize(blob); }
+        catch (const std::exception& e) {
+            std::fprintf(stderr, "parakeet-cli scene: %s is not a speaker registry: %s\n",
+                         registry_path.c_str(), e.what());
+            return 1;
+        }
+        if (registry.dim() != speaker_enc->dim()) {
+            std::fprintf(stderr,
+                "parakeet-cli scene: registry %s holds %d-dim voices but %s makes %d-dim embeddings "
+                "(enroll again with this model)\n",
+                registry_path.c_str(), registry.dim(), speakers.c_str(), speaker_enc->dim());
+            return 1;
+        }
+    }
+
     pk::Audio audio;
     if (!load_audio_arg_16k_mono(input, audio)) {
         std::string display = input_display_name(input);
@@ -1517,6 +1700,11 @@ static int cmd_scene(int argc, char** argv) {
     parts.diar = diar_model.get();
     parts.diar_latency = latency;
     parts.tagger = tagger.get();
+    if (speaker_enc) {
+        parts.speaker_embed = speaker_enc->embedder();
+        parts.registry = &registry;
+        parts.speaker_opts = speaker_opts;
+    }
 
     // scene_update_to_json's label(i) may return nullptr (emitted as ""); the
     // same lambda drives the renderer's --json-less line formatting.
@@ -1620,6 +1808,8 @@ int main(int argc, char** argv) {
         return run_and_shutdown(cmd_bench_decode, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "bench") == 0)
         return run_and_shutdown(cmd_bench, argc - 2, argv + 2);
+    if (argc >= 2 && std::strcmp(argv[1], "enroll") == 0)
+        return run_and_shutdown(cmd_enroll, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "scene") == 0)
         return run_and_shutdown(cmd_scene, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "vad-probe") == 0)
@@ -1642,8 +1832,12 @@ int main(int argc, char** argv) {
         "  parakeet-cli bench-decode --model <model.gguf> --audio <wav> "
         "[--batch-sizes 1,4,8,16] [--threads N] [--reps R] [--json <out>]\n"
         "  parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] "
-        "[--sound <ced.gguf>] --input <wav|-> "
+        "[--sound <ced.gguf>] [--speakers <speaker.gguf> --registry <file> "
+        "[--speaker-threshold F]] --input <wav|-> "
         "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
-        "[--show-speech] [--json]\n");
+        "[--show-speech] [--json]\n"
+        "      --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n"
+        "  parakeet-cli enroll --model <speaker.gguf> --name <name> "
+        "--input <wav> [--input <wav> ...] --registry <file>\n");
     return 2;
 }

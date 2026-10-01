@@ -32,11 +32,12 @@ jobs:
         # job once a models bundle is published (Phase 4).
         run: ctest --test-dir build --output-on-failure -LE model
 
-      - name: build without ced (PARAKEET_WITH_CED=OFF)
-        # PARAKEET_WITH_CED is on by default, so this is the gate that catches
-        # anything that quietly starts depending on ced.cpp being present.
+      - name: build without ced and voice-detect (PARAKEET_WITH_CED=OFF, PARAKEET_WITH_VOICEDETECT=OFF)
+        # PARAKEET_WITH_CED and PARAKEET_WITH_VOICEDETECT are on by default, so
+        # this is the gate that catches anything that quietly starts depending
+        # on ced.cpp or voice-detect.cpp being present.
         run: |
-          cmake -B build-noced -DPARAKEET_BUILD_TESTS=ON -DGGML_NATIVE=OFF -DPARAKEET_WITH_CED=OFF
+          cmake -B build-noced -DPARAKEET_BUILD_TESTS=ON -DGGML_NATIVE=OFF -DPARAKEET_WITH_CED=OFF -DPARAKEET_WITH_VOICEDETECT=OFF
           cmake --build build-noced -j
           ctest --test-dir build-noced --output-on-failure -LE model
           # scene --sound must fail cleanly (exit 2) with a clear message.
@@ -46,6 +47,12 @@ jobs:
           echo "$out"
           test "$rc" -eq 2
           grep -q "built without sound tagging" <<< "$out"
+          # enroll must fail the same way without voice-detect.cpp.
+          rc=0
+          out=$(build-noced/examples/cli/parakeet-cli enroll --model x.gguf --name a --input x.wav --registry /tmp/r.bin 2>&1) || rc=$?
+          echo "$out"
+          test "$rc" -eq 2
+          grep -q "built without speaker identification" <<< "$out"
 
   # -------------------------------------------------------------------------
   # server-e2e: drive the real parakeet-server over HTTP.
