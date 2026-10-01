@@ -4,6 +4,7 @@
 #include "audio_io.hpp"
 #include "parakeet_capi.h"
 #include "speaker_encoder.hpp"
+#include "speaker_model_identity.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -61,6 +62,8 @@ int main() {
     parakeet_ctx* diar = parakeet_capi_load(diar_path);
     parakeet_ctx* spk = parakeet_capi_load(vd_path);
     CHECK(diar && spk);
+    CHECK(parakeet_capi_speaker_identity(diar) == nullptr);
+    if (spk) CHECK(pk::speaker_model_identity(vd_path) == parakeet_capi_speaker_identity(spk));
     parakeet_speaker_registry* reg = parakeet_capi_speaker_registry_new();
     CHECK(parakeet_capi_speaker_registry_add_embedding(reg, "second_voice", eb.data(), (int)eb.size()) == 0);
     CHECK(parakeet_capi_speaker_registry_add_embedding(reg, "first_voice", ea.data(), (int)ea.size()) == 0);
@@ -77,8 +80,33 @@ int main() {
         CHECK(s.find("\"segments\":[{\"speaker\":0") != std::string::npos);
         CHECK(s.find("\"names\":{\"0\":{\"name\":\"first_voice\"") != std::string::npos);
         CHECK(s.find("\"1\":{\"name\":\"second_voice\"") != std::string::npos);
+        CHECK(s.find("speaker_profiles") == std::string::npos);
+        CHECK(s.find("embedding") == std::string::npos);
         parse_names(s, n1, s1);
         parakeet_capi_free_string(j);
+    }
+
+    // Public opt-in succeeds without enrollment; the old named result stays unchanged.
+    {
+        auto* empty = parakeet_capi_speaker_registry_new();
+        char* plain = parakeet_capi_diarize_named_pcm_json(diar, spk, empty,
+            wav.samples.data(), (int)wav.samples.size(), 16000, 0, 0);
+        char* exported = parakeet_capi_diarize_profiles_pcm_json(diar, spk, nullptr,
+            wav.samples.data(), (int)wav.samples.size(), 16000, 0, 0);
+        CHECK(plain && exported);
+        if (plain && exported) {
+            const std::string old(plain), doc(exported);
+            CHECK(doc.substr(0, old.size()-1) == old.substr(0, old.size()-1));
+            CHECK(doc.find("\"speaker_profiles\":{\"version\":1") != std::string::npos);
+            CHECK(doc.find(parakeet_capi_speaker_identity(spk)) != std::string::npos);
+            CHECK(doc.find("\"dimension\":" + std::to_string(parakeet_capi_speaker_dim(spk))) != std::string::npos);
+            CHECK(doc.find("\"unavailable_reason\":null,\"embedding\":[") != std::string::npos);
+            CHECK(doc.find("embedding") > doc.find("speaker_profiles"));
+        }
+        CHECK(parakeet_capi_speaker_registry_size(empty) == 0);
+        parakeet_capi_free_string(plain);
+        parakeet_capi_free_string(exported);
+        parakeet_capi_speaker_registry_free(empty);
     }
 
     // A registry built with enroll from the same two clips gives the same names and scores.

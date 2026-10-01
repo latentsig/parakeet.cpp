@@ -10,6 +10,8 @@
 #include "sas_merge.hpp"  // pk::merge_asr_diarization, pk::group_speaker_words
 #include "diar_pcm_stream.hpp" // pk::DiarPcmStream
 #include "scene_stream.hpp" // pk::SceneStream
+#include "speaker_model_identity.hpp"
+#include "speaker_profiles_json.hpp"
 #include "speaker_encoder.hpp"    // pk::SpeakerEncoder
 #include "speaker_identifier.hpp" // pk::identify_offline
 #include "speaker_registry.hpp"   // pk::SpeakerRegistry
@@ -74,6 +76,7 @@ struct parakeet_ctx {
     std::unique_ptr<pk::DiarizationModel> diar;
     std::unique_ptr<pk::CedTagger> tagger;
     std::unique_ptr<pk::SpeakerEncoder> speaker;
+    std::string speaker_identity;
     std::string last_error;
 };
 
@@ -226,7 +229,10 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
 
         // A voice-detect GGUF (architecture "voicedetect") is a speaker encoder.
         if (pk::gguf_is_voicedetect(gguf_path)) {
-            ctx->speaker = pk::SpeakerEncoder::load(gguf_path);
+            try {
+                ctx->speaker = pk::load_speaker_with_identity(gguf_path, ctx->speaker_identity,
+                    [&] { return pk::SpeakerEncoder::load(gguf_path); });
+            } catch (...) { delete ctx; return nullptr; }
             if (ctx->speaker) return ctx;
             delete ctx;
             return nullptr;
@@ -1967,7 +1973,7 @@ extern "C" char* parakeet_capi_transcribe_and_diarize_named_json(
     }
 }
 
-extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar_ctx, parakeet_ctx* speaker,
+static char* diarize_named_pcm_json(bool export_profiles, parakeet_ctx* diar_ctx, parakeet_ctx* speaker,
                                                       parakeet_speaker_registry* registry,
                                                       const float* samples, int n_samples, int sample_rate,
                                                       float accept_threshold, float margin) {
@@ -1979,6 +1985,8 @@ extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar_ctx, pa
         if (!speaker) return nullptr;
         if (!require_diar(diar_ctx)) return nullptr;
         if (!require_speaker(speaker)) return nullptr;
+        parakeet_speaker_registry empty;
+        if (!registry && export_profiles) registry = &empty;
         if (!registry) { speaker->last_error = "speaker identification needs a registry"; return nullptr; }
         if (!samples || n_samples <= 0) {
             diar_ctx->last_error = "invalid samples buffer";
@@ -2011,16 +2019,17 @@ extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar_ctx, pa
             diar_ctx->last_error = e.what();
             return nullptr;
         }
+        std::map<int, pk::SpeakerProfile> profiles;
         std::map<int, pk::SlotName> names;
         try {
-            names = pk::identify_offline(pcm16k, dr.segments, speaker->speaker->embedder(), registry->reg, o);
+            names = pk::identify_offline(pcm16k, dr.segments, speaker->speaker->embedder(), registry->reg, o,
+                export_profiles ? &profiles : nullptr, speaker->speaker->dim());
         } catch (const std::exception& e) {
             speaker->last_error = e.what();
             return nullptr;
         }
-        std::string json = diar_result_json_string(dr);
-        json.pop_back();   // drop the closing '}' and add the names key
-        json += ",\"names\":" + names_to_json(names) + "}";
+        std::string json = pk::named_profiles_json(diar_result_json_string(dr), names_to_json(names),
+            export_profiles ? &profiles : nullptr, speaker->speaker_identity, speaker->speaker->dim());
         diar_ctx->last_error.clear();
         speaker->last_error.clear();
         return dup_to_c(json);
@@ -2030,4 +2039,20 @@ extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar_ctx, pa
         if (speaker) speaker->last_error = "unknown error";
     }
     return nullptr;
+}
+
+extern "C" const char* parakeet_capi_speaker_identity(const parakeet_ctx* speaker) {
+    return speaker && speaker->speaker ? speaker->speaker_identity.c_str() : nullptr;
+}
+
+extern "C" char* parakeet_capi_diarize_named_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
+    parakeet_speaker_registry* reg, const float* samples, int n_samples, int sample_rate,
+    float accept_threshold, float margin) {
+    return diarize_named_pcm_json(false, diar, speaker, reg, samples, n_samples, sample_rate, accept_threshold, margin);
+}
+
+extern "C" char* parakeet_capi_diarize_profiles_pcm_json(parakeet_ctx* diar, parakeet_ctx* speaker,
+    parakeet_speaker_registry* reg, const float* samples, int n_samples, int sample_rate,
+    float accept_threshold, float margin) {
+    return diarize_named_pcm_json(true, diar, speaker, reg, samples, n_samples, sample_rate, accept_threshold, margin);
 }

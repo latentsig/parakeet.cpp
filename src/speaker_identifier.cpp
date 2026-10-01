@@ -45,8 +45,8 @@ std::vector<Interval> clean_intervals(const Interval& seg, const std::vector<Int
 }
 
 SpeakerIdentifier::SpeakerIdentifier(SpeakerEmbed embed, const SpeakerRegistry* registry,
-                                     SpeakerIdOpts opts)
-    : embed_(std::move(embed)), registry_(registry), opts_(opts) {
+                                     SpeakerIdOpts opts, int profile_dim)
+    : profile_dim_(profile_dim), embed_(std::move(embed)), registry_(registry), opts_(opts) {
     const std::string err = validate_speaker_opts(opts_);
     if (!err.empty()) throw std::invalid_argument("invalid speaker options: " + err);
     if (!embed_ || !registry_) throw std::invalid_argument("speaker identifier needs an embedder and a registry");
@@ -74,8 +74,24 @@ void SpeakerIdentifier::add_audio(int slot, const Interval& iv) {
     const float* src = ring_.data() + (a - ring_base_);
     s.voice.insert(s.voice.end(), src, src + (b - a));
     s.gained_sec += (double)(b - a) / kSr;
+    if (profile_dim_ > 0) s.profile.intervals.push_back({(double)a / kSr, (double)b / kSr});
     const size_t cap = (size_t)((double)opts_.max_voice_sec * kSr);
     if (s.voice.size() > cap) s.voice.erase(s.voice.begin(), s.voice.end() - (long)cap);
+    if (profile_dim_ > 0) {
+        auto& p = s.profile;
+        long long keep = (long long)s.voice.size();
+        for (size_t i = p.intervals.size(); i > 0; --i) {
+            auto& iv = p.intervals[i - 1];
+            const long long n = std::llround((iv.end - iv.start) * kSr);
+            if (keep <= n) {
+                iv.start = iv.end - (double)keep / kSr;
+                p.intervals.erase(p.intervals.begin(), p.intervals.begin() + (long)(i - 1));
+                break;
+            }
+            keep -= n;
+        }
+        p.clean_duration = (double)s.voice.size() / kSr;
+    }
 }
 
 void SpeakerIdentifier::apply(Slot& s, const SpeakerMatch& m) {
@@ -103,8 +119,22 @@ void SpeakerIdentifier::maybe_embed(Slot& s, bool is_last) {
     const bool due = first || s.gained_sec >= (double)opts_.refresh_sec || is_last;
     if (!due) return;
     std::vector<float> emb;
-    if (!embed_(s.voice.data(), (int)s.voice.size(), emb))
-        throw std::runtime_error("speaker embedding failed");
+    if (!embed_(s.voice.data(), (int)s.voice.size(), emb)) {
+        if (profile_dim_ == 0) throw std::runtime_error("speaker embedding failed");
+        s.profile.unavailable_reason = "embedding_failed";
+        return;
+    }
+    if (profile_dim_ > 0) {
+        double norm = 0;
+        for (float v : emb) norm += (double)v * v;
+        if ((int)emb.size() != profile_dim_ || !std::isfinite(norm) || norm <= 0) {
+            s.profile.unavailable_reason = "invalid_embedding";
+            return;
+        }
+        for (float& v : emb) v = (float)(v / std::sqrt(norm));
+        s.profile.embedding = emb;
+        s.profile.unavailable_reason.clear();
+    }
     s.embedded = true;
     s.gained_sec = 0.0;
     apply(s, registry_->identify(emb, opts_.accept_threshold, opts_.margin));
@@ -158,17 +188,45 @@ std::map<int, SlotName> SpeakerIdentifier::names() const {
     return out;
 }
 
+std::map<int, SpeakerProfile> SpeakerIdentifier::profiles() const {
+    std::map<int, SpeakerProfile> out;
+    for (const auto& kv : slots_) out[kv.first] = kv.second.profile;
+    return out;
+}
+
 std::map<int, SlotName> identify_offline(const std::vector<float>& pcm16k,
                                          const std::vector<SpeakerSegment>& segs,
                                          const SpeakerEmbed& embed, const SpeakerRegistry& reg,
                                          const SpeakerIdOpts& opts) {
+    return identify_offline(pcm16k, segs, embed, reg, opts, nullptr, 0);
+}
+
+std::map<int, SlotName> identify_offline(const std::vector<float>& pcm16k,
+    const std::vector<SpeakerSegment>& segs, const SpeakerEmbed& embed,
+    const SpeakerRegistry& reg, const SpeakerIdOpts& opts,
+    std::map<int, SpeakerProfile>* profiles, int expected_dim) {
+    if (profiles && (expected_dim <= 0 || (reg.dim() != 0 && reg.dim() != expected_dim)))
+        throw std::invalid_argument("profile encoder dimension mismatch");
     SpeakerIdOpts o = opts;
     o.ring_sec = std::max(o.ring_sec, (float)pcm16k.size() / (float)kSr + 1.0f);   // keep the whole recording
     o.max_voice_sec = std::max(o.max_voice_sec, 30.0f);                            // a whole recording can afford more voice
     o.ring_sec = std::max(o.ring_sec, o.max_voice_sec);
-    SpeakerIdentifier id(embed, &reg, o);
+    SpeakerIdentifier id(embed, &reg, o, profiles ? expected_dim : 0);
     id.push_pcm(pcm16k.data(), (int)pcm16k.size());
-    id.update(segs, {}, true);
+    auto ordered = segs;
+    if (profiles) {
+        for (auto& seg : ordered) {
+            if (!std::isfinite(seg.start) || !std::isfinite(seg.end))
+                throw std::invalid_argument("nonfinite speaker interval");
+            seg.start = std::max(0.0f, seg.start);
+            seg.end = std::min(seg.end, (float)((double)pcm16k.size() / kSr));
+        }
+        std::stable_sort(ordered.begin(), ordered.end(), [](const SpeakerSegment& a, const SpeakerSegment& b) {
+            return a.start < b.start;
+        });
+    }
+    id.update(ordered, {}, true);
+    if (profiles) *profiles = id.profiles();
     return id.names();
 }
 
