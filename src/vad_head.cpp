@@ -24,6 +24,10 @@ std::vector<float> load_f32(const ModelLoader& ml, const std::string& name, size
     return out;
 }
 
+inline float activate(VadAct a, float x) {
+    return a == VadAct::kReLU ? std::max(0.0f, x) : x / (1.0f + std::exp(-x));
+}
+
 }  // namespace
 
 VadHead::VadHead(const ModelLoader& ml) {
@@ -51,7 +55,7 @@ std::vector<float> VadHead::run(const VadWeights& w, const VadVariant& v, const 
             const float* wr = &w.proj_w[(size_t)o * D];
             const float* xr = x + (size_t)t * D;
             for (int i = 0; i < D; ++i) acc += wr[i] * xr[i];
-            h1[(size_t)t * H + o] = v.relu_after_proj ? std::max(0.0f, acc) : acc;
+            h1[(size_t)t * H + o] = activate(v.act_proj, acc);
         }
     for (int t = 0; t < T; ++t) {
         std::vector<float> h2(H);
@@ -64,7 +68,7 @@ std::vector<float> VadHead::run(const VadWeights& w, const VadVariant& v, const 
                 for (int i = 0; i < H; ++i) acc += w.ctx_w[((size_t)o * H + i) * K + kk] * hr[i];
             }
             if (v.residual) acc += h1[(size_t)t * H + o];
-            h2[o] = v.relu_after_ctx ? std::max(0.0f, acc) : acc;
+            h2[o] = activate(v.act_ctx, acc);
         }
         float z = w.out_b;
         for (int i = 0; i < H; ++i) z += w.out_w[i] * h2[i];

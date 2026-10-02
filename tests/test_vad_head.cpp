@@ -37,67 +37,73 @@ static VadWeights tiny() {
     return w;
 }
 
-// x = (1,0), (0,1), (2,1). After proj, before ReLU:
+// x = (1,0), (0,1), (2,1). After proj, before the activation:
 //   t0: (1.5, -0.5)   t1: (2.5, 0.5)   t2: (4.5, 0.5)
-// after ReLU h1: t0 (1.5, 0), t1 (2.5, 0.5), t2 (4.5, 0.5).
-// ctx pre-activation (right pad and left pad are zero):
-//   t0: o0 = h1[0][1] + 2*h1[1][0] + 0.25 = 0 + 5 + 0.25 = 5.25
-//       o1 = (left pad 0) - 0.5 = -0.5
-//   t1: o0 = 0.5 + 2*4.5 + 0.25 = 9.75      o1 = h1[0][0] - 0.5 = 1.0
-//   t2: o0 = 0.5 + (right pad 0) + 0.25 = 0.75   o1 = h1[1][0] - 0.5 = 2.0
+// The ctx pre-activation uses h1 = act(proj) (right pad and left pad are zero):
+//   t0: o0 = h1[0][1] + 2*h1[1][0] + 0.25      o1 = -0.5
+//   t1: o0 = h1[1][1] + 2*h1[2][0] + 0.25      o1 = h1[0][0] - 0.5
+//   t2: o0 = h1[2][1] + 0.25                   o1 = h1[1][0] - 0.5
 static const float kX[] = {1, 0,   0, 1,   2, 1};
+static float silu(float z) { return z * sig(z); }
+static float relu(float z) { return z > 0.0f ? z : 0.0f; }
 
-static void test_plain_variant() {
-    VadVariant v;  // relu after proj, no residual, relu after ctx
-    v.relu_after_proj = true; v.residual = false; v.relu_after_ctx = true;
-    const auto p = VadHead::run(tiny(), v, kX, 3);
+// Expected probabilities from the hand-derived pre-activations above, for any
+// activation functions and with or without the residual.
+static void expect_tiny(const std::vector<float>& p, float (*a1)(float), float (*a2)(float), bool residual) {
+    const float h[3][2] = {{a1(1.5f), a1(-0.5f)}, {a1(2.5f), a1(0.5f)}, {a1(4.5f), a1(0.5f)}};
+    float o[3][2] = {{h[0][1] + 2 * h[1][0] + 0.25f, -0.5f},
+                     {h[1][1] + 2 * h[2][0] + 0.25f, h[0][0] - 0.5f},
+                     {h[2][1] + 0.25f, h[1][0] - 0.5f}};
     CHECK(p.size() == 3);
-    // ReLU after ctx: t0 (5.25, 0), t1 (9.75, 1.0), t2 (0.75, 2.0)
-    // z0 = 0.1*5.25 + 0.05*0    - 0.5 = 0.025
-    // z1 = 0.1*9.75 + 0.05*1.0  - 0.5 = 0.525
-    // z2 = 0.1*0.75 + 0.05*2.0  - 0.5 = -0.325
-    CHECK(near(p[0], sig(0.025f)));
-    CHECK(near(p[1], sig(0.525f)));
-    CHECK(near(p[2], sig(-0.325f)));
+    if (p.size() != 3) return;
+    for (int t = 0; t < 3; ++t) {
+        for (int k = 0; k < 2; ++k) o[t][k] = a2(o[t][k] + (residual ? h[t][k] : 0.0f));
+        CHECK(near(p[(size_t)t], sig(0.1f * o[t][0] + 0.05f * o[t][1] - 0.5f)));
+    }
+}
+
+static void test_default_is_silu_no_residual() {
+    const VadVariant v;
+    CHECK(v.act_proj == VadAct::kSiLU && v.act_ctx == VadAct::kSiLU && !v.residual);
+    expect_tiny(VadHead::run(tiny(), v, kX, 3), silu, silu, false);
+}
+
+static void test_relu_variant() {
+    VadVariant v;
+    v.act_proj = VadAct::kReLU; v.act_ctx = VadAct::kReLU;
+    expect_tiny(VadHead::run(tiny(), v, kX, 3), relu, relu, false);
 }
 
 static void test_residual_variant() {
     VadVariant v;
-    v.relu_after_proj = true; v.residual = true; v.relu_after_ctx = true;
-    const auto p = VadHead::run(tiny(), v, kX, 3);
-    // Residual adds h1 (post-ReLU) before the ReLU after ctx:
-    //   t0: (5.25+1.5, -0.5+0)   = (6.75, -0.5 -> 0)
-    //   t1: (9.75+2.5, 1.0+0.5)  = (12.25, 1.5)
-    //   t2: (0.75+4.5, 2.0+0.5)  = (5.25, 2.5)
-    // z0 = 0.675 - 0.5 = 0.175
-    // z1 = 1.225 + 0.075 - 0.5 = 0.8
-    // z2 = 0.525 + 0.125 - 0.5 = 0.15
-    CHECK(near(p[0], sig(0.175f)));
-    CHECK(near(p[1], sig(0.8f)));
-    CHECK(near(p[2], sig(0.15f)));
+    v.residual = true;
+    expect_tiny(VadHead::run(tiny(), v, kX, 3), silu, silu, true);
 }
 
-static void test_relu_matters() {
+static void test_activation_matters() {
     const float x[] = {-1, -2};  // T = 1, negative inputs
-    VadVariant with, without;
-    with.relu_after_proj = true;  with.relu_after_ctx = true;
-    without.relu_after_proj = false; without.relu_after_ctx = false;
-    const auto a = VadHead::run(tiny(), with, x, 1);
-    const auto b = VadHead::run(tiny(), without, x, 1);
-    // with ReLUs: proj pre (-1-4+0.5, -2-0.5) = (-4.5, -2.5) -> h1 = (0, 0);
-    //   ctx (0.25, -0.5) -> ReLU (0.25, 0); z = 0.025 - 0.5 = -0.475
-    CHECK(near(a[0], sig(-0.475f)));
-    // without: h1 = (-4.5, -2.5). T = 1 so only the center tap is in range:
-    //   o0 = in1 + 0.25 = -2.5 + 0.25 = -2.25, o1 = -0.5 (its tap is padding)
-    //   z = 0.1*-2.25 + 0.05*-0.5 - 0.5 = -0.225 - 0.025 - 0.5 = -0.75
-    CHECK(near(b[0], sig(-0.75f)));
+    VadVariant silu_v, relu_v;
+    relu_v.act_proj = VadAct::kReLU; relu_v.act_ctx = VadAct::kReLU;
+    const auto a = VadHead::run(tiny(), silu_v, x, 1);
+    const auto b = VadHead::run(tiny(), relu_v, x, 1);
+    // proj pre (-4.5, -2.5). T = 1, so only the center tap is in range.
+    // SiLU: h1 = (silu(-4.5), silu(-2.5)); o0 = h1[1] + 0.25, o1 = -0.5.
+    const float h1 = silu(-2.5f);
+    const float o0 = silu(h1 + 0.25f), o1 = silu(-0.5f);
+    CHECK(near(a[0], sig(0.1f * o0 + 0.05f * o1 - 0.5f)));
+    // ReLU: h1 = (0, 0); ctx (0.25, -0.5) -> (0.25, 0); z = 0.025 - 0.5.
+    CHECK(near(b[0], sig(-0.475f)));
+    CHECK(std::fabs(a[0] - b[0]) > 1e-3f);
 }
 
 static void test_from_index() {
+    // Index 0 is the default wiring; each bit swaps one choice.
+    const VadVariant d = VadVariant::from_index(0);
+    CHECK(d.act_proj == VadAct::kSiLU && d.act_ctx == VadAct::kSiLU && !d.residual);
     const VadVariant v = VadVariant::from_index(5);
-    CHECK(v.relu_after_proj && !v.residual && v.relu_after_ctx);
-    const VadVariant z = VadVariant::from_index(0);
-    CHECK(!z.relu_after_proj && !z.residual && !z.relu_after_ctx);
+    CHECK(v.act_proj == VadAct::kReLU && !v.residual && v.act_ctx == VadAct::kReLU);
+    const VadVariant r = VadVariant::from_index(2);
+    CHECK(r.act_proj == VadAct::kSiLU && r.residual && r.act_ctx == VadAct::kSiLU);
 }
 
 static void test_real_model() {
@@ -116,9 +122,10 @@ static void test_real_model() {
 }
 
 int main() {
-    test_plain_variant();
+    test_default_is_silu_no_residual();
+    test_relu_variant();
     test_residual_variant();
-    test_relu_matters();
+    test_activation_matters();
     test_from_index();
     test_real_model();
     if (failures) return 1;

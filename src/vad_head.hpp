@@ -16,17 +16,23 @@ struct VadWeights {
     float out_b = 0.0f;
 };
 
-// The three choices the checkpoint does not document. Fixed from evidence in
-// docs/ternary.md (section "VAD head wiring").
+enum class VadAct { kSiLU, kReLU };
+
+// Activation after proj, activation after ctx and the optional ctx residual.
+// The default is the wiring evidenced by Moondream's public behaviour: SiLU
+// after proj, SiLU after ctx, no residual (docs/ternary.md, "VAD head wiring").
+// The other choices are debug options (`parakeet-cli vad-probe --variant N`).
 struct VadVariant {
-    bool relu_after_proj = true;
+    VadAct act_proj = VadAct::kSiLU;
     bool residual = false;
-    bool relu_after_ctx = true;
+    VadAct act_ctx = VadAct::kSiLU;
+    // Index 0 is the default. Bit 0: ReLU after proj. Bit 1: residual. Bit 2:
+    // ReLU after ctx.
     static VadVariant from_index(int i) {
         VadVariant v;
-        v.relu_after_proj = (i & 1) != 0;
+        if (i & 1) v.act_proj = VadAct::kReLU;
         v.residual = (i & 2) != 0;
-        v.relu_after_ctx = (i & 4) != 0;
+        if (i & 4) v.act_ctx = VadAct::kReLU;
         return v;
     }
 };
