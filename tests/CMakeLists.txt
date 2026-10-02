@@ -78,6 +78,7 @@ pk_add_test(test_streaming_nemotron)
 pk_add_test(test_streaming_mel)
 pk_add_test(test_capi)
 pk_add_test(test_capi_batch)
+pk_add_test(test_capi_concurrency)
 pk_add_test(test_capi_stream)
 pk_add_test(test_capi_stream_json)
 pk_add_test(test_capi_timestamps)
@@ -172,7 +173,7 @@ set_tests_properties(test_model_loader test_mel test_mel_gpu test_subsampling te
                      test_timestamps_tokens test_timestamps test_transcribe_batch_ts test_tokenizer test_transcribe
                      test_transcribe_speech test_transcribe_tiled test_transcribe_tdt test_transcribe_0_6b
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
-                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_stream test_capi_stream_json
+                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_concurrency test_capi_stream test_capi_stream_json
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
                      test_combined_offline test_streaming_diarization test_diarization_accuracy test_diarization
                      PROPERTIES LABELS "model")
@@ -191,7 +192,7 @@ set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_bat
                      test_tokenizer test_transcribe
                      test_transcribe_speech test_transcribe_tiled test_transcribe_tdt test_transcribe_0_6b
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
-                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_stream test_capi_stream_json
+                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_concurrency test_capi_stream test_capi_stream_json
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
                      test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model test_ternary_long test_transcribe_vad test_decoder_reuse
                      PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})

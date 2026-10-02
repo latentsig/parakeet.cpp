@@ -15,6 +15,8 @@
 
 namespace pk {
 
+class BackendPool;
+
 // One text hypothesis returned by the opt-in offline TDT N-best path.
 struct NBestTranscription {
     std::string text;
@@ -150,6 +152,24 @@ public:
     // pk::StreamingSession (and a MelFrontend) over the same load-once model.
     const ModelLoader& loader() const { return loader_; }
 
+    // Concurrent requests (opt-in). With `backends` > 1 the model keeps a pool
+    // of that many CPU backends, each with `threads_each` ggml threads
+    // (<= 0: the default thread budget divided by `backends`, at least 1). Every
+    // public transcribe method then borrows one backend for the whole call, so
+    // up to `backends` calls from different threads run in parallel and the
+    // results are the same as with one backend. The library starts no threads
+    // of its own. `backends` x `threads_each` should not exceed the physical
+    // cores. With `backends` <= 1 the pool is removed and the process-global
+    // backend (and `pk::set_num_threads`) is used, which is the default.
+    // A GPU device keeps one backend. Returns the effective backend count.
+    // Safe to call at any time; calls already running finish on the old pool.
+    int set_concurrency(int backends, int threads_each = 0);
+    int concurrency() const;            // effective backends (1 = no pool)
+    int threads_per_backend() const;    // 0 when there is no pool
+    // Graph allocator memory held by the pool's backends, in bytes (0 without
+    // a pool). Grows to the largest graph each backend has run.
+    size_t pool_working_set_bytes() const;
+
     // Non-copyable (owns the GGUF mapping).
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
@@ -187,6 +207,10 @@ private:
                                    int& vocab_plus_1,
                                    const std::string& target_lang = "") const;
 
+    // The current backend pool, or null for the process-global backend.
+    // Requests copy the pointer so a replaced pool outlives them.
+    std::shared_ptr<BackendPool> pool_snapshot() const;
+
     ModelLoader loader_;
 
     // The transducer decoder objects, built once per model on first use
@@ -203,6 +227,11 @@ private:
 
     mutable std::once_flag decoder_once_;
     mutable std::unique_ptr<DecoderObjects> decoder_;
+
+    // Declared last so the pool is destroyed before the loader and decoder
+    // objects it computes against.
+    mutable std::mutex pool_mu_;
+    std::shared_ptr<BackendPool> pool_;
 };
 
 } // namespace pk

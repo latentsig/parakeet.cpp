@@ -45,6 +45,11 @@ std::mutex g_backend_mutex;
 // are unaffected by this default.
 constexpr int kDefaultThreads = 8;
 
+int effective_threads() {
+    const int g = g_num_threads.load(std::memory_order_relaxed);
+    return g > 0 ? g : kDefaultThreads;
+}
+
 // Caller holds g_backend_mutex.
 static Backend& global_backend_locked() {
     // Lazy create (reset-safe: shutdown_backend() can free it, and a later call

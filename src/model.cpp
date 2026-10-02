@@ -21,6 +21,7 @@
 #include "transcription.hpp"
 #include "decode_types.hpp"
 #include "backend.hpp"
+#include "backend_pool.hpp"
 #include "ggml_graph.hpp"
 
 #include <algorithm>
@@ -87,6 +88,53 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     // clone_weight) so the cost is paid up front, not per utterance.
     ensure_weights_realized(m->loader_);
     return m;
+}
+
+std::shared_ptr<BackendPool> Model::pool_snapshot() const {
+    std::lock_guard<std::mutex> lk(pool_mu_);
+    return pool_;
+}
+
+int Model::set_concurrency(int backends, int threads_each) {
+    if (backends < 1) backends = 1;
+    // GPU keeps one backend and the global mutex: the pool is CPU only.
+    if (backends > 1 && std::string(pk::global_backend().device_name()) != "cpu") {
+        PK_LOG("set_concurrency(%d): the compute device is not the CPU; keeping 1 backend", backends);
+        backends = 1;
+    }
+    std::shared_ptr<BackendPool> next;
+    if (backends > 1) {
+        if (threads_each < 1) {
+            // Split the default thread budget across the backends.
+            const int total = pk::effective_threads();
+            threads_each = std::max(1, total / backends);
+        }
+        next = std::make_shared<BackendPool>(backends, threads_each);
+    }
+    std::shared_ptr<BackendPool> old;
+    {
+        std::lock_guard<std::mutex> lk(pool_mu_);
+        old = std::move(pool_);
+        pool_ = std::move(next);
+    }
+    // `old` is released here; requests still holding a lease keep it alive and
+    // it is destroyed after the last of them finishes.
+    return backends;
+}
+
+int Model::concurrency() const {
+    std::shared_ptr<BackendPool> p = pool_snapshot();
+    return p ? p->size() : 1;
+}
+
+int Model::threads_per_backend() const {
+    std::shared_ptr<BackendPool> p = pool_snapshot();
+    return p ? p->threads_each() : 0;
+}
+
+size_t Model::pool_working_set_bytes() const {
+    std::shared_ptr<BackendPool> p = pool_snapshot();
+    return p ? p->working_set_bytes() : 0;
 }
 
 const Model::DecoderObjects& Model::decoder_objects() const {
@@ -216,6 +264,7 @@ static std::string decode_enc_out(const ModelLoader& loader,
 std::string Model::transcribe_16k(const std::vector<float>& pcm16k,
                                   Decoder decoder,
                                   const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
     EncodedAudio encoded = encode_16k(loader_, pcm16k, prompt_index);
@@ -235,6 +284,7 @@ void Model::transcribe_16k_ctc_logits(const std::vector<float>& pcm16k,
                                       std::vector<float>& logits, int& T,
                                       int& vocab_plus_1,
                                       const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
 
@@ -284,6 +334,7 @@ void Model::transcribe_16k_ctc_logits(const std::vector<float>& pcm16k,
 
 std::vector<float> Model::vad_probabilities(const std::vector<float>& pcm16k,
                                             const VadVariant* v) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     if (!cfg.vad.present) throw std::runtime_error("model has no VAD head");
     std::vector<float> feats;
@@ -351,6 +402,7 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
 std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
                                       Decoder decoder, const std::string& target_lang,
                                       const SegmenterOpts& opts) const {
+    PoolLease lease(pool_snapshot());
     if (!loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
     const std::vector<float> pcm16k =
         sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
@@ -371,6 +423,7 @@ std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_
 Transcription Model::transcribe_pcm_vad_with_timestamps(const std::vector<float>& pcm, int sample_rate,
                                                         Decoder decoder, const std::string& target_lang,
                                                         const SegmenterOpts& opts) const {
+    PoolLease lease(pool_snapshot());
     if (!loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
     const std::vector<float> pcm16k =
         sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
@@ -476,6 +529,7 @@ static void batch_enc_to_row_major(const std::vector<std::vector<float>>& enc_ou
 std::vector<std::string> Model::transcribe_16k_batch(
     const std::vector<std::vector<float>>& pcms16k, Decoder decoder,
     const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
     const bool use_tdt = (decoder == Decoder::kTDT)
@@ -594,6 +648,7 @@ static Transcription decode_enc_out_with_timestamps(
 Transcription Model::transcribe_16k_with_timestamps(
     const std::vector<float>& pcm16k, Decoder decoder,
     const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
 
@@ -617,6 +672,7 @@ Transcription Model::transcribe_16k_with_timestamps(
 std::vector<Transcription> Model::transcribe_16k_batch_with_timestamps(
         const std::vector<std::vector<float>>& pcms16k, Decoder decoder,
         const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
     const float frame_sec =
@@ -693,6 +749,7 @@ std::vector<Transcription> Model::transcribe_pcm_batch_with_timestamps(
 std::vector<NBestTranscription> Model::transcribe_16k_nbest(
         const std::vector<float>& pcm16k, int beam_size, int nbest,
         bool score_norm, const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
 
     const int prompt_index = resolve_prompt_index(target_lang);
