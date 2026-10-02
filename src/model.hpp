@@ -137,7 +137,9 @@ public:
                                          const VadVariant* v = nullptr) const;
 
     // Transcribe long audio in VAD-cut segments (see vad_segmenter.hpp). Audio no
-    // longer than opts.max_seg_sec takes the plain path. Requires a model with a
+    // longer than opts.max_seg_sec takes the plain path. Longer audio is cut at
+    // pauses and segments without speech are dropped, so audio with no speech
+    // gives an empty transcript. Requires a model with a
     // VAD head (throws std::runtime_error("model has no VAD head") otherwise).
     std::string transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
                                    Decoder decoder = Decoder::kDefault,

@@ -332,30 +332,60 @@ void Model::transcribe_16k_ctc_logits(const std::vector<float>& pcm16k,
     T = Tout;
 }
 
+namespace {
+// The VAD runs on blocks of this many seconds, each with its own mel
+// normalisation, so the statistics follow the audio and memory stays bounded.
+constexpr double kVadBlockSec = 120.0;
+// A trailing block shorter than this is folded into the previous one.
+constexpr double kVadMinTailSec = 5.0;
+}  // namespace
+
 std::vector<float> Model::vad_probabilities(const std::vector<float>& pcm16k,
                                             const VadVariant* v) const {
     PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     if (!cfg.vad.present) throw std::runtime_error("model has no VAD head");
-    std::vector<float> feats;
-    int n_mels = 0, T = 0;
-    if (std::string(pk::global_backend().device_name()) != "cpu") {
-        GpuMel gmel(loader_);
-        gmel.compute(pcm16k, feats, n_mels, T);
-    } else {
-        MelFrontend mel(loader_);
-        mel.compute(pcm16k, feats, n_mels, T);
-    }
-    Subsampling sub(loader_);
-    std::vector<float> out;
-    int Tout = 0, d_model = 0, valid = 0;
-    const int tile = subsampling_tile_for(cfg, loader_, T);
-    if (tile > 0) sub.forward_tiled(feats, n_mels, T, tile, out, Tout, d_model, valid);
-    else          sub.forward(feats, n_mels, T, out, Tout, d_model, valid);
-    if ((uint32_t)d_model != cfg.vad.d_in)
-        throw std::runtime_error("VAD head input width does not match the subsampler output");
+    const double fs = cfg.vad.frame_sec;
+    if (!(fs > 0.0) || !std::isfinite(fs)) throw std::runtime_error("invalid VAD frame size");
+    const bool gpu_mel = std::string(pk::global_backend().device_name()) != "cpu";
+    const size_t block = (size_t)std::llround(kVadBlockSec * 16000.0);
+    const size_t min_tail = (size_t)std::llround(kVadMinTailSec * 16000.0);
+    const size_t block_frames = (size_t)std::llround(kVadBlockSec / fs);
     VadHead head(loader_);
-    return head.probabilities(out.data(), valid, v);
+    std::vector<float> all;
+    size_t pos = 0;
+    do {
+        size_t len = std::min(block, pcm16k.size() - pos);
+        if (pcm16k.size() - pos - len < min_tail) len = pcm16k.size() - pos;  // fold a short tail in
+        const bool last = pos + len >= pcm16k.size();
+        const std::vector<float> chunk(pcm16k.begin() + (std::ptrdiff_t)pos,
+                                       pcm16k.begin() + (std::ptrdiff_t)(pos + len));
+        std::vector<float> feats;
+        int n_mels = 0, T = 0;
+        if (gpu_mel) {
+            GpuMel gmel(loader_);
+            gmel.compute(chunk, feats, n_mels, T);
+        } else {
+            MelFrontend mel(loader_);
+            mel.compute(chunk, feats, n_mels, T);
+        }
+        Subsampling sub(loader_);
+        std::vector<float> out;
+        int Tout = 0, d_model = 0, valid = 0;
+        const int tile = subsampling_tile_for(cfg, loader_, T);
+        if (tile > 0) sub.forward_tiled(feats, n_mels, T, tile, out, Tout, d_model, valid);
+        else          sub.forward(feats, n_mels, T, out, Tout, d_model, valid);
+        if ((uint32_t)d_model != cfg.vad.d_in)
+            throw std::runtime_error("VAD head input width does not match the subsampler output");
+        std::vector<float> p = head.probabilities(out.data(), valid, v);
+        // Keep the frame grid of the whole clip: a full block contributes exactly
+        // block_frames probabilities.
+        if (!last && p.size() > block_frames) p.resize(block_frames);
+        if (!last && p.size() < block_frames) p.resize(block_frames, p.empty() ? 0.0f : p.back());
+        all.insert(all.end(), p.begin(), p.end());
+        pos += len;
+    } while (pos < pcm16k.size());
+    return all;
 }
 
 namespace {
@@ -383,10 +413,9 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
         return (size_t)std::min<long long>(std::max<long long>(v, 0), (long long)n);
     };
     for (size_t i = 0; i < segs.size(); ++i) {
-        // Consecutive slices share the exact boundary sample: a slice ends where
-        // the next one starts.
-        const size_t a = (i == 0) ? 0 : at(segs[i].start);
-        const size_t b = (i + 1 == segs.size()) ? n : std::max(a, at(segs[i + 1].start));
+        // Kept segments are ordered and disjoint; segments without speech were dropped.
+        const size_t a = at(segs[i].start);
+        const size_t b = std::max(a, at(segs[i].end));
         Slice s;
         s.pcm.assign(pcm16k.begin() + (std::ptrdiff_t)a, pcm16k.begin() + (std::ptrdiff_t)b);
         if (s.pcm.size() < 3200) s.pcm.resize(3200, 0.0f);  // 0.2 s minimum
@@ -409,7 +438,7 @@ std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_
     if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
         return transcribe_16k(pcm16k, decoder, target_lang);
     const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
-    if (slices.empty()) return transcribe_16k(pcm16k, decoder, target_lang);
+    if (slices.empty()) return std::string();  // no speech found
     std::string text;
     for (const Slice& s : slices) {
         const std::string t = transcribe_16k(s.pcm, decoder, target_lang);
@@ -430,7 +459,7 @@ Transcription Model::transcribe_pcm_vad_with_timestamps(const std::vector<float>
     if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
         return transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
     const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
-    if (slices.empty()) return transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
+    if (slices.empty()) return Transcription();  // no speech found
     Transcription all;
     for (const Slice& s : slices) {
         Transcription t = transcribe_with_timestamps(s.pcm, 16000, decoder, target_lang);

@@ -12,19 +12,31 @@ struct SegmenterOpts {
     float threshold = 0.5f;       // frame is speech when p >= threshold
     double frame_sec = 0.08;
     double max_seg_sec = 30.0;
-    double min_pause_sec = 0.32;  // shortest silence that may be cut in
-    double min_seg_sec = 8.0;     // do not cut earlier than this into a segment
+    double min_pause_sec = 0.2;   // shortest silence that may be cut in
+    double min_seg_sec = 1.0;     // earliest cut position inside a segment
+    double bridge_sec = 0.1;      // speech gaps shorter than this are bridged
+    double min_speech_sec = 0.1;  // speech runs shorter than this are dropped
 };
 
-// Cuts [0, total_sec] into contiguous segments of at most max_seg_sec, at
-// pauses found in the per-frame speech probabilities p. Rule: cut in the middle
-// of the longest run of frames below threshold (at least min_pause_sec long),
-// searched first in the last third of the allowed window then in the whole
-// window from min_seg_sec on; ties go to the later run; hard cut at max_seg_sec
-// if no pause is found. Degenerate options (frame_sec not finite or <= 0,
-// max_seg_sec not finite or <= 2 * frame_sec, threshold, min_seg_sec or
-// min_pause_sec not finite, any of the three durations above 1e6 seconds) return the single segment
-// {0, total_sec}. Every internal boundary is a whole number of frames.
+// Cuts [0, total_sec] into segments of at most max_seg_sec, at pauses found in
+// the per-frame speech probabilities p.
+//
+// 1. A frame is speech when p >= threshold. Speech gaps shorter than bridge_sec
+//    are filled, then speech runs shorter than min_speech_sec are removed. The
+//    remaining silent runs of at least min_pause_sec are the pauses.
+// 2. Audio of at most max_seg_sec is returned whole, with or without speech.
+// 3. Longer audio is cut from the front. For a segment starting at s the cut is
+//    the midpoint of the last pause that lies fully inside [s + min_seg_sec,
+//    s + max_seg_sec]; else the midpoint of the last pause whose midpoint lies
+//    in that range; else a hard cut at s + max_seg_sec.
+// 4. Segments that contain no speech are dropped, including the trailing
+//    remainder. The result is empty when no segment has speech. Kept segments
+//    are ordered and disjoint but need not touch.
+//
+// Degenerate options (frame_sec not finite or <= 0, max_seg_sec not finite or
+// <= 2 * frame_sec, threshold or any of the four durations not finite, any
+// duration above 1e6 seconds) return the single segment {0, total_sec}. Every
+// internal boundary is a whole number of frames.
 std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total_sec,
                                        const SegmenterOpts& o);
 

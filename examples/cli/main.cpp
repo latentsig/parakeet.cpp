@@ -297,7 +297,7 @@ static int cmd_transcribe(int argc, char** argv) {
             "usage: parakeet-cli transcribe --model <m.gguf> --input <wav|-> "
             "[--decoder ctc|tdt] [--lang <locale>] [--stream] [--timestamps] "
             "[--threads N] [--json] "
-            "[--vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]] "
+            "[--vad [--vad-threshold F=0.5] [--vad-min-pause SEC=0.2] [--vad-max-seg SEC=30]] "
             "[--beam-size N [--nbest N] [--no-score-norm]]\n");
         return 2;
     }
@@ -1824,6 +1824,8 @@ static int run_and_shutdown(int (*fn)(int, char**), int argc, char** argv) {
 
 // parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]
 // Prints "t_sec,p" for every 80 ms frame. For inspecting the VAD head.
+// --variant N picks a debug wiring (0 is the default: SiLU, SiLU, no residual;
+// bit 0 ReLU after proj, bit 1 residual, bit 2 ReLU after ctx).
 static int cmd_vad_probe(int argc, char** argv) {
     std::string model, input;
     int variant = -1;
@@ -1886,7 +1888,7 @@ int main(int argc, char** argv) {
         "  parakeet-cli transcribe --model <model.gguf> --input <wav|-> "
         "[--decoder ctc|tdt] [--lang <locale>] [--stream] [--timestamps] "
         "[--threads N] [--json] "
-        "[--vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]] "
+        "[--vad [--vad-threshold F=0.5] [--vad-min-pause SEC=0.2] [--vad-max-seg SEC=30]] "
         "[--beam-size N [--nbest N] [--no-score-norm]]\n"
         "  parakeet-cli quantize <in.gguf> <out.gguf> "
         "<q4_0|q5_0|q8_0|q4_k|q5_k|q6_k>\n"

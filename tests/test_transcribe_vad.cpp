@@ -107,6 +107,20 @@ int main() {
         CHECK(words_of(tr.text) == ws);
     }
 
+    // 2b. The VAD runs on 120 s blocks. A 250 s clip (three blocks) must still
+    //     give one probability per 80 ms frame, to within the edge frames.
+    {
+        Audio big;
+        while ((double)big.samples.size() / 16000.0 < 250.0)
+            big.samples.insert(big.samples.end(), clip.samples.begin(), clip.samples.end());
+        const double dur = (double)big.samples.size() / 16000.0;
+        const std::vector<float> p = m->vad_probabilities(big.samples);
+        const double fs = m->config().vad.frame_sec;
+        std::printf("block grid: %.2f s -> %zu frames (expect about %.1f)\n", dur, p.size(), dur / fs);
+        CHECK(std::fabs((double)p.size() - dur / fs) <= 3.0);
+        for (float v : p) CHECK(std::isfinite(v) && v >= 0.0f && v <= 1.0f);
+    }
+
     // 3. optional 180 s clip (untracked file)
     Audio longclip;
     if (!load_audio_16k_mono("benchmarks/audio/diverse/i_have_a_dream.wav", longclip)) {
