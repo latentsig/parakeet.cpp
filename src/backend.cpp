@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -362,6 +363,11 @@ void capture_graph_output(ggml_tensor* t, std::vector<float>* dst) {
 }
 
 void ensure_weights_realized(const ModelLoader& ml) {
+    if (ml.weights_realized()) return;
+    // Two threads may reach a never-realized loader together (a diarization or
+    // tagger model used from several threads). Serialize the one-time setup.
+    static std::mutex realize_mu;
+    std::lock_guard<std::mutex> lk(realize_mu);
     if (ml.weights_realized()) return;
     // realize_weights mutates tensor->buffer; the ModelLoader is held by `const`
     // ref throughout the inference path (the components are read-only views), but

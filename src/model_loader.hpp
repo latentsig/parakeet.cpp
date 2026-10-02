@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -151,7 +152,7 @@ public:
     // at build time. Idempotent; safe to call once at load. The backend must be
     // the same CPU backend the compute path uses. Returns false on failure.
     bool realize_weights(ggml_backend_t backend);
-    bool weights_realized() const { return weights_buf_ != nullptr; }
+    bool weights_realized() const { return weights_buf_.load(std::memory_order_acquire) != nullptr; }
     // Opaque per-loader slot for the ternary weight cache (see ternary.cpp).
     // Owned here so cached repacked weights die with the loader that owns the
     // tensors they were built from.
@@ -163,7 +164,7 @@ private:
     ggml_context* ctx_ = nullptr;
     // CPU backend: wraps ctx_ mem_buffer (zero-copy). Device backend: owns the
     // device buffer holding the uploaded weights (mirrored into device_ctx_).
-    ggml_backend_buffer_t weights_buf_ = nullptr;
+    std::atomic<ggml_backend_buffer_t> weights_buf_{nullptr};
     ggml_context* device_ctx_ = nullptr;  // no_alloc mirror ctx for device weights
     std::unordered_map<std::string, ggml_tensor*> tensors_;
 };
