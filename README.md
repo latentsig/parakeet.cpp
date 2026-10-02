@@ -42,16 +42,25 @@ Every model below is validated at WER 0 against NeMo and published as GGUF (f16,
 | [parakeet-tdt_ctc-1.1b](https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b) | hybrid TDT+CTC | 1.1B | English | NVIDIA |
 | [parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) | RNNT, streaming | 120M | cache-aware streaming with end-of-utterance detection (`--stream`) | NVIDIA |
 | [nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) | RNNT, streaming | 0.6B | multilingual (40+ locales), prompt-conditioned, offline and cache-aware streaming, pick a language with `--lang` (default `auto`). OpenMDW-1.1 | NVIDIA |
+| [parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) | TDT | 0.6B | Moondream's post-trained derivative of parakeet-tdt-0.6b-v3, with a VAD head. CC-BY-4.0. Not NeMo-validated, see below | Moondream, from NVIDIA |
+| [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | TDT | 0.6B | Moondream's ternary-encoder derivative of parakeet-tdt-0.6b-v3, with a VAD head. CPU only. CC-BY-4.0. Not NeMo-validated, see below | Moondream, from NVIDIA |
 
 
 ### Moondream Ultra and Redux (not yet published)
 
 [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and
 [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) are Moondream's
-post-trained (Ultra, F16) and ternary-encoder (Redux) derivatives of parakeet-tdt-0.6b-v3. They are
-HF safetensors, converted with `scripts/convert_hf_parakeet_to_gguf.py`. They are not part of the
-NeMo-validated set above: there is no NeMo baseline for them, so parity is transcript-level against
-our own v3 path (see [`docs/parity.md`](docs/parity.md)), and no GGUFs are published yet.
+post-trained (Ultra, F16) and ternary-encoder (Redux) derivatives of NVIDIA's
+[parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3). Both are released under
+[CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). They are HF safetensors, converted with
+`scripts/convert_hf_parakeet_to_gguf.py`. They are not part of the NeMo-validated set above: there is
+no NeMo baseline for them, so parity is transcript-level against our own v3 path (see
+[`docs/parity.md`](docs/parity.md)), and no GGUFs are published yet.
+
+The models were trained by NVIDIA (the base) and Moondream (Ultra and Redux). parakeet.cpp only
+converts and quantizes the weights; nothing is trained or fine-tuned here. A dequantized Redux file
+(`--ternary dequant`, the converter default) holds ordinary F16 or Q8_0 weights expanded from the
+ternary ones.
 
 - Redux packs the encoder as ternary weights: a 213 MB GGUF, 6.8x smaller than F16. It runs on CPU
   only and offline only. On x86 with AVX-512 VNNI it reaches median RTF 75.6 per utterance on
@@ -61,8 +70,10 @@ our own v3 path (see [`docs/parity.md`](docs/parity.md)), and no GGUFs are publi
   aarch64 with dotprod; MSVC builds, Windows on ARM and aarch64 without dotprod use a slow scalar
   kernel (about 1 GMAC/s), and the load logs a warning. The packed file also stays resident next to
   the repacked planes, so memory use is more than the file size.
-- Both carry a voice-activity head, used by `transcribe --vad` to cut long audio at pauses. On
-  synthetic long-form clips it does not change WER meaningfully.
+- Both carry a voice-activity head, used by `transcribe --vad` to cut long audio at pauses. Speech
+  is a probability of at least 0.5; pauses of at least 0.2 s are candidate cuts, segments are at most
+  30 s, and segments without speech are dropped. On long-form clips it does not change WER
+  meaningfully. Details and measurements: [`docs/ternary.md`](docs/ternary.md).
 ---
 
 ## Performance
@@ -264,7 +275,7 @@ parakeet-cli transcribe --model m.gguf --input audio.wav --decoder tdt \
 ffmpeg -i input.mp3 -f wav - | parakeet-cli transcribe --model m.gguf --input -
 
 # Long audio on Ultra/Redux: cut at VAD pauses, transcribe each piece (offline only).
-# Tune with --vad-threshold F, --vad-min-pause SEC, --vad-max-seg SEC
+# Tune with --vad-threshold F (0.5), --vad-min-pause SEC (0.2), --vad-max-seg SEC (30)
 parakeet-cli transcribe --model ultra.gguf --input long.wav --vad
 
 # Print model metadata (arch, dims, mel params, vocab size, TDT durations)
@@ -515,6 +526,7 @@ If you use parakeet.cpp, please cite this repository and the original models:
 ```
 
 The Parakeet models are by NVIDIA NeMo ([NVIDIA-NeMo/NeMo](https://github.com/NVIDIA-NeMo/NeMo)).
+Parakeet Ultra and Redux are by [Moondream](https://huggingface.co/moondream), derived from NVIDIA's parakeet-tdt-0.6b-v3.
 
 ## Author
 
@@ -522,4 +534,4 @@ Ettore Di Giacinto ([@mudler](https://github.com/mudler)).
 
 ## License
 
-parakeet.cpp is released under the [MIT License](LICENSE). The model weights are governed by NVIDIA's original Parakeet model licenses, so check each model card on HuggingFace.
+parakeet.cpp is released under the [MIT License](LICENSE). The model weights are governed by the licenses of the original models, so check each model card on HuggingFace. The NVIDIA Parakeet models are mostly CC-BY-4.0 (nemotron-3.5-asr-streaming is OpenMDW-1.1). Moondream's [parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) are CC-BY-4.0 too: credit Moondream and NVIDIA ([parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)), link the [license](https://creativecommons.org/licenses/by/4.0/), and note that GGUF files made here are converted (and quantized, or dequantized for Redux) copies, not retrained models.

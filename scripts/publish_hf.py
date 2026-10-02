@@ -149,6 +149,53 @@ def _license(model_id: str) -> tuple[str, str, str]:
     """(frontmatter license id, human label, upstream/license url) for *model_id*."""
     return LICENSES.get(model_id, DEFAULT_LICENSE)
 
+
+# Moondream's derivatives of NVIDIA parakeet-tdt-0.6b-v3. They are trained by
+# Moondream (not here) and released under CC-BY-4.0, like the NVIDIA base. The
+# files this repo publishes are conversions of the Moondream weights.
+NVIDIA_BASE = "nvidia/parakeet-tdt-0.6b-v3"
+DERIVED_MODELS: dict = {
+    "moondream/parakeet-ultra": {
+        "base": NVIDIA_BASE,
+        "what": "a post-trained derivative of the base model with ordinary F16 weights",
+        "conversion": "The F16, Q8_0 and Q4_K files are converted from Moondream's weights.",
+    },
+    "moondream/parakeet-redux": {
+        "base": NVIDIA_BASE,
+        "what": "a derivative of the base model whose encoder linear layers are ternary "
+                "(-1, 0 or +1 times a per-group scale)",
+        "conversion": "The F16 and Q8_0 files are dequantized: the ternary weights are expanded "
+                      "to ordinary weights and then stored as F16 or Q8_0. The packed ternary "
+                      "file keeps the weights as Moondream ships them.",
+    },
+}
+
+
+def _credit_lines(model_id: str) -> List[str]:
+    """Credit, licence and 'converted, not trained' text for a derived model.
+
+    Empty for models that are not derived from another checkpoint.
+    """
+    d = DERIVED_MODELS.get(model_id)
+    if d is None:
+        return []
+    _lic_id, lic_label, lic_url = _license(model_id)
+    base = d["base"]
+    return [
+        "## Credits and changes",
+        "",
+        f"- Original model: [{model_id}](https://huggingface.co/{model_id}) by "
+        f"[Moondream](https://huggingface.co/moondream), {d['what']}.",
+        f"- Base model: [{base}](https://huggingface.co/{base}) by NVIDIA.",
+        f"- License of both: [{lic_label}]({lic_url}). "
+        "This repo keeps the same license, as the license requires.",
+        "- Changes: the files are **converted, not trained here**. "
+        "parakeet.cpp converts the original weights to GGUF"
+        + (" and quantizes them." if "ternary" not in d["what"] else ".")
+        + " Nothing was trained or fine-tuned. " + d["conversion"],
+        "",
+    ]
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -360,12 +407,17 @@ def build_model_card(
         "  - cpp-inference",
         "  - nemo",
         "pipeline_tag: automatic-speech-recognition",
-        f"base_model: {model_id}",
-        "---",
-        "",
     ]
+    if model_id in DERIVED_MODELS:
+        lines += ["base_model:", f"  - {model_id}", f"  - {DERIVED_MODELS[model_id]['base']}"]
+    else:
+        lines.append(f"base_model: {model_id}")
+    lines += ["---", ""]
 
-    lines.append(f"# {slug} — GGUF for parakeet.cpp")
+    if model_id in DERIVED_MODELS:
+        lines.append(f"# {model_id.split('/')[-1]} (Moondream) — GGUF for parakeet.cpp")
+    else:
+        lines.append(f"# {slug} — GGUF for parakeet.cpp")
     lines.append("")
     lines.append(
         f"GGUF-format weights of [{model_id}](https://huggingface.co/{model_id}) "
@@ -380,6 +432,8 @@ def build_model_card(
         "and typically the fastest on modern CPUs via ggml's F32×F16 matmul fast path."
     )
     lines.append("")
+
+    lines += _credit_lines(model_id)
 
     # Files table
     lines.append("## Available files")
@@ -396,14 +450,22 @@ def build_model_card(
         lines.append(f"| `{fname}`{rec} | {v.upper()} | {size} | {wer} |")
     lines.append("")
 
-    lines.append(
-        "> WER (word error rate) is computed against the upstream NeMo reference on "
-        "`tests/fixtures/speech.wav` (LibriSpeech `2086-149220-0033`, ~7.4 s, English). "
-        "0.0 = byte-for-byte identical transcript. "
-        "See [parity.md](https://github.com/mudler/parakeet.cpp/blob/main/docs/parity.md) "
-        "and [quantization.md](https://github.com/mudler/parakeet.cpp/blob/main/docs/quantization.md) "
-        "for the full validation suite."
-    )
+    if model_id in DERIVED_MODELS:
+        lines.append(
+            "> There is no NeMo reference for this model, so the WER column is not filled in. "
+            "Parity is checked at transcript level against the parakeet.cpp path of the base model. "
+            "See [ternary.md](https://github.com/mudler/parakeet.cpp/blob/main/docs/ternary.md) "
+            "for the measurements."
+        )
+    else:
+        lines.append(
+            "> WER (word error rate) is computed against the upstream NeMo reference on "
+            "`tests/fixtures/speech.wav` (LibriSpeech `2086-149220-0033`, ~7.4 s, English). "
+            "0.0 = byte-for-byte identical transcript. "
+            "See [parity.md](https://github.com/mudler/parakeet.cpp/blob/main/docs/parity.md) "
+            "and [quantization.md](https://github.com/mudler/parakeet.cpp/blob/main/docs/quantization.md) "
+            "for the full validation suite."
+        )
     lines.append("")
 
     # Architecture
@@ -466,11 +528,20 @@ def build_model_card(
     # License
     lines.append("## License")
     lines.append("")
-    lines.append(
-        f"The GGUF weights are derived from [{model_id}](https://huggingface.co/{model_id}), "
-        f"released under the [{lic_label}]({lic_url}) license. "
-        "The parakeet.cpp runtime is MIT-licensed."
-    )
+    if model_id in DERIVED_MODELS:
+        base = DERIVED_MODELS[model_id]["base"]
+        lines.append(
+            f"The GGUF weights are converted from [{model_id}](https://huggingface.co/{model_id}) "
+            f"by Moondream, which is derived from [{base}](https://huggingface.co/{base}) by NVIDIA. "
+            f"Both are released under the [{lic_label}]({lic_url}) license; credit Moondream and "
+            "NVIDIA when you use these files. The parakeet.cpp runtime is MIT-licensed."
+        )
+    else:
+        lines.append(
+            f"The GGUF weights are derived from [{model_id}](https://huggingface.co/{model_id}), "
+            f"released under the [{lic_label}]({lic_url}) license. "
+            "The parakeet.cpp runtime is MIT-licensed."
+        )
     lines.append("")
 
     return "\n".join(lines)
@@ -611,7 +682,12 @@ def build_collection_card(
     )]
     lines.append("pipeline_tag: automatic-speech-recognition")
     lines.append("base_model:")
-    lines += [f"  - {m}" for m in models]
+    bases = list(models)
+    for m in models:
+        b = DERIVED_MODELS.get(m, {}).get("base")
+        if b and b not in bases:
+            bases.append(b)
+    lines += [f"  - {m}" for m in bases]
     lines += ["---", ""]
 
     lines.append("# Parakeet GGUF — models for parakeet.cpp")
@@ -645,6 +721,14 @@ def build_collection_card(
             f"{arch_desc} · heads: {heads} · license: [{_lic_label}]({_lic_url})"
         )
         lines.append("")
+        if model_id in DERIVED_MODELS:
+            d = DERIVED_MODELS[model_id]
+            lines.append(
+                f"By [Moondream](https://huggingface.co/moondream), derived from NVIDIA's "
+                f"[{d['base']}](https://huggingface.co/{d['base']}). Converted, not trained here. "
+                f"{d['conversion']}"
+            )
+            lines.append("")
         lines.append("| File | Variant | Size | WER vs NeMo |")
         lines.append("|---|---|---:|---:|")
         for v in variants:
@@ -704,16 +788,21 @@ def build_collection_card(
     lines.append("## License")
     lines.append("")
     lines.append(
-        "Each GGUF is derived from its upstream NVIDIA NeMo checkpoint and inherits "
-        "that checkpoint's license. The parakeet.cpp runtime itself is MIT-licensed."
+        "Each GGUF is derived from its upstream checkpoint and inherits that checkpoint's "
+        "license. The files are converted, not trained here. The parakeet.cpp runtime itself "
+        "is MIT-licensed."
     )
     lines.append("")
     lines.append("| Source checkpoint | License |")
     lines.append("|---|---|")
     for model_id in models:
         _lic_id, _lic_label, _lic_url = _license(model_id)
+        credit = ""
+        if model_id in DERIVED_MODELS:
+            b = DERIVED_MODELS[model_id]["base"]
+            credit = f" (Moondream, derived from NVIDIA [{b}](https://huggingface.co/{b}))"
         lines.append(
-            f"| [{model_id}](https://huggingface.co/{model_id}) | [{_lic_label}]({_lic_url}) |"
+            f"| [{model_id}](https://huggingface.co/{model_id}){credit} | [{_lic_label}]({_lic_url}) |"
         )
     lines.append("")
 
