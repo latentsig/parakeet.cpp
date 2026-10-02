@@ -117,6 +117,7 @@ set(PARAKEET_SRC
     src/model_loader.cpp
     src/backend.cpp
     src/ggml_graph.cpp
+    src/backend_pool.cpp
     src/fft.cpp
     src/mel.cpp
     src/mel_gpu.cpp
