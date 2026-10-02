@@ -101,6 +101,15 @@ def read_safetensors(path):
             yield name, np.frombuffer(buf, dtype=dt[meta["dtype"]]).reshape(meta["shape"])
 
 
+def check_packed_bytes(q, what="ternary payload"):
+    """Five base-3 digits give bytes 0..242. Anything larger is corrupt; the C++
+    loader rejects it too, so --ternary keep must not write such a file."""
+    bad = np.asarray(q) >= 3 ** 5
+    if bad.any():
+        idx = tuple(int(i) for i in np.argwhere(bad)[0])
+        raise ValueError(f"{what} has byte {int(np.asarray(q)[idx])} at {idx}, which is >= 3**5 = 243")
+
+
 def unpack_ternary(q, scales, in_features, group):
     """Dequantize a thrush-ternary-v2 tensor to F32 [out, in].
 
@@ -108,6 +117,7 @@ def unpack_ternary(q, scales, in_features, group):
     byte i//5, least significant digit first. code in {0,1,2}, weight is
     scales[row, col // group] * (code - 1).
     """
+    check_packed_bytes(q)
     out, nbytes = q.shape
     assert nbytes == -(-in_features // 5), (q.shape, in_features)
     digits = np.empty((out, nbytes, 5), dtype=np.int8)
@@ -227,6 +237,10 @@ def main():
             if g != 128 or m["in_features"] % g:
                 sys.exit(f"--ternary keep needs group 128 and in_features % 128 == 0 "
                          f"(got group {g}, in {m['in_features']} for {mod})")
+            try:
+                check_packed_bytes(d["q"], f"{mod}.qweight")
+            except ValueError as e:
+                sys.exit(str(e))
             raw[base + ".qweight"] = np.ascontiguousarray(d["q"]).view(np.int8)
             raw[base + ".scales"] = np.ascontiguousarray(d["s"], dtype=np.float16)
             continue

@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "ggml.h"
@@ -252,7 +254,7 @@ static void test_repack_equivalence() {
         for (int K : {128, 256, 384, 1024, 4096}) {
             if ((size_t)N * K > (size_t)1024 * 1024 && K != 1024) continue;  // keep the runtime sane
             const int nb = (K + 4) / 5, G = K / kTernaryGroup;
-            // mode 0 random valid, 1 all 0, 2 all 2, 3 all 1, 4 alternating 0/2, 5 any byte 0..255 (invalid too)
+            // mode 0 random valid, 1 all 0, 2 all 2, 3 all 1, 4 alternating 0/2, 5 any byte 0..242
             for (int mode = 0; mode < 6; ++mode) {
                 std::vector<uint8_t> q((size_t)N * nb);
                 for (size_t x = 0; x < q.size(); ++x) {
@@ -263,7 +265,7 @@ static void test_repack_equivalence() {
                         case 2: v = 242; break;  // digits 2 2 2 2 2
                         case 3: v = 121; break;  // digits 1 1 1 1 1
                         case 4: v = (x & 1) ? 242 : 0; break;
-                        default: v = (int)(rng() % 256); break;
+                        default: v = (int)(rng() % 243); break;
                     }
                     q[x] = (uint8_t)v;
                 }
@@ -289,8 +291,40 @@ static void test_repack_equivalence() {
     std::printf("repack equivalence: %d cases identical to the reference\n", cases);
 }
 
+// Bytes 243..255 are not a valid pack of five base-3 digits. The repack must
+// refuse them, with the byte value in the message, wherever they sit.
+static void test_repack_rejects_invalid_bytes() {
+    const int N = 5, K = 256, nb = (K + 4) / 5, G = K / kTernaryGroup;
+    const std::vector<uint16_t> sc((size_t)N * G, 0x3C00);  // 1.0
+    for (int bad : {243, 250, 255}) {
+        for (size_t pos : {(size_t)0, (size_t)(3 * nb + 17), (size_t)(N * nb - 1)}) {
+            std::vector<uint8_t> q((size_t)N * nb, 121);
+            q[pos] = (uint8_t)bad;
+            TernaryWeight w;
+            bool threw = false;
+            std::string msg;
+            try {
+                ternary_repack(q.data(), sc.data(), N, K, w);
+            } catch (const std::runtime_error& e) {
+                threw = true;
+                msg = e.what();
+            }
+            if (!threw || msg.find(std::to_string(bad)) == std::string::npos)
+                std::fprintf(stderr, "byte %d at %zu: threw=%d msg=%s\n", bad, pos, (int)threw, msg.c_str());
+            CHECK(threw);
+            CHECK(msg.find(std::to_string(bad)) != std::string::npos);
+        }
+    }
+    // 242 is the largest valid byte.
+    std::vector<uint8_t> q((size_t)N * nb, 242);
+    TernaryWeight w;
+    ternary_repack(q.data(), sc.data(), N, K, w);
+    CHECK(w.N == N && w.K == K);
+}
+
 int main() {
     test_repack_equivalence();
+    test_repack_rejects_invalid_bytes();
     const Case cases[] = {{8, 128, 1}, {16, 256, 3}, {37, 1024, 5}, {64, 4096, 4}, {5, 384, 7}, {1, 128, 1},
                           {48, 1024, 13}, {80, 512, 200}, {40, 1024, 9, true}, {7, 4096, 3, true}};
     unsigned seed = 1;

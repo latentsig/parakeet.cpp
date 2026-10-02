@@ -49,6 +49,21 @@ def test_unpack_rejects_bad_byte():
     raise AssertionError("byte 243 must be rejected")
 
 
+def test_packed_byte_validity():
+    """The converter and the C++ loader accept exactly the bytes 0..242."""
+    hfconv.check_packed_bytes(np.array([[0, 121, 242]], dtype=np.uint8))
+    for bad in (243, 250, 255):
+        q = np.array([[0, 0, 7], [1, bad, 2]], dtype=np.uint8)
+        for fn in (hfconv.check_packed_bytes,
+                   lambda x: hfconv.unpack_ternary(x, np.ones((2, 1), dtype=np.float16), 15, 128)):
+            try:
+                fn(q)
+            except ValueError as e:
+                assert str(bad) in str(e), e
+                continue
+            raise AssertionError(f"byte {bad} must be rejected")
+
+
 RENAMES = {
     "encoder.subsampling.layers.3.weight": "encoder.pre_encode.conv.3.weight",
     "encoder.subsampling.linear.bias": "encoder.pre_encode.out.bias",
@@ -125,6 +140,7 @@ if __name__ == "__main__":
     for n in (1024, 4096, 130, 5, 128):
         test_unpack_matches_loop(n)
     test_unpack_rejects_bad_byte()
+    test_packed_byte_validity()
     test_renames()
     print("check_hf_convert: OK")
     test_keep_matches_dequant()

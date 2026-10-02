@@ -186,9 +186,9 @@ Extra GGUF content written by this converter:
 | Key or tensor | Written when | Meaning |
 |---|---|---|
 | `parakeet.ternary.present` (bool), `parakeet.ternary.group_size` (u32, 128) | `--ternary keep` | the file holds packed ternary linears |
-| `<base>.qweight` (I8), `<base>.scales` (F16) | `--ternary keep` | replace `<base>.weight` of each ternary linear |
+| `<base>.qweight` (I8), `<base>.scales` (F16) | `--ternary keep` | replace `<base>.weight` of each ternary linear. Packed bytes must be below 243 (five base-3 digits); the converter and the loader both reject larger values |
 | `parakeet.vad.present` (bool), `parakeet.vad.d_in`, `parakeet.vad.hidden`, `parakeet.vad.kernel` (u32), `parakeet.vad.frame_sec` (f32) | the checkpoint has a VAD head and `--vad keep` | shape of the head; the loader reads them into `ParakeetConfig::vad` |
-| `vad_head.proj.*`, `vad_head.ctx.*`, `vad_head.out.*` (weight and bias) | same | the VAD head tensors, written as stored |
+| `vad_head.proj.*`, `vad_head.ctx.*`, `vad_head.out.*` (weight and bias) | same | the VAD head tensors. The upstream checkpoint stores them as F16; the converter widens them and writes F32 in the GGUF, and the loader requires F32 |
 
 ## Worked example — `parakeet-tdt_ctc-110m`
 

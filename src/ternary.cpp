@@ -10,6 +10,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
 
 #include "ggml.h"
@@ -22,8 +23,9 @@ namespace pk {
 namespace {
 
 // For every byte value 0..255 its five base-3 digits, least significant first,
-// computed exactly like the scalar reference (v % 3, v /= 3), so the invalid
-// bytes 243..255 give the same digits as before.
+// computed like the scalar reference (v % 3, v /= 3). Bytes 243..255 are not a
+// valid pack of five digits; ternary_repack rejects them, so their rows in this
+// table are never used.
 struct TritTable {
     uint8_t d[256][5];
     TritTable() {
@@ -61,7 +63,16 @@ void ternary_repack(const uint8_t* q, const uint16_t* s, int N, int K, TernaryWe
         for (int g = 0; g < G; ++g)
             out.scales[((size_t)b * G + g) * kTernaryRowBlock + i] = ggml_fp16_to_fp32(s[(size_t)n * G + g]);
         const uint8_t* qr = q + (size_t)n * nb;
-        for (int bb = 0; bb < nb; ++bb) std::memcpy(&row[(size_t)bb * 5], tab.d[qr[bb]], 5);
+        uint8_t bad = 0;
+        for (int bb = 0; bb < nb; ++bb) {
+            bad = std::max(bad, qr[bb]);
+            std::memcpy(&row[(size_t)bb * 5], tab.d[qr[bb]], 5);
+        }
+        // Five base-3 digits give 0..242. Larger bytes are a corrupt file, and the
+        // converter rejects them too.
+        if (bad >= 243)
+            throw std::runtime_error("packed byte " + std::to_string((int)bad) + " in row " + std::to_string(n) +
+                                     " is not valid (must be below 243 = 3^5)");
         for (int g = 0; g < G; ++g) {
             const uint8_t* src = row.data() + (size_t)g * kTernaryGroup;
             uint8_t* dst = out.planes.data() + ((size_t)b * G + g) * 512 + 4 * i;
@@ -249,6 +260,8 @@ struct TernaryJob {
         try {
             out = std::make_unique<TernaryWeight>();
             ternary_repack(q, s, N, K, *out);
+        } catch (const std::exception& e) {
+            err = std::make_exception_ptr(std::runtime_error("ternary: " + base + ": " + e.what()));
         } catch (...) {
             err = std::current_exception();
         }

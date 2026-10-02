@@ -154,6 +154,18 @@ int main() {
     expect_refused(keep, "vad_even_kernel", [](gguf_context* g, ggml_context*) {
         gguf_set_val_u32(g, "parakeet.vad.kernel", 4);
     });
+    // A packed byte of 243 or more is not five valid base-3 digits (the converter
+    // rejects it too), anywhere in the tensor.
+    for (int bad : {243, 255}) {
+        for (int where : {0, 1}) {
+            expect_refused(keep, "packed_byte_" + std::to_string(bad) + "_" + (where ? "last" : "first"),
+                           [bad, where](gguf_context*, ggml_context* c) {
+                ggml_tensor* t = ggml_get_tensor(c, "encoder.layers.3.feed_forward1.linear1.qweight");
+                if (!t) return;
+                static_cast<uint8_t*>(t->data)[where ? ggml_nbytes(t) - 1 : 0] = (uint8_t)bad;
+            });
+        }
+    }
     if (failures) return 1;
     std::puts("test_ternary_load_negative: OK");
     return 0;
