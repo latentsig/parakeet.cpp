@@ -27,7 +27,9 @@
 #include "vad_head.hpp"
 #include "speaker_encoder.hpp"
 #include "speaker_registry.hpp"
+#include <atomic>
 #include <chrono>
+#include <thread>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -786,6 +788,7 @@ static std::vector<std::string> read_manifest(const std::string& path, bool& ok)
 static int cmd_bench(int argc, char** argv) {
     std::string model, manifest, decoder_str, json_out, lang;
     int threads = 0;  // 0 == unset -> use the components' built-in default
+    int concurrency = 1;  // >1: worker threads over a pool of CPU backends
     for (int i = 0; i < argc; ++i) {
         if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
             model = argv[++i];
@@ -797,6 +800,8 @@ static int cmd_bench(int argc, char** argv) {
             lang = argv[++i];
         } else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             threads = std::atoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--concurrency") == 0 && i + 1 < argc) {
+            concurrency = std::atoi(argv[++i]);
         } else if (std::strcmp(argv[i], "--json") == 0 && i + 1 < argc) {
             json_out = argv[++i];
         }
@@ -804,7 +809,8 @@ static int cmd_bench(int argc, char** argv) {
     if (model.empty() || manifest.empty()) {
         std::fprintf(stderr,
             "usage: parakeet-cli bench --model <m.gguf> --manifest <file> "
-            "[--decoder ctc|tdt] [--lang <locale>] [--threads N] [--json <out>]\n");
+            "[--decoder ctc|tdt] [--lang <locale>] [--threads N] [--concurrency K] "
+            "[--json <out>]\n");
         return 2;
     }
 
@@ -826,8 +832,13 @@ static int cmd_bench(int argc, char** argv) {
     // Apply the thread count to EVERY ggml graph computation. When --threads is
     // omitted we report the components' built-in default in the JSON so the
     // runner records the thread count that was actually used.
+    // With --concurrency K > 1, --threads is the thread count of EACH backend and
+    // the global override stays unset (pooled backends ignore it).
+    if (concurrency < 1) concurrency = 1;
     int reported_threads = threads;
-    if (threads > 0) {
+    if (concurrency > 1) {
+        if (reported_threads <= 0) reported_threads = std::max(1, 8 / concurrency);
+    } else if (threads > 0) {
         pk::set_num_threads(threads);
     } else {
         reported_threads = 8;  // the persistent-backend default (kDefaultThreads)
@@ -861,6 +872,16 @@ static int cmd_bench(int argc, char** argv) {
         return 1;
     }
 
+    if (concurrency > 1) {
+        const int eff = m->set_concurrency(concurrency, reported_threads);
+        if (eff != concurrency) {
+            std::fprintf(stderr,
+                "parakeet-cli bench: --concurrency %d not available on this device; using %d\n",
+                concurrency, eff);
+            concurrency = eff;
+        }
+    }
+
     struct FileResult { std::string path; double audio_sec; double proc_ms; std::string text; };
     std::vector<FileResult> results;
     results.reserve(paths.size());
@@ -869,36 +890,68 @@ static int cmd_bench(int argc, char** argv) {
     // device weight upload + CUDA kernel/cuBLAS init on a GPU backend (~100x the
     // steady-state per-file time), or weight realization on CPU. Excluding it
     // keeps per-file proc_ms (and RTFx) steady-state and fair vs other engines.
+    // With a pool, every backend allocates its own graph buffers on first use, so
+    // run the warmup from `concurrency` threads at once, twice.
     {
         pk::Audio warm;
         if (pk::load_audio_16k_mono(paths[0], warm)) {
-            (void)m->transcribe_pcm(warm.samples, 16000, dec, lang);
+            for (int round = 0; round < (concurrency > 1 ? 2 : 1); ++round) {
+                std::vector<std::thread> ws;
+                for (int w = 0; w < concurrency; ++w)
+                    ws.emplace_back([&] {
+                        try { (void)m->transcribe_pcm(warm.samples, 16000, dec, lang); }
+                        catch (...) {}
+                    });
+                for (auto& t : ws) t.join();
+            }
         }
     }
 
-    for (const std::string& p : paths) {
-        pk::Audio audio;
-        if (!pk::load_audio_16k_mono(p, audio)) {
+    // Decode all audio up front so the timed region has no file IO.
+    std::vector<pk::Audio> audios(paths.size());
+    for (size_t i = 0; i < paths.size(); ++i) {
+        if (!pk::load_audio_16k_mono(paths[i], audios[i])) {
             std::fprintf(stderr, "parakeet-cli bench: failed to load audio %s\n",
-                         p.c_str());
+                         paths[i].c_str());
             return 1;
         }
-        // audio_sec from the decoded 16 kHz sample count.
-        double audio_sec = (double)audio.samples.size() / 16000.0;
-
-        // Time ONLY the transcription (model already loaded).
-        auto t_proc = clock::now();
-        std::string text;
-        try {
-            text = m->transcribe_pcm(audio.samples, 16000, dec, lang);
-        } catch (const std::exception& e) {
-            std::fprintf(stderr, "parakeet-cli bench: transcribe failed on %s: %s\n",
-                         p.c_str(), e.what());
-            return 1;
-        }
-        double proc_ms = ms_since(t_proc);
-        results.push_back({p, audio_sec, proc_ms, text});
     }
+    results.assign(paths.size(), FileResult{});
+
+    // `concurrency` workers pull clips from a shared index. With one worker this
+    // is the original sequential loop. Each clip is timed on its own.
+    std::atomic<size_t> next_clip{0};
+    std::atomic<bool> failed{false};
+    auto worker = [&]() {
+        for (;;) {
+            const size_t i = next_clip.fetch_add(1);
+            if (i >= paths.size() || failed.load()) return;
+            // audio_sec from the decoded 16 kHz sample count.
+            const double audio_sec = (double)audios[i].samples.size() / 16000.0;
+            // Time ONLY the transcription (model already loaded).
+            auto t_proc = clock::now();
+            std::string text;
+            try {
+                text = m->transcribe_pcm(audios[i].samples, 16000, dec, lang);
+            } catch (const std::exception& e) {
+                std::fprintf(stderr, "parakeet-cli bench: transcribe failed on %s: %s\n",
+                             paths[i].c_str(), e.what());
+                failed = true;
+                return;
+            }
+            results[i] = {paths[i], audio_sec, ms_since(t_proc), text};
+        }
+    };
+    auto t_wall = clock::now();
+    if (concurrency > 1) {
+        std::vector<std::thread> ws;
+        for (int w = 0; w < concurrency; ++w) ws.emplace_back(worker);
+        for (auto& t : ws) t.join();
+    } else {
+        worker();
+    }
+    const double wall_ms = ms_since(t_wall);
+    if (failed) return 1;
 
     // Hand-roll the JSON document.
     std::string out;
@@ -910,6 +963,18 @@ static int cmd_bench(int argc, char** argv) {
     out += numbuf;
     std::snprintf(numbuf, sizeof(numbuf), ",\"load_ms\":%.3f", load_ms);
     out += numbuf;
+    if (concurrency > 1) {
+        // Throughput of the whole run: wall time of all workers together.
+        double total_audio = 0;
+        for (const FileResult& r : results) total_audio += r.audio_sec;
+        std::snprintf(numbuf, sizeof(numbuf), ",\"concurrency\":%d", concurrency);
+        out += numbuf;
+        std::snprintf(numbuf, sizeof(numbuf), ",\"wall_ms\":%.3f", wall_ms);
+        out += numbuf;
+        std::snprintf(numbuf, sizeof(numbuf), ",\"aggregate_rtfx\":%.3f",
+                      wall_ms > 0 ? total_audio / (wall_ms / 1000.0) : 0.0);
+        out += numbuf;
+    }
     out += ",\"files\":[";
     for (size_t i = 0; i < results.size(); ++i) {
         if (i) out += ',';
@@ -1826,7 +1891,7 @@ int main(int argc, char** argv) {
         "  parakeet-cli quantize <in.gguf> <out.gguf> "
         "<q4_0|q5_0|q8_0|q4_k|q5_k|q6_k>\n"
         "  parakeet-cli bench --model <model.gguf> --manifest <file> "
-        "[--decoder ctc|tdt] [--lang <locale>] [--threads N] [--json <out>]\n"
+        "[--decoder ctc|tdt] [--lang <locale>] [--threads N] [--concurrency K] [--json <out>]\n"
         "  parakeet-cli bench-batch --model <model.gguf> --manifest <file> "
         "[--decoder ctc|tdt] [--threads N] [--batch-sizes 1,4,8] [--json <out>]\n"
         "  parakeet-cli bench-decode --model <model.gguf> --audio <wav> "
