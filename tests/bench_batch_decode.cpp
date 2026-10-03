@@ -2,6 +2,8 @@
 //   bench_batch_decode decode <model.gguf> <clip.wav> [N=16]
 //     decode only: N encoder outputs (cut at different lengths from the clip), decoded one
 //     by one with tdt_greedy / rnnt_greedy and in one transducer_greedy_batch call.
+//   bench_batch_decode vad <model.gguf> <long.wav>
+//     transcribe_pcm_vad_with_timestamps over the whole file (VAD, encode, decode).
 // Prints "<label> <milliseconds>" lines: the best of 3 runs after one warm-up run.
 #include <algorithm>
 #include <chrono>
@@ -36,10 +38,20 @@ template <class F> static double best_ms(F&& f) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 4) { std::fprintf(stderr, "usage: %s decode model wav [N]\n", argv[0]); return 2; }
-    if (std::string(argv[1]) != "decode") { std::fprintf(stderr, "unknown mode %s\n", argv[1]); return 2; }
+    if (argc < 4) { std::fprintf(stderr, "usage: %s decode|vad model wav [N]\n", argv[0]); return 2; }
+    const std::string mode = argv[1];
     pk::Audio a;
     if (!pk::load_audio_16k_mono(argv[3], a)) { std::fprintf(stderr, "wav load failed\n"); return 1; }
+    if (mode == "vad") {
+        auto m = pk::Model::load(argv[2]);
+        if (!m) return 1;
+        size_t tokens = 0;
+        const double ms = best_ms([&] {
+            tokens = m->transcribe_pcm_vad_with_timestamps(a.samples, 16000).tokens.size();
+        });
+        std::printf("vad_total %.1f (tokens %zu, audio %.1f s)\n", ms, tokens, a.samples.size() / 16000.0);
+        return 0;
+    }
     const int N = argc > 4 ? std::atoi(argv[4]) : 16;
     pk::ModelLoader ml;
     if (!ml.load(argv[2])) return 1;

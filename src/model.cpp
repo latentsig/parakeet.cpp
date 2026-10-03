@@ -439,12 +439,14 @@ std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_
         return transcribe_16k(pcm16k, decoder, target_lang);
     const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
     if (slices.empty()) return std::string();  // no speech found
+    std::vector<const std::vector<float>*> pcms;
+    for (const Slice& s : slices) pcms.push_back(&s.pcm);
+    const std::vector<Transcription> parts = transcribe_16k_grouped(pcms, decoder, target_lang, false);
     std::string text;
-    for (const Slice& s : slices) {
-        const std::string t = transcribe_16k(s.pcm, decoder, target_lang);
-        if (t.empty()) continue;
+    for (const Transcription& t : parts) {
+        if (t.text.empty()) continue;
         if (!text.empty()) text += ' ';
-        text += t;
+        text += t.text;
     }
     return text;
 }
@@ -461,8 +463,12 @@ Transcription Model::transcribe_pcm_vad_with_timestamps(const std::vector<float>
     const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
     if (slices.empty()) return Transcription();  // no speech found
     Transcription all;
-    for (const Slice& s : slices) {
-        Transcription t = transcribe_with_timestamps(s.pcm, 16000, decoder, target_lang);
+    std::vector<const std::vector<float>*> pcms;
+    for (const Slice& s : slices) pcms.push_back(&s.pcm);
+    std::vector<Transcription> parts = transcribe_16k_grouped(pcms, decoder, target_lang, true);
+    for (size_t i = 0; i < slices.size(); ++i) {
+        const Slice& s = slices[i];
+        Transcription& t = parts[i];
         for (Word& w : t.words) { w.start += (float)s.start_sec; w.end += (float)s.start_sec; }
         for (TokenInfo& k : t.tokens) k.frame += s.start_frame;
         if (!t.text.empty()) {
@@ -696,6 +702,68 @@ Transcription Model::transcribe_16k_with_timestamps(
         use_tdt ? &decoder_objects().joint : nullptr, encoded.channels_first, encoded.d_model, encoded.frames,
         use_tdt, frame_sec);
     return result;
+}
+
+namespace {
+// Segments decoded together on the VAD path.
+constexpr size_t kVadDecodeGroup = 16;
+}  // namespace
+
+std::vector<Transcription> Model::transcribe_16k_grouped(
+        const std::vector<const std::vector<float>*>& pcms16k, Decoder decoder,
+        const std::string& target_lang, bool with_timestamps) const {
+    PoolLease lease(pool_snapshot());
+    const ParakeetConfig& cfg = loader_.config();
+    const int prompt_index = resolve_prompt_index(target_lang);
+    const float frame_sec =
+        (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;
+    const bool use_tdt = (decoder == Decoder::kTDT)
+        || (decoder == Decoder::kDefault && arch_prefers_tdt(cfg.arch));
+
+    std::vector<Transcription> outs(pcms16k.size());
+    for (size_t g0 = 0; g0 < pcms16k.size(); g0 += kVadDecodeGroup) {
+        const size_t g1 = std::min(pcms16k.size(), g0 + kVadDecodeGroup);
+        // Encode one by one, exactly as the single clip path does.
+        std::vector<EncodedAudio> enc;
+        enc.reserve(g1 - g0);
+        for (size_t i = g0; i < g1; ++i) enc.push_back(encode_16k(loader_, *pcms16k[i], prompt_index));
+        if (!use_tdt) {  // CTC: no autoregressive decode to batch
+            for (size_t i = g0; i < g1; ++i) {
+                const EncodedAudio& e = enc[i - g0];
+                if (with_timestamps)
+                    outs[i] = decode_enc_out_with_timestamps(loader_, nullptr, nullptr, e.channels_first,
+                                                             e.d_model, e.frames, false, frame_sec);
+                else
+                    outs[i].text = decode_enc_out(loader_, nullptr, nullptr, e.channels_first,
+                                                  e.d_model, e.frames, false);
+            }
+            continue;
+        }
+        std::vector<std::vector<float>> chans;
+        std::vector<int> frames;
+        chans.reserve(enc.size());
+        for (EncodedAudio& e : enc) { chans.push_back(std::move(e.channels_first)); frames.push_back(e.frames); }
+        const int d_model = enc.front().d_model;
+        std::vector<std::vector<float>> encs;
+        std::vector<int> Ts;
+        batch_enc_to_row_major(chans, frames, d_model, encs, Ts);
+        std::vector<std::vector<int32_t>> ids;
+        std::vector<std::vector<TokenInfo>> toks;
+        pk::transducer_greedy_batch(decoder_objects().pred, decoder_objects().joint, encs, Ts, d_model,
+                                    cfg.tdt_durations, (int)cfg.blank_id, (int)cfg.max_symbols, ids,
+                                    with_timestamps ? &toks : nullptr);
+        for (size_t i = g0; i < g1; ++i) {
+            const size_t k = i - g0;
+            Transcription& r = outs[i];
+            r.text = detokenize(loader_.tokenizer_pieces(),
+                                strip_special_tokens(loader_.tokenizer_pieces(), ids[k]));
+            if (with_timestamps) {
+                r.words = group_words(toks[k], loader_.tokenizer_pieces(), frame_sec);
+                r.tokens = std::move(toks[k]);
+            }
+        }
+    }
+    return outs;
 }
 
 std::vector<Transcription> Model::transcribe_16k_batch_with_timestamps(
