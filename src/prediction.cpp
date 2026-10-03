@@ -1,6 +1,7 @@
 #include "prediction.hpp"
 #include "backend.hpp"
 #include "ggml_graph.hpp"
+#include "exact_matvec.hpp"
 #include "ggml.h"
 #include "ggml-backend.h"
 #include <cassert>
@@ -124,6 +125,8 @@ void PredictionNet::step(int32_t token_id, bool is_sos,
 // axis N. Inputs and state are laid out [H, N] in ggml (item n is column n,
 // offset n*H in the flat host buffer). Gate slices become [H, N] views into the
 // [4H, N] z, using z->nb[1] as the column stride. N=1 reduces to step().
+// On the CPU backend the two matmuls use mul_mat_cols_exact, so every column is
+// bitwise equal to step() (test_exact_batch).
 // ---------------------------------------------------------------------------
 void PredictionNet::step_batch(const std::vector<int32_t>& token_ids,
                                const std::vector<uint8_t>& is_sos,
@@ -172,8 +175,8 @@ void PredictionNet::step_batch(const std::vector<int32_t>& token_ids,
             // z = W_ih·x + b_ih + W_hh·h_in + b_hh                  [4H, N]
             // (bias [4H] broadcasts over the N columns).
             ggml_tensor* z = ggml_add(ctx,
-                ggml_add(ctx, ggml_mul_mat(ctx, Wih, layer_in), bih),
-                ggml_add(ctx, ggml_mul_mat(ctx, Whh, h_in),     bhh));
+                ggml_add(ctx, pk::mul_mat_cols_exact(ctx, Wih, layer_in), bih),
+                ggml_add(ctx, pk::mul_mat_cols_exact(ctx, Whh, h_in),     bhh));
             // Gate slices (i, f, g, o), each [H, N]. The view keeps z's FULL
             // column stride (z->nb[1] = 4H elems), reading only H contiguous
             // elements per column, so consecutive columns skip the other three

@@ -8,12 +8,15 @@ namespace pk {
 // Batched greedy decode for N utterances. encs[n]: row-major [T[n], enc_hidden].
 // durations empty -> RNNT (advance-by-1); non-empty -> TDT (advance-by-duration).
 // Outputs per item: ids[n], and (if toks != nullptr) TokenInfo[n]. Applies the
-// same per-item decision rule as rnnt_greedy / tdt_greedy, but it is NOT
-// guaranteed bit-identical to them: for N > 1 ggml picks a different matmul
-// kernel than for N = 1, so prediction and joint outputs differ in float
-// (logits by up to about 1e-4 measured on the packed Redux model). The emitted
-// token sequences were identical on the test clips; a near-tie argmax could in
-// principle flip. The tests compare with a tolerance.
+// same per-item decision rule as rnnt_greedy / tdt_greedy.
+//
+// On the CPU backend the result is bit-identical to per-item decode (logits,
+// token ids, frames, spans and confidences): the prediction step and the joint
+// use mul_mat_cols_exact (exact_matvec.hpp), which runs the same vec_dot as the
+// single column matmul for every column. test_exact_batch guards this for every
+// decoder weight type. On other backends the batched matmul is the ordinary
+// ggml one: logits then differ from per-item decode by float noise (up to about
+// 1e-4 measured), and a near-tie argmax could in principle flip.
 void transducer_greedy_batch(
     const PredictionNet& pred, const Joint& joint,
     const std::vector<std::vector<float>>& encs,

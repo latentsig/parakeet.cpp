@@ -1,6 +1,7 @@
 #include "joint.hpp"
 #include "backend.hpp"
 #include "ggml_graph.hpp"
+#include "exact_matvec.hpp"
 #include "ggml.h"
 #include <cassert>
 #include <cstring>
@@ -112,7 +113,9 @@ void Joint::step_logits_batch(const float* enc_proj_gathered,
     // Batched per-step joint over N items on the PERSISTENT backend. Mirrors
     // step_logits with a batch axis (ggml ne1 = N): each of the two matmuls is
     // applied across all N columns at once, and the biases broadcast over N.
-    // N=1 reduces exactly to step_logits. The gathered enc_proj input holds one
+    // N=1 reduces exactly to step_logits. On the CPU backend both matmuls use
+    // mul_mat_cols_exact, so every column is bitwise equal to step_logits
+    // (test_exact_batch). The gathered enc_proj input holds one
     // joint_hidden row per item (item k at offset k*H), and g holds one
     // pred_hidden vector per item (item k at offset k*pred_hidden).
     bool ok = pk::run_graph(0, 0,
@@ -127,14 +130,14 @@ void Joint::step_logits_batch(const float* enc_proj_gathered,
                                   g, (size_t)pred_hidden_ * n * sizeof(float));
             // pred_proj = pred.weight·g + pred.bias  (P->H). Weight ne=[P,H].
             ggml_tensor* Wp = pk::clone_weight(ctx, ml_, "joint.pred.weight");
-            ggml_tensor* pp = ggml_mul_mat(ctx, Wp, gv);            // [H, N]
+            ggml_tensor* pp = pk::mul_mat_cols_exact(ctx, Wp, gv);            // [H, N]
             ggml_tensor* bp = pk::clone_weight(ctx, ml_, "joint.pred.bias");
             pp = ggml_add(ctx, pp, bp);                             // bp [H] broadcasts over N
             // f = ReLU(enc_proj + pred_proj)
             ggml_tensor* f = ggml_relu(ctx, ggml_add(ctx, ep, pp)); // [H, N]
             // logits = joint_net.2.weight·f + joint_net.2.bias (H->V). Weight ne=[H,V].
             ggml_tensor* Wo = pk::clone_weight(ctx, ml_, "joint.joint_net.2.weight");
-            ggml_tensor* y  = ggml_mul_mat(ctx, Wo, f);             // [V, N]
+            ggml_tensor* y  = pk::mul_mat_cols_exact(ctx, Wo, f);             // [V, N]
             ggml_tensor* bo = pk::clone_weight(ctx, ml_, "joint.joint_net.2.bias");
             y = ggml_add(ctx, y, bo);                               // bo [V] broadcasts over N
             return y;                                               // [V_plus, N]

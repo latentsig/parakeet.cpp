@@ -133,6 +133,7 @@ set(PARAKEET_SRC
     src/joint.cpp
     src/prompt_kernel.cpp
     src/ternary.cpp
+    src/exact_matvec.cpp
     src/ternary_kernels_x86.cpp
     src/ternary_kernels_neon.cpp
     src/tdt.cpp

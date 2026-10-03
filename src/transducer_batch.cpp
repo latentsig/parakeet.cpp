@@ -16,6 +16,9 @@ namespace pk {
 //    no active item emitted) is a pure speed optimization: recomputing g from the
 //    SAME committed state yields an identical g, so reusing the cached g column is
 //    byte-identical. Mirrors the per-item `g_valid` in tdt.cpp/rnnt.cpp.
+//  - On the CPU backend the batched matmuls are exact per column (see
+//    exact_matvec.hpp), so the whole decode equals the per-item decode bit for
+//    bit; test_exact_batch checks it.
 //  - State recovery / masking: we only copy out_state columns into `committed`
 //    for items that emitted this round; non-emitting items keep their prior
 //    committed columns, exactly as the per-item loop leaves committed unchanged
