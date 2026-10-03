@@ -161,3 +161,105 @@ PARAKEET_TEST_GGUF=asr.gguf ctest --test-dir build -R "diar|sas|combined"
 Set `PARAKEET_TEST_DIAR_PROB_TOL=0.15` for Q8_0 (the segment checks stay
 exact). The baseline includes every latency mode by default; NeMo runs the
 low-latency modes slowly on CPU, so `--modes low` limits a long clip to one.
+
+### Opt-in speaker profiles (C API)
+
+Use the additive entry point below to offer **preview, then Name and remember**
+without recording another voice sample. Existing plain/named diarization APIs
+and their JSON defaults do not export profiles or embeddings. Feature-detect
+these symbols when loading an older library; no existing signature changes.
+
+```c
+char* parakeet_capi_diarize_profiles_pcm_json(
+    parakeet_ctx* diar, parakeet_ctx* speaker,
+    parakeet_speaker_registry* reg,
+    const float* samples, int n_samples, int sample_rate,
+    float accept_threshold, float margin);
+const char* parakeet_capi_speaker_identity(const parakeet_ctx* speaker);
+```
+
+The input is mono float PCM; positive rates are resampled to 16 kHz. Threshold
+and margin semantics are the same as `parakeet_capi_diarize_named_pcm_json`
+(zero selects defaults). Both a loaded diarization context and a loaded speaker
+encoder are required. A NULL registry means an empty registry **only for the
+new profile API**. An empty registry still produces profiles. The registry is
+read-only and must not be mutated concurrently. This call never enrolls voices.
+Free the returned JSON with `parakeet_capi_free_string`. On failure it returns
+NULL; inspect `parakeet_capi_last_error` on both contexts, as with the named API.
+
+The existing `speakers`, `segments`, and `names` fields are retained. An
+additional top-level object has this schema (dimension 2 is illustrative):
+
+```json
+{
+  "speaker_profiles": {
+    "version": 1,
+    "encoder": {"identity": "sha256:<64 lowercase hex digits>", "dimension": 2},
+    "speakers": [
+      {"speaker": 0, "clean_duration": 3.0,
+       "intervals": [{"start": 0.0, "end": 3.0}],
+       "unavailable_reason": null, "embedding": [0.6, 0.8]},
+      {"speaker": 1, "clean_duration": 1.0,
+       "intervals": [{"start": 4.0, "end": 5.0}],
+       "unavailable_reason": "insufficient_clean_speech"}
+    ]
+  }
+}
+```
+
+There is one profile for each discovered speaker slot, sorted by integer slot,
+including known speakers. There are no per-segment embeddings. No discovered
+speakers yields an empty profile array. Intervals are in seconds in the original
+recording, clipped to available audio and excluding overlap with other speakers.
+Clean pieces shorter than 0.2 seconds are discarded. The newest 30 seconds of
+clean audio per speaker are retained; `clean_duration` and `intervals` describe
+exactly that retained audio, not the total diarized speech. Preview these spans
+from the original recording, not a separated or synthesized voice.
+
+At least 2 seconds of retained clean speech is required. Each usable speaker
+gets one encoder call and one finite, nonzero, L2-normalized embedding of the
+loaded encoder's dimension. Unusable profiles omit `embedding` and report one
+of `insufficient_clean_speech`, `embedding_failed`, or `invalid_embedding`.
+A whole-call/model error remains a NULL result rather than an unavailable profile.
+Clean duration is not a calibrated confidence or a guarantee of voice quality.
+
+#### Trusted compatibility and enrollment
+
+`parakeet_capi_speaker_identity` returns a borrowed string valid until context
+free, or NULL for NULL/non-speaker contexts. It is SHA-256 of the **entire GGUF
+file**, including metadata and quantized weights, independent of filename. Get
+the dimension using `parakeet_capi_speaker_dim`. Compare profile identity and
+dimension against these values from the server's configured, loaded encoder;
+never use a client-selected model tag or dimension as the authority. Renaming a
+file preserves identity; converting, quantizing, or editing it changes identity.
+
+Loading hashes the file before and after encoder loading and rejects changed
+bytes or read errors. This adds two sequential file reads per speaker load, not
+per request. Deploy model files read-only and replace them only between context
+lifetimes. The encoder loads by pathname: the checks detect ordinary updates,
+not an adversary who replaces and restores a file during loading. They cannot
+protect a memory-mapped model from later writes either.
+
+An application must gate profile export and enrollment with its recognition
+permissions. Only after explicit user confirmation should it validate version,
+unavailable status, finite/nonzero vector, trusted identity and dimension, then
+call the existing raw-vector registration path. The native registry validates
+vectors/dimensions but does **not** store model identity: callers must enforce
+identity and avoid mixing same-dimension encoders. Profiles are not signed and
+are not proof of identity. Treat exported voice vectors as sensitive data.
+
+The native registry is **name-keyed and aggregating**:
+`parakeet_capi_speaker_registry_add_embedding` calls `SpeakerRegistry::enroll`,
+which combines repeated enrollments under the same name into one centroid.
+Passing the same display name twice therefore merges the native entries; profile
+export does not change this behavior.
+
+An application such as LocalAI must implement duplicate-display-name registration
+separately: use distinct registration IDs, keep display names separate, and store
+one embedding per registration without merging or updating existing samples.
+If replaying entries into the native registry, use unique registration IDs as
+native keys, not display names, and map matches back to display names in the
+application. This is a downstream application responsibility, not functionality
+implemented by this backend's profile export. Relabel only after registration
+succeeds. Profile export adds no persistence or automatic enrollment; it does not
+change an application's global, in-memory registry lifecycle.

@@ -37,6 +37,15 @@ struct Interval {
     double end;
 };
 
+// Opt-in offline export. Intervals describe exactly the retained clean PCM,
+// in original-recording seconds; embedding is absent when unavailable.
+struct SpeakerProfile {
+    double clean_duration = 0;
+    std::vector<Interval> intervals;
+    std::vector<float> embedding;
+    std::string unavailable_reason = "insufficient_clean_speech";
+};
+
 // The parts of `seg` not covered by any of `others`, each at least `min_len` long.
 std::vector<Interval> clean_intervals(const Interval& seg, const std::vector<Interval>& others,
                                       double min_len);
@@ -47,7 +56,7 @@ std::vector<Interval> clean_intervals(const Interval& seg, const std::vector<Int
 class SpeakerIdentifier {
 public:
     // `registry` is borrowed and must outlive the identifier.
-    SpeakerIdentifier(SpeakerEmbed embed, const SpeakerRegistry* registry, SpeakerIdOpts opts);
+    SpeakerIdentifier(SpeakerEmbed embed, const SpeakerRegistry* registry, SpeakerIdOpts opts, int profile_dim = 0);
 
     // Appends 16 kHz mono PCM (the same audio diarization sees).
     void push_pcm(const float* pcm, int n);
@@ -73,11 +82,14 @@ public:
     void update(const std::vector<SpeakerSegment>& closed, const std::vector<SpeakerSegment>& open,
                 bool is_last);
 
+    std::map<int, SpeakerProfile> profiles() const;
+
     SlotName name(int slot) const;               // unknown for a slot never seen
     std::map<int, SlotName> names() const;       // every slot that has been seen
 
 private:
     struct Slot {
+        SpeakerProfile profile;
         std::vector<float> voice;   // newest clean audio, at most max_voice_sec
         double gained_sec = 0.0;    // clean audio added since the last embedding
         bool embedded = false;
@@ -91,6 +103,7 @@ private:
     void maybe_embed(Slot& s, bool is_last);
     void apply(Slot& s, const SpeakerMatch& m);
 
+    int profile_dim_ = 0;
     SpeakerEmbed embed_;
     const SpeakerRegistry* registry_;
     SpeakerIdOpts opts_;
@@ -108,5 +121,11 @@ std::map<int, SlotName> identify_offline(const std::vector<float>& pcm16k,
                                          const std::vector<SpeakerSegment>& segs,
                                          const SpeakerEmbed& embed, const SpeakerRegistry& reg,
                                          const SpeakerIdOpts& opts);
+
+// Opt-in variant; expected_dim must come from the loaded encoder, not a client.
+std::map<int, SlotName> identify_offline(const std::vector<float>& pcm16k,
+    const std::vector<SpeakerSegment>& segs, const SpeakerEmbed& embed,
+    const SpeakerRegistry& reg, const SpeakerIdOpts& opts,
+    std::map<int, SpeakerProfile>* profiles, int expected_dim);
 
 }  // namespace pk

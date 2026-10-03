@@ -216,3 +216,5 @@ if(PARAKEET_PY)
   add_test(NAME check_hf_convert COMMAND ${PARAKEET_PY} ${CMAKE_SOURCE_DIR}/tests/python/check_hf_convert.py)
   set_tests_properties(check_hf_convert PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+
+pk_add_test(test_speaker_profiles)
