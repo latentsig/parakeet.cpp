@@ -327,6 +327,9 @@ Audio of 30 s or less is unchanged (same code path, transcripts identical). The 
 
 ## Using the VAD on its own
 
+The full reference, with the Silero detector that uses the same entry points, is
+in [vad.md](vad.md). This section describes the head.
+
 The head also runs without transcribing, like the VAD of whisper.cpp. Three entry points return the same JSON
 (`src/vad_json.cpp`):
 
