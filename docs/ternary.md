@@ -325,6 +325,46 @@ Audio of 30 s or less is unchanged (same code path, transcripts identical). The 
 `parakeet_capi_transcribe_path_json_vad` and the CLI options keep their names; only their defaults changed.
 `SegmenterOpts` gained `bridge_sec` and `min_speech_sec` (additive; no ABI change).
 
+## Using the VAD on its own
+
+The head also runs without transcribing, like the VAD of whisper.cpp. Three entry points return the same JSON
+(`src/vad_json.cpp`):
+
+```
+parakeet-cli vad --model ultra.gguf --input audio.wav [--mode speech|segments] [--probabilities] \
+    [--threshold 0.5] [--min-pause 0.2] [--min-speech 0.1] [--max-segment 30] [--threads N]
+
+char* parakeet_capi_vad_pcm_json(parakeet_ctx* ctx, const float* samples, int n_samples,
+                                 int sample_rate, const char* options_json);
+char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_path, const char* options_json);
+```
+
+`options_json` is NULL, "" or a flat object with the keys `threshold`, `min_pause`, `min_speech`, `max_segment`, `mode`
+and `probabilities`. The result is freed with `parakeet_capi_free_string`; on error it is NULL and
+`parakeet_capi_last_error` has the message (`model has no VAD head` for a model without the head, such as v3).
+
+```
+{"mode":"speech","duration":21.370,"frame_sec":0.080,"backend":"cpu",
+ "segments":[{"start":2.400,"end":6.560},{"start":7.040,"end":9.200}],
+ "probabilities":[0.0123, ...]}          // only with "probabilities":true; one value per 80 ms frame from t = 0
+```
+
+Two kinds of segment are available:
+
+- `"speech"` (the default) is the speech regions: the frames with p >= threshold after the smoothing of rule 2, with
+  regions separated by a silence shorter than `min_pause` merged. It works for audio of any length, is never capped, and
+  never includes silence. Use it to find where speech is, to gate a recorder, or to feed another engine.
+- `"segments"` is what `transcribe --vad` decodes (segmenter rules 4 to 6): pieces of at most `max_segment` seconds cut at
+  pauses, with no-speech pieces dropped. Audio of at most `max_segment` seconds comes back as one segment `[0, duration]`
+  even when it holds no speech. Use it to reproduce or to plan a transcription.
+
+Times are on the original timeline: other sample rates are resampled to 16 kHz and the times stay in seconds of the input.
+Backend rules are the same as for `--vad`: the head runs on the context's compute backend (the pool of
+`parakeet_capi_set_concurrency` when set), a packed Redux file is CPU only, and the JSON reports the device in `backend`.
+The call is safe from several threads, on one context or several. It is additive to the C-API: `parakeet_capi_abi_version`
+is unchanged. The head is a pause detector with the limits listed above (AUC 0.93 and 0.95): expect soft edges of a
+frame or two (80 to 160 ms), and tune `threshold` for your audio.
+
 ## Long-form WER with and without the VAD
 
 `--vad` cuts long audio at pauses found by the VAD head and transcribes each segment on its own (see "Segmenter rules"

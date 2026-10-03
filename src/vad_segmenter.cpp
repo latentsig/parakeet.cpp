@@ -88,4 +88,46 @@ std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total
     return out;
 }
 
+std::vector<VadSegment> speech_regions(const std::vector<float>& p, double total_sec,
+                                       const SegmenterOpts& o) {
+    std::vector<VadSegment> out;
+    if (!(o.frame_sec > 0.0) || !std::isfinite(o.frame_sec) || !std::isfinite(total_sec) ||
+        !std::isfinite(o.threshold) || !std::isfinite(o.min_pause_sec) ||
+        !std::isfinite(o.bridge_sec) || !std::isfinite(o.min_speech_sec) ||
+        o.min_pause_sec > kMaxSec || o.bridge_sec > kMaxSec || o.min_speech_sec > kMaxSec) {
+        out.push_back({0.0, total_sec});
+        return out;
+    }
+    const double fs = o.frame_sec;
+    const int64_t n = std::max<int64_t>(0, (int64_t)std::ceil(total_sec / fs - 1e-9));
+    const int64_t pause_f = std::max<int64_t>(1, (int64_t)std::ceil(o.min_pause_sec / fs - 1e-9));
+    std::vector<char> sp((size_t)n, 0);
+    for (int64_t f = 0; f < n && f < (int64_t)p.size(); ++f) sp[(size_t)f] = p[(size_t)f] >= o.threshold;
+    auto for_runs = [&](bool value, auto&& fn) {
+        int64_t f = 0;
+        while (f < n) {
+            if ((sp[(size_t)f] != 0) != value) { ++f; continue; }
+            int64_t e = f;
+            while (e < n && (sp[(size_t)e] != 0) == value) ++e;
+            fn(f, e);
+            f = e;
+        }
+    };
+    for_runs(false, [&](int64_t a, int64_t b) {
+        if (a > 0 && b < n && (double)(b - a) * fs + 1e-9 < o.bridge_sec)
+            std::fill(sp.begin() + a, sp.begin() + b, 1);
+    });
+    for_runs(true, [&](int64_t a, int64_t b) {
+        if ((double)(b - a) * fs + 1e-9 < o.min_speech_sec) std::fill(sp.begin() + a, sp.begin() + b, 0);
+    });
+    std::vector<std::pair<int64_t, int64_t>> runs;
+    for_runs(true, [&](int64_t a, int64_t b) {
+        if (!runs.empty() && a - runs.back().second < pause_f) runs.back().second = b;
+        else runs.emplace_back(a, b);
+    });
+    for (const auto& r : runs)
+        out.push_back({(double)r.first * fs, std::min((double)r.second * fs, total_sec)});
+    return out;
+}
+
 }  // namespace pk

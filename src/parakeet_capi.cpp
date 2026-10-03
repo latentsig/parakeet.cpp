@@ -20,6 +20,7 @@
 
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
+#include "vad_json.hpp"
 #include "audio_io.hpp"
 
 #include <algorithm>
@@ -530,6 +531,68 @@ extern "C" char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx,
         char* out = dup_to_c(json);
         if (!out) { ctx->last_error = "out of memory"; return nullptr; }
         return out;
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+namespace {
+// Shared body of the two VAD entry points. `pcm` is 16 kHz mono.
+char* vad_json_common(parakeet_ctx* ctx, const std::vector<float>& pcm, const char* options_json) {
+    pk::VadRequest req;
+    std::string err;
+    if (!pk::parse_vad_options(options_json, req, err)) { ctx->last_error = err; return nullptr; }
+    std::string json = pk::vad_to_json(*ctx->model, pcm, req);
+    ctx->last_error.clear();
+    char* out = dup_to_c(json);
+    if (!out) { ctx->last_error = "out of memory"; return nullptr; }
+    return out;
+}
+bool vad_ctx_ok(parakeet_ctx* ctx) {
+    if (ctx->model) return true;
+    ctx->last_error = ctx->diar
+        ? "context holds a diarization model; use parakeet_capi_diarize_*"
+        : "context has no loaded model";
+    return false;
+}
+}  // namespace
+
+extern "C" char* parakeet_capi_vad_pcm_json(parakeet_ctx* ctx, const float* samples,
+                                            int n_samples, int sample_rate,
+                                            const char* options_json) {
+    if (!ctx) return nullptr;
+    if (!vad_ctx_ok(ctx)) return nullptr;
+    if (n_samples < 0 || (n_samples > 0 && !samples)) { ctx->last_error = "invalid samples buffer"; return nullptr; }
+    if (sample_rate <= 0) { ctx->last_error = "invalid sample rate"; return nullptr; }
+    try {
+        std::vector<float> pcm(samples, samples + n_samples);
+        if (sample_rate != 16000 && !pcm.empty()) pcm = pk::resample_linear(pcm, sample_rate, 16000);
+        return vad_json_common(ctx, pcm, options_json);
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+extern "C" char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_path,
+                                             const char* options_json) {
+    if (!ctx) return nullptr;
+    if (!vad_ctx_ok(ctx)) return nullptr;
+    if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
+    try {
+        pk::Audio audio;
+        if (!pk::load_audio_16k_mono(wav_path, audio)) {
+            ctx->last_error = std::string("failed to load audio: ") + wav_path;
+            return nullptr;
+        }
+        return vad_json_common(ctx, audio.samples, options_json);
     } catch (const std::exception& e) {
         ctx->last_error = e.what();
         return nullptr;

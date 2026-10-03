@@ -306,6 +306,54 @@ static void test_nonfinite_and_huge_opts() {
     }
 }
 
+// speech_regions: smoothed speech runs for audio of any length, with gaps
+// shorter than min_pause merged.
+static void test_speech_regions() {
+    SegmenterOpts o;
+    // 50 frames (4 s): silence 0-10, speech 10-20, silence 20-23 (0.24 s, a
+    // pause), speech 23-35, silence 35-50.
+    std::vector<float> p(50, 0.02f);
+    for (int i = 10; i < 20; ++i) p[(size_t)i] = 0.95f;
+    for (int i = 23; i < 35; ++i) p[(size_t)i] = 0.95f;
+    auto r = speech_regions(p, 4.0, o);  // short audio still gives regions
+    CHECK(r.size() == 2);
+    if (r.size() == 2) {
+        CHECK(near(r[0].start, 0.8) && near(r[0].end, 1.6));
+        CHECK(near(r[1].start, 1.84) && near(r[1].end, 2.8));
+    }
+    // A longer min_pause merges the two regions (the gap is 0.24 s).
+    o.min_pause_sec = 0.3;
+    r = speech_regions(p, 4.0, o);
+    CHECK(r.size() == 1);
+    if (r.size() == 1) CHECK(near(r[0].start, 0.8) && near(r[0].end, 2.8));
+    // Runs shorter than min_speech are dropped; the threshold is inclusive.
+    o = SegmenterOpts();
+    std::vector<float> q(30, 0.02f);
+    q[5] = 0.95f;                                   // 80 ms: below min_speech 0.1 s
+    for (int i = 10; i < 14; ++i) q[(size_t)i] = 0.5f;  // exactly the threshold
+    r = speech_regions(q, 2.4, o);
+    CHECK(r.size() == 1);
+    if (r.size() == 1) CHECK(near(r[0].start, 0.8) && near(r[0].end, 1.12));
+    // Speech up to the end is clipped to total_sec.
+    std::vector<float> e(10, 0.95f);
+    r = speech_regions(e, 0.75, o);
+    CHECK(r.size() == 1 && near(r[0].start, 0.0) && near(r[0].end, 0.75));
+    // No speech, no probabilities, higher threshold.
+    CHECK(speech_regions(std::vector<float>(10, 0.02f), 0.8, o).empty());
+    CHECK(speech_regions({}, 0.0, o).empty());
+    o.threshold = 0.99f;
+    CHECK(speech_regions(e, 0.8, o).empty());
+    // Long audio is not cut at max_seg_sec.
+    std::vector<float> l(1000, 0.95f);
+    r = speech_regions(l, 80.0, SegmenterOpts());
+    CHECK(r.size() == 1 && near(r[0].end, 80.0));
+    // Degenerate options give the whole clip, like segment_by_vad.
+    SegmenterOpts bad;
+    bad.frame_sec = 0.0;
+    r = speech_regions(e, 0.8, bad);
+    CHECK(r.size() == 1 && near(r[0].end, 0.8));
+}
+
 int main() {
     test_defaults();
     test_nonfinite_and_huge_opts();
@@ -323,6 +371,7 @@ int main() {
     test_drop_short_speech_runs();
     test_segments_without_speech_are_dropped();
     test_all_silence();
+    test_speech_regions();
     test_random_property();
     if (failures) return 1;
     std::puts("test_vad_segmenter: OK");

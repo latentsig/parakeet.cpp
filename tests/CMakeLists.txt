@@ -90,6 +90,7 @@ pk_add_test(test_capi_stream_json)
 pk_add_test(test_capi_timestamps)
 pk_add_test(test_capi_batch_json)
 pk_add_test(test_capi_ctc_logits)
+pk_add_test(test_capi_vad)
 pk_add_test(test_diarization)
 pk_add_test(test_diarization_accuracy)
 pk_add_test(test_sas_merge)
@@ -184,7 +185,7 @@ set_tests_properties(test_model_loader test_mel test_mel_gpu test_subsampling te
                      test_combined_offline test_streaming_diarization test_diarization_accuracy test_diarization
                      PROPERTIES LABELS "model")
 set_tests_properties(test_ternary_model test_ternary_long test_decoder_reuse test_transcribe_vad test_vad_head test_model_loader_ternary
-                     test_ternary_load_negative PROPERTIES LABELS "model")
+                     test_ternary_load_negative test_capi_vad PROPERTIES LABELS "model")
 # These tests read fixtures/baselines via paths relative to the project root.
 set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_batch test_subsampling_batch_causal test_relpos_attention test_relpos_attention_batch test_conformer test_conformer_batch
                      test_conv_eou test_encoder test_encoder_batch test_encoder_batch_local test_encoder_eou test_streaming_encoder
@@ -200,7 +201,7 @@ set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_bat
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
                      test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_concurrency test_pool_stress test_pool_shutdown test_capi_stream test_capi_stream_json
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
-                     test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model test_ternary_long test_transcribe_vad test_decoder_reuse
+                     test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model test_ternary_long test_transcribe_vad test_decoder_reuse test_capi_vad
                      PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # ctest runs the stress test in its short form (it is heavy on a loaded machine

@@ -169,6 +169,55 @@ char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx, const char* wav_path
 char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_path,
                                              int decoder);
 
+// Standalone voice-activity detection (additive; no ABI bump). Runs only the
+// model's own VAD head (80 ms frames) and returns the speech segments as
+// JSON, without transcribing. Needs a model with a VAD head (moondream
+// parakeet-ultra / -redux): other models set the context's last error to
+// "model has no VAD head" and return NULL. NULL is also returned for a bad
+// argument or option (see last_error). Free the result with
+// parakeet_capi_free_string.
+//
+//   parakeet_capi_vad_pcm_json: `samples` is n_samples mono float PCM at
+//     `sample_rate` Hz (resampled to 16 kHz when different); times in the result
+//     are on the original timeline. n_samples == 0 gives no segments.
+//   parakeet_capi_vad_path_json: reads a WAV file instead.
+//
+// `options_json` may be NULL or "" (all defaults) or a flat JSON object:
+//   "threshold"     frame is speech when p >= threshold; (0, 1]; default 0.5
+//   "min_pause"     seconds; a silence at least this long separates regions
+//                   (shorter gaps are merged); default 0.2
+//   "min_speech"    seconds; shorter speech runs are dropped; default 0.1
+//   "max_segment"   seconds; segment cap in "segments" mode; default 30
+//   "mode"          "speech" (default) or "segments"
+//   "probabilities" true to add the per-frame probabilities; default false
+// Unknown keys and out-of-range values are errors.
+//
+// Result:
+//   {"mode":"speech","duration":12.340,"frame_sec":0.080,"backend":"cpu",
+//    "segments":[{"start":0.480,"end":3.200},...],
+//    "probabilities":[0.0123,...]}      // only with "probabilities":true
+// Times are seconds (3 decimals). "probabilities" has one value per
+// frame_sec frame, starting at time 0. "backend" is the compute device the
+// head ran on.
+//
+// Modes. "speech" returns the speech regions after smoothing (gaps shorter
+// than 0.1 s bridged, runs shorter than min_speech dropped, regions closer than
+// min_pause merged). They are ordered and disjoint, for audio of any length,
+// and silence is never included: this is what a VAD consumer wants. "segments"
+// returns the cuts the transcriber uses in parakeet_capi_transcribe_path_json_vad:
+// pieces of at most max_segment seconds cut at pauses, pieces without speech
+// dropped, and audio of at most max_segment seconds returned whole as one
+// segment even when it holds no speech.
+//
+// Backend: the same rules as the transcribe functions. The head runs on the
+// context's compute backend (the pool of parakeet_capi_set_concurrency, when
+// set); a packed (ternary) Redux model is CPU only. Safe to call from several
+// threads, on one context or on several.
+char* parakeet_capi_vad_pcm_json(parakeet_ctx* ctx, const float* samples, int n_samples,
+                                 int sample_rate, const char* options_json);
+char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_path,
+                                  const char* options_json);
+
 // Batched transcription with timestamps, returning ONE malloc'd JSON string that
 // is a JSON ARRAY of n_clips objects, each identical in shape to
 // parakeet_capi_transcribe_path_json's document ({"text","words","tokens"}).

@@ -40,4 +40,14 @@ struct SegmenterOpts {
 std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total_sec,
                                        const SegmenterOpts& o);
 
+// The speech regions themselves, for any audio length (no cap, no cuts).
+// Uses threshold, frame_sec, bridge_sec, min_speech_sec and min_pause_sec: the
+// speech mask is smoothed as in segment_by_vad (bridge gaps shorter than
+// bridge_sec, drop runs shorter than min_speech_sec), then speech runs
+// separated by a gap shorter than min_pause_sec are merged. Regions are
+// ordered, disjoint and inside [0, total_sec]; the result is empty when there
+// is no speech. Degenerate options return the single region {0, total_sec}.
+std::vector<VadSegment> speech_regions(const std::vector<float>& p, double total_sec,
+                                       const SegmenterOpts& o);
+
 }  // namespace pk

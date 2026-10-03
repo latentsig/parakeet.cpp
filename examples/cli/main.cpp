@@ -25,6 +25,7 @@
 #include "scene_stream.hpp"
 #include "scene_render.hpp"
 #include "vad_head.hpp"
+#include "vad_json.hpp"
 #include "speaker_encoder.hpp"
 #include "speaker_registry.hpp"
 #include <atomic>
@@ -1857,6 +1858,72 @@ static int cmd_vad_probe(int argc, char** argv) {
     return 0;
 }
 
+// parakeet-cli vad --model <m.gguf> --input <wav|-> [--threshold F=0.5]
+//   [--min-pause SEC=0.2] [--min-speech SEC=0.1] [--max-segment SEC=30]
+//   [--mode speech|segments] [--probabilities] [--threads N]
+// Prints the same JSON as parakeet_capi_vad_path_json. Needs a VAD head.
+static int cmd_vad(int argc, char** argv) {
+    std::string model, input;
+    pk::VadRequest req;
+    int threads = 0;
+    auto bad = [](const char* what) {
+        std::fprintf(stderr, "parakeet-cli: %s\n", what);
+        return 2;
+    };
+    auto num = [](const char* s, double& out) {
+        char* end = nullptr;
+        out = std::strtod(s, &end);
+        return end != s && *end == '\0' && std::isfinite(out) && out > 0.0;
+    };
+    for (int i = 0; i < argc; ++i) {
+        double d = 0.0;
+        if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) model = argv[++i];
+        else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) input = argv[++i];
+        else if (std::strcmp(argv[i], "--threshold") == 0 && i + 1 < argc) {
+            if (!num(argv[++i], d) || d > 1.0) return bad("--threshold must be in (0,1]");
+            req.opts.threshold = (float)d;
+        } else if (std::strcmp(argv[i], "--min-pause") == 0 && i + 1 < argc) {
+            if (!num(argv[++i], d)) return bad("--min-pause must be > 0");
+            req.opts.min_pause_sec = d;
+        } else if (std::strcmp(argv[i], "--min-speech") == 0 && i + 1 < argc) {
+            if (!num(argv[++i], d)) return bad("--min-speech must be > 0");
+            req.opts.min_speech_sec = d;
+        } else if (std::strcmp(argv[i], "--max-segment") == 0 && i + 1 < argc) {
+            if (!num(argv[++i], d)) return bad("--max-segment must be > 0");
+            req.opts.max_seg_sec = d;
+        } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
+            const char* v = argv[++i];
+            if (std::strcmp(v, "speech") == 0) req.mode = pk::VadRequest::Mode::kSpeech;
+            else if (std::strcmp(v, "segments") == 0) req.mode = pk::VadRequest::Mode::kSegments;
+            else return bad("--mode must be speech or segments");
+        } else if (std::strcmp(argv[i], "--probabilities") == 0) req.probabilities = true;
+        else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) threads = std::atoi(argv[++i]);
+        else return bad("unknown or incomplete option for vad");
+    }
+    if (model.empty() || input.empty()) {
+        std::fprintf(stderr,
+            "usage: parakeet-cli vad --model <m.gguf> --input <wav|-> [--threshold F=0.5] "
+            "[--min-pause SEC=0.2] [--min-speech SEC=0.1] [--max-segment SEC=30] "
+            "[--mode speech|segments] [--probabilities] [--threads N]\n");
+        return 2;
+    }
+    if (threads > 0) pk::set_num_threads(threads);
+    pk::Audio audio;
+    if (!load_audio_arg_16k_mono(input, audio)) {
+        std::fprintf(stderr, "parakeet-cli: failed to load audio %s\n", input.c_str());
+        return 1;
+    }
+    try {
+        std::unique_ptr<pk::Model> m = pk::Model::load(model);
+        if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
+        std::printf("%s\n", pk::vad_to_json(*m, audio.samples, req).c_str());
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "parakeet-cli: vad failed: %s\n", e.what());
+        return 1;
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && (std::strcmp(argv[1], "--version") == 0 ||
                       std::strcmp(argv[1], "-V") == 0)) {
@@ -1879,10 +1946,15 @@ int main(int argc, char** argv) {
         return run_and_shutdown(cmd_enroll, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "scene") == 0)
         return run_and_shutdown(cmd_scene, argc - 2, argv + 2);
+    if (argc >= 2 && std::strcmp(argv[1], "vad") == 0)
+        return run_and_shutdown(cmd_vad, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "vad-probe") == 0)
         return run_and_shutdown(cmd_vad_probe, argc - 2, argv + 2);
     std::fprintf(stderr,
         "usage:\n"
+        "  parakeet-cli vad --model <m.gguf> --input <wav|-> [--threshold F=0.5] "
+        "[--min-pause SEC=0.2] [--min-speech SEC=0.1] [--max-segment SEC=30] "
+        "[--mode speech|segments] [--probabilities] [--threads N]\n"
         "  parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]\n"
         "  parakeet-cli info <model.gguf>\n"
         "  parakeet-cli transcribe --model <model.gguf> --input <wav|-> "
