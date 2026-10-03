@@ -64,6 +64,17 @@ and no `<base>.weight`. Two KVs mark the file: `parakeet.ternary.present`
    (an unavailable name falls back to automatic selection with a log line).
    The activation quantizer is picked by CPU features only.
 
+Reference path. Upstream's reference path for Redux is weight-only: the ternary
+weights are expanded and the activations stay in floating point. The int8
+activation quantization in steps 2 and 3 is our own scheme, chosen so the
+integer kernels can run, and it is not part of the upstream model. The
+reference for this engine is therefore `--ternary dequant` (ordinary F16 or
+Q8_0 weights expanded from the ternary ones). The packed path is checked
+against it: same transcripts on the test fixtures and 64 differing words in
+22,922 on the long talks (see the long-form section), but it is not
+bit-identical to it and is not a reproduction of any upstream runtime. We did
+not run or inspect Moondream's own runtime (Photon).
+
 ## Limits
 
 - A packed tensor anywhere in the file (any name ending in `.qweight`) while
@@ -216,12 +227,21 @@ reference transcript in `AGENTS.md`.
 ## VAD head wiring
 
 Ultra and Redux carry a small voice-activity head (`vad_head.proj`, `vad_head.ctx`, `vad_head.out`) on the
-subsampler output. The tensor shapes fix the layer order (1x1 conv 1024 to 128, conv k=5 128 to 128, 1x1 conv 128 to 1,
-sigmoid), but Moondream does not document the activations or whether `ctx` is residual. We inferred the wiring from
-evidence, and `VadVariant` (`src/vad_head.hpp`) keeps the three choices switchable (`parakeet-cli vad-probe --variant N`,
-bit 0 ReLU after proj, bit 1 residual, bit 2 ReLU after ctx).
+subsampler output: 1x1 conv 1024 to 128, conv k=5 128 to 128, 1x1 conv 128 to 1, sigmoid, one probability per
+80 ms frame. The checkpoint does not document the activations or whether `ctx` is residual.
 
-How it was probed. Test data: three clips of 12 LibriSpeech utterances each (the first 36 of
+Wiring in use: SiLU after `proj`, SiLU after `ctx`, no residual, then `out` and a sigmoid. This is the wiring
+Moondream's public behaviour describes. It is described by behaviour only; no upstream code was copied and no
+proprietary kernel was inspected.
+
+History. The first version of this engine had to infer the wiring from the shapes and the probe below, and chose ReLU
+after both convs. The probe could not tell ReLU from SiLU (the pre-activations are large, so the two are almost the
+same function), which is why the change to SiLU moves the numbers by less than 0.01 in the median and not at all in
+the AUC (table below). `VadVariant` (`src/vad_head.hpp`) keeps the other choices as debug options
+(`parakeet-cli vad-probe --variant N`: 0 is the default; bit 0 ReLU after proj, bit 1 residual, bit 2 ReLU after ctx;
+the old default is variant 5).
+
+How the probe worked. Test data: three clips of 12 LibriSpeech utterances each (the first 36 of
 `benchmarks/librispeech_manifest.tsv`, joined with no inserted silence), `jfk.wav`, and the first 120 s of
 `i_have_a_dream.wav`. Labels came from the model's own TDT word timestamps: a speech frame (80 ms) has its center inside a
 word span widened by 0.04 s; a pause frame lies inside an inter-word, leading or trailing gap of at least 0.4 s, minus a
@@ -238,38 +258,81 @@ Top rows (speech median, pause median, AUC). All are the subsampler tap with no 
 
 | proj act, ctx act, residual | Ultra | Redux | mean AUC |
 | --- | --- | --- | --- |
-| ReLU, ReLU, no (chosen, variant 5) | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
+| ReLU, ReLU, no (the first default, variant 5) | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
 | ReLU, SiLU, no | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
 | SiLU, ReLU, no | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
-| SiLU, SiLU, no | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
+| SiLU, SiLU, no (default now) | 0.999, 0.437, 0.930 | 1.000, 0.197, 0.948 | 0.939 |
 | ReLU, ReLU, yes | pause median 1.000 (collapses) | 1.000, 0.200, 0.959 | |
 
 The SiLU rows tie with ReLU because the pre-activations are huge and saturated. No variant met the strict rule (AUC of at
-least 0.90, speech median at least 0.8, pause median at most 0.2, on both models); variant 5 misses it only on the Ultra
-pause median (0.437).
+least 0.90, speech median at least 0.8, pause median at most 0.2, on both models); the SiLU default misses it only on the
+Ultra pause median (0.437), like the ReLU variant did.
 
 Refuted. The final encoder output as the tap scores AUC 0.17 to 0.67 for every treatment and activation, so it is at
 chance or inverted. LayerNorm and L2 input normalization do not help: the medians collapse to about 0.5 for both classes
 with equal or lower AUC.
 
-Decision: subsampler tap, no input treatment, ReLU after proj, ReLU after ctx, no residual (variant 5, the default of
-`VadVariant`).
+Decision: subsampler tap, no input treatment, SiLU after proj, SiLU after ctx, no residual (the default of `VadVariant`).
+The probe does not pick this wiring; it is chosen because it matches Moondream's public behaviour, and the probe only
+confirms that it is consistent with the data (it scores the same as the ReLU variant and the other tap and treatments
+stay refuted).
 
 Caveats:
-- Pause detection is weak. Pause frames with p below 0.5: 58 percent on Ultra, 94 percent on Redux (the same for gaps of
-  0.8 s and 1.5 s or more). Speech frames above 0.5: 92.8 percent on Ultra, 92.9 percent on Redux.
-- Ultra and Redux disagree on the residual: Ultra needs none (with it the pause median is 1.000), Redux scores best with it
-  (AUC 0.959 against 0.948).
-- The wiring is inferred, not documented by Moondream. Something may still differ from training.
-- The default threshold is 0.5. Per-model thresholds may differ (Ultra about 0.5 to 0.7, Redux about 0.3).
-- Long-form validation is in the next section. The segmenter falls back to hard cuts when it finds no pause, so a weak
-  pause response degrades gracefully.
+- Pause detection is weak. Pause frames with p below 0.5: 58 percent on Ultra, 93 to 94 percent on Redux (the same for
+  gaps of 0.8 s and 1.5 s or more). Speech frames above 0.5: 92.8 percent on Ultra, 92.9 to 94.6 percent on Redux.
+- In our probe Ultra needs no residual (with it the pause median is 1.000) and Redux scores slightly better with one (AUC
+  0.959 against 0.948). We follow the public description (no residual) for both.
+- The wiring comes from Moondream's public behaviour, not from a comparison of outputs with their runtime. We did not run
+  that runtime, so the per-frame probabilities have not been compared with it.
+- The default threshold is 0.5 for both models, as in Moondream's behaviour. In our probe the best thresholds differ
+  (Ultra about 0.5 to 0.7, Redux about 0.3). `--vad-threshold` overrides it.
+- Long-form validation is in the sections below. The segmenter falls back to a midpoint or hard cut when it finds no
+  pause, so a weak pause response degrades gracefully.
+
+## Segmenter rules
+
+`segment_by_vad` (`src/vad_segmenter.cpp`) turns the per-frame probabilities into segments of at most 30 s. The rules
+follow Moondream's public behaviour, written from the description and not from their code.
+
+1. Speech is a frame with p >= 0.5 (`--vad-threshold`, default 0.5 for both models).
+2. Smoothing: speech gaps shorter than 0.1 s are filled, then speech runs shorter than 0.1 s are removed. With 80 ms
+   frames that fills a one-frame dip and removes a one-frame blip.
+3. A pause is a silent run of at least 0.2 s (`--vad-min-pause`).
+4. Audio of at most 30 s (`--vad-max-seg`) is not cut and goes through whole, with or without speech.
+5. Longer audio is cut from the front. For a segment that starts at s the cut is the midpoint of the last pause that lies
+   fully inside [s + 1 s, s + 30 s]. If there is none, it is the midpoint of the last pause whose midpoint lies in that
+   range. Otherwise it is a hard cut at s + 30 s. A cut is never closer than 1 s to the start of the segment.
+6. A segment without speech is dropped, including a trailing remainder. Long audio with no speech at all gives an empty
+   transcript. Kept segments are ordered and disjoint but need not touch.
+7. The VAD runs on blocks of 120 s, each with its own mel normalization, and the probabilities are joined on the 80 ms
+   grid. A trailing block shorter than 5 s is folded into the previous block. The head's conv sees zero padding at each
+   block edge, so the one or two frames at an edge are slightly less reliable.
+
+Behaviour changes against the first version of this segmenter (the one that produced the measurements in the sections
+below up to the re-measurement):
+
+| | before | now |
+|---|---|---|
+| minimum pause | 0.32 s | 0.2 s |
+| earliest cut inside a segment | 8 s (fallback), last third first | 1 s |
+| which pause | the longest in the last third of the window, else the longest in the window | the last one fully inside, else the last one with its midpoint inside |
+| smoothing | none | bridge gaps under 0.1 s, drop runs under 0.1 s |
+| segments without speech | kept and decoded | dropped; no speech at all gives an empty transcript |
+| VAD input | the whole clip, one mel normalization | 120 s blocks, one mel normalization each |
+| VAD head activations | ReLU, ReLU | SiLU, SiLU |
+
+Audio of 30 s or less is unchanged (same code path, transcripts identical). The C-API function
+`parakeet_capi_transcribe_path_json_vad` and the CLI options keep their names; only their defaults changed.
+`SegmenterOpts` gained `bridge_sec` and `min_speech_sec` (additive; no ABI change).
 
 ## Long-form WER with and without the VAD
 
-`--vad` cuts long audio at pauses found by the VAD head and transcribes each segment on its own
-(`segment_by_vad`, defaults: threshold 0.5, min pause 0.32 s, max segment 30 s, min segment 8 s). Without it, the model
-sees the whole clip in one pass.
+`--vad` cuts long audio at pauses found by the VAD head and transcribes each segment on its own (see "Segmenter rules"
+above). Without it, the model sees the whole clip in one pass.
+
+The tables in this section and in the TED-LIUM section were measured with the first version of the segmenter and the ReLU
+head (threshold 0.5, min pause 0.32 s, max segment 30 s, min segment 8 s). The re-measurement with the rules above is in
+"Re-measurement with the Moondream-style segmenter" at the end of the long-form validation.
 
 How it was measured. `scripts/make_longform.py` joins the first 90 utterances of `benchmarks/librispeech_manifest.tsv`
 into three clips of 30 utterances each (218 to 354 s each), with a known reference
@@ -316,7 +379,7 @@ between the two runs. The segment boundaries there were 20.32, 48.48, 70.00, 98.
 229.28 s. The result is a wash, not a win: on these clips VAD does not measurably help or hurt accuracy. Its benefit is
 bounded memory and time on audio of any length (the 30 s cap), not a lower WER.
 
-Parameter sweep on Ultra F16 (mean `--vad` WER, percent, one variable at a time from the defaults):
+Parameter sweep on Ultra F16 with the first segmenter version (mean `--vad` WER, percent, one variable at a time from its defaults):
 
 | Setting | 0.45 s gap | 0.16 s gap | no gap | mean of the three |
 |---|---:|---:|---:|---:|
@@ -334,7 +397,7 @@ Ultra (1.95); probably a longer required pause makes the segmenter fall back to 
 changes nothing here.
 
 Known limits:
-- A 30 s window with no pause of 0.32 s makes a hard cut, which can land inside a word.
+- A 30 s window with no usable pause makes a hard cut, which can land inside a word.
 - Offline only: no streaming with `--vad`.
 - The VAD head detects pauses weakly (see the caveats above), so many cuts are hard cuts or land at the model's best guess.
 - Ternary kernels are CPU only.
@@ -424,8 +487,8 @@ Reading:
 
 ### TED-LIUM long-form, WER percent
 
-Plain is one single pass over the whole talk; VAD is `--vad` with default options
-(threshold 0.5, min pause 0.32 s, max segment 30 s, min segment 8 s). The `--vad` option needs the VAD head, which v3
+Plain is one single pass over the whole talk; VAD is `--vad` with the options of the first segmenter version
+(threshold 0.5, min pause 0.32 s, max segment 30 s, min segment 8 s; ReLU head). The `--vad` option needs the VAD head, which v3
 does not have (`model has no VAD head`), so v3 has only the plain column. The segment count was not recorded.
 
 | Talk (length) | v3 plain | Ultra plain | Ultra VAD | Redux packed plain | Redux packed VAD | Redux deq plain | Redux deq VAD |
@@ -462,7 +525,7 @@ Reading:
   (4.85 against 4.74). Redux packed: plain 4.32 against VAD 4.38 (4.75 against 4.82 without the short clip), so plain is slightly better, by
   0.07 points. The honest reading is that on real talks VAD segmentation is about neutral: a small gain for Ultra, a small loss for Redux,
   all under about 0.15 points on the mean and inside per-talk noise. Peak RSS (from `/usr/bin/time -v`) with `--vad` is 7 to 11 GB on the talks over 800 s, about the same as
-  the single pass, and drops to about 4 GB only on the three shortest talks (340 to 459 s). So on these talks VAD did not buy a memory win.
+  the single pass, and drops to about 4 GB only on the three shortest talks (340 to 459 s). So with the first segmenter VAD did not buy a memory win (it does now, see the re-measurement below).
 - Packed against dequantized Redux, plain single pass, after the long-audio fix (the seven talks that used to crash; packed run
   at `--threads 8` with `/usr/bin/time -v`): WER 4.92 packed against 4.91 dequantized on the mean of the seven (per talk within
   0.2 points, packed lower on 2, higher on 2, equal on 3). Scored with the dequantized transcript as the reference, packed
@@ -493,6 +556,92 @@ Verified after the fix on a 714 s clip (`speech.wav` repeated, 2112 words): pack
 print byte-identical transcripts. `tests/test_ternary_long.cpp` forces the same paths on short audio
 (`PARAKEET_ATT_CONTEXT=64`), for a single item and for a batch. The seven talks that crashed were then re-run
 with the fixed build; their packed plain numbers are in the TED-LIUM table above.
+
+### Re-measurement with the Moondream-style segmenter
+
+The same 11 talks and scoring as above, run again after the segmenter and head changes ("Segmenter rules"). "Before" is
+the PR head (`cb6208d`, first segmenter, ReLU head) and "now" is this branch, both built from source with the same
+flags and run with `parakeet-cli transcribe --decoder tdt --threads 8 --vad`, one after the other for each talk. Models:
+Ultra converted to Q8_0 (`--dtype q8_0`) and Redux packed (`--ternary keep`). Audio is streamed from the Hub and deleted
+after the runs.
+
+Load. The machine was shared and busy: the load average was 23 to 69 at the start of the runs. These runs were not
+measured on a quiet machine, so wall times are not reported; WER and peak memory do not depend on load.
+
+WER, percent, `--vad`:
+
+| Talk | Ultra before | Ultra now | Redux before | Redux now |
+|---|---:|---:|---:|---:|
+| AimeeMullins | 3.41 | 3.74 | 4.34 | 4.38 |
+| BillGates | 5.83 | 5.70 | 6.34 | 6.18 |
+| DanBarber | 4.90 | 5.18 | 6.79 | 6.27 |
+| DanBarber_2010_S103 | 0.00 | 0.00 | 0.00 | 0.00 |
+| DanielKahneman | 3.13 | 2.94 | 3.98 | 4.04 |
+| EricMead | 4.84 | 4.84 | 5.16 | 5.35 |
+| GaryFlake | 3.16 | 3.16 | 3.60 | 3.60 |
+| JamesCameron | 5.32 | 5.19 | 5.62 | 5.58 |
+| JaneMcGonigal | 3.68 | 3.70 | 4.09 | 4.14 |
+| MichaelSpecter | 3.16 | 2.94 | 3.79 | 3.35 |
+| RobertGupta | 2.59 | 2.37 | 4.51 | 5.07 |
+| Mean, all 11 | 3.64 | 3.61 | 4.38 | 4.36 |
+| Mean, without the 5.5 s clip | 4.00 | 3.98 | 4.82 | 4.80 |
+
+Plain single pass for reference. The plain path did not change (transcripts are byte-identical between the two builds
+on the fixtures and on 8 clips of up to 180 s for three models), so plain numbers do not depend on the build. The earlier
+table has Ultra F16 plain at 3.73 (all 11) and 4.11 (without the short clip), and Redux packed plain at 4.32 and 4.75.
+The Redux packed plain runs repeated here on 9 of the 11 talks and gave the same WER as the earlier table on every one.
+Ultra Q8_0 plain was run on two talks only (AimeeMullins 3.54, RobertGupta 2.71; Ultra F16 earlier: 3.44, 2.71); the
+rest was stopped because the machine was overloaded.
+
+Peak resident memory with `--vad` (GB, before / now, from `/usr/bin/time -v`):
+
+| Talk | Ultra Q8_0 | Redux packed |
+|---|---|---|
+| AimeeMullins | 9.53 / 2.01 | 9.05 / 1.47 |
+| BillGates | 11.30 / 2.05 | 10.83 / 1.51 |
+| DanBarber | 6.67 / 1.93 | 6.17 / 1.39 |
+| DanBarber_2010_S103 | 0.99 / 0.99 | 0.44 / 0.44 |
+| DanielKahneman | 8.48 / 1.97 | 7.98 / 1.44 |
+| EricMead | 4.10 / 1.86 | 3.58 / 1.32 |
+| GaryFlake | 3.33 / 1.83 | 2.80 / 1.30 |
+| JamesCameron | 7.69 / 1.95 | 7.20 / 1.42 |
+| JaneMcGonigal | 8.97 / 1.99 | 8.48 / 1.45 |
+| MichaelSpecter | 7.27 / 1.94 | 6.77 / 1.40 |
+| RobertGupta | 3.29 / 1.83 | 2.76 / 1.29 |
+
+Reading.
+- WER. The mean moves by 0.02 to 0.03 points (Ultra 3.64 to 3.61, Redux 4.38 to 4.36 on all 11; 4.00 to 3.98 and 4.82 to
+  4.80 without the short clip). Per talk the change is between -0.52 and +0.56 points, in both directions (Redux RobertGupta +0.56, DanBarber
+  -0.52, MichaelSpecter -0.44; Ultra AimeeMullins +0.33, DanBarber +0.28), the same size as the noise between runs that
+  differ only in where the cuts fall. Against plain, `--vad` now is better than plain for Ultra by 0.12 points (3.61
+  against 3.73 from the earlier F16 table) and worse for Redux by 0.04 (4.36 against 4.32). The conclusion of the
+  earlier sections stands: segmentation does not change accuracy in any direction we can resolve with 11 talks.
+- Memory. This changes a lot. With `--vad` the peak RSS is now 1.3 to 2.1 GB on every talk of 340 s or more, against 2.8
+  to 11.3 GB before. The old VAD ran the subsampler over the whole clip in one pass; the 120 s blocks bound that, and
+  segments are at most 30 s. The earlier statement that `--vad` buys no memory win applied to the first version only.
+  The 5.5 s clip is unchanged (it takes the plain path).
+- The cuts differ from the first version (earlier threshold of 0.32 s and 8 s minimum, now 0.2 s and 1 s), so more and
+  shorter segments are expected; the segment count was not recorded.
+
+Pause detection with `vad-probe`, on the same 5 clips as the wiring probe (three 12-utterance LibriSpeech clips, `jfk.wav`,
+first 120 s of `i_have_a_dream.wav`), same labels, F16-equivalent models Ultra Q8_0 and Redux packed. Frames with
+speech labels: 4289 (Ultra) and 4065 (Redux); pause labels: 477 and 564 (labels come from each model's own TDT
+timestamps, so the counts differ a little between models).
+
+| Model | Head | Speech frames p >= 0.5 | Pause frames p < 0.5 | Median p, speech | Median p, pause | AUC |
+|---|---|---:|---:|---:|---:|---:|
+| Ultra Q8_0 | ReLU (before) | 92.8% | 58.1% | 0.999 | 0.436 | 0.931 |
+| Ultra Q8_0 | SiLU (now) | 92.8% | 58.1% | 0.999 | 0.434 | 0.931 |
+| Redux packed | ReLU (before) | 94.6% | 92.9% | 1.000 | 0.187 | 0.959 |
+| Redux packed | SiLU (now) | 94.6% | 92.9% | 1.000 | 0.187 | 0.959 |
+
+The head change does not move pause detection (as expected from the saturated pre-activations), and the old default is
+still available as `vad-probe --variant 5`. Ultra still separates pauses weakly (58% of pause frames below 0.5).
+
+Timing check, not a result. Five interleaved runs of `--vad` on a 117 s clip (Ultra Q8_0, 4 threads), before / now, wall
+seconds with the load average at the start: 19.35 (64.5) / 17.51 (61.2), 18.48 (53.9) / 13.28 (51.0), 16.78 (50.1) / 10.78
+(49.5), 13.61 (48.0) / 11.04 (52.1), 11.03 (51.8) / 11.02 (47.0). This was not measured on a quiet machine (load above 45
+throughout), so only the direction is usable: the new build is not slower.
 
 ### Parity with the transformers reference (Ultra)
 
