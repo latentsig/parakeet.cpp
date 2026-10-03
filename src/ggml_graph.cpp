@@ -31,7 +31,10 @@ int g_backend_threads = 0;
 // safe for concurrent compute, so run_graph serializes it. Callers that need
 // real parallelism lease a backend from a pool (backend_pool.hpp); a thread
 // with a lease never takes this lock for compute.
-std::mutex g_backend_mutex;
+// Recursive: run_graph holds it while the build lambda runs, and a build lambda
+// that touches a loader whose weights are not yet realized calls
+// global_backend() (through ensure_weights_realized) on the same thread.
+std::recursive_mutex g_backend_mutex;
 } // namespace
 
 // Default ggml compute-thread count when --threads is unset. On this class of
@@ -74,7 +77,7 @@ Backend& global_backend() {
     // Taken for the lazy create and the late thread-count sync. Concurrent
     // requests on pooled backends still ask the global backend for its device
     // name, so this must be safe to call from several threads.
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
     return global_backend_locked();
 }
 
@@ -85,7 +88,7 @@ void shutdown_backend() {
     // process exit, AFTER the driver's atexit handler, which aborts with
     // "driver shutting down". Call from main() before returning (model objects,
     // which hold their own device weight buffers, must already be destroyed).
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
     g_backend.reset();
     g_backend_threads = 0;
 }
@@ -101,7 +104,7 @@ bool run_graph(size_t /*mem_bytes*/, int n_threads,
         slot->runs.fetch_add(1, std::memory_order_relaxed);
         return slot->backend.compute(build, out);
     }
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
     Backend& be = global_backend_locked();
     // When no global override is set, honor the caller's per-call n_threads (the
     // historical behavior, used by the unit tests). A positive global override

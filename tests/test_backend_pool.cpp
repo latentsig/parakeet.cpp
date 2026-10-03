@@ -67,6 +67,22 @@ static void test_routing() {
     CHECK(pool->working_set_bytes() > 0, "working set reported after use");
 }
 
+// A build lambda may ask for the global backend (ensure_weights_realized does,
+// for a loader whose weights are not realized yet) while run_graph holds the
+// global lock. That must not deadlock.
+static void test_global_backend_inside_build() {
+    std::vector<float> a(8, 1.0f), b(8, 2.0f), out;
+    const bool ok = pk::run_graph(0, 0, [&](ggml_context* ctx) -> ggml_tensor* {
+        const char* name = pk::global_backend().device_name();
+        (void)name;
+        const int64_t ne[1] = {8};
+        ggml_tensor* ta = pk::graph_input_tensor(ctx, GGML_TYPE_F32, 1, ne, a.data(), 32);
+        ggml_tensor* tb = pk::graph_input_tensor(ctx, GGML_TYPE_F32, 1, ne, b.data(), 32);
+        return ggml_add(ctx, ta, tb);
+    }, out);
+    CHECK(ok && out.size() == 8 && out[0] == 3.0f, "global_backend() inside a build lambda");
+}
+
 static void test_reentrant_and_null() {
     auto pool = std::make_shared<pk::BackendPool>(1, 1);
     pk::PoolLease outer(pool);
@@ -143,6 +159,7 @@ static void test_shutdown_waits() {
 }
 
 int main() {
+    test_global_backend_inside_build();
     test_routing();
     test_reentrant_and_null();
     test_limit_and_peak();
