@@ -12,8 +12,8 @@ so a conv weight of shape (out, in, k) is read by ggml as ne = [k, in, out].
 
 Only ``onnx`` and ``numpy`` and ``gguf`` are needed (no torch).
 
-    python scripts/convert_silero_vad_to_gguf.py silero_vad.onnx silero-vad.gguf
-    python scripts/convert_silero_vad_to_gguf.py silero_vad.onnx silero-vad-f16.gguf --dtype f16
+    python scripts/convert_silero_vad_to_gguf.py silero_vad.onnx silero-vad-f32.gguf --version 6.2.3
+    python scripts/convert_silero_vad_to_gguf.py silero_vad.onnx silero-vad-f16.gguf --version 6.2.3 --dtype f16
 
 ``--dtype f16`` stores the conv and LSTM weights as F16. The STFT basis and all
 biases stay F32. The C++ side converts to F32 at load time.
@@ -79,7 +79,7 @@ def main():
     ap.add_argument("onnx", help="silero_vad.onnx (the 8k + 16k file)")
     ap.add_argument("output", help="output .gguf")
     ap.add_argument("--dtype", choices=["f32", "f16"], default="f32")
-    ap.add_argument("--version", default="", help="silero-vad release the file comes from, e.g. 6.2.3")
+    ap.add_argument("--version", required=True, help="silero-vad release the ONNX file comes from, e.g. 6.2.3")
     args = ap.parse_args()
 
     raw = pathlib.Path(args.onnx).read_bytes()
@@ -90,8 +90,7 @@ def main():
     w.add_string("general.license", "MIT")
     w.add_string("general.url", "https://github.com/snakers4/silero-vad")
     w.add_string("silero_vad.source.sha256", hashlib.sha256(raw).hexdigest())
-    if args.version:
-        w.add_string("silero_vad.source.version", args.version)
+    w.add_string("silero_vad.source.version", args.version)
     w.add_array("silero_vad.sample_rates", sorted(RATES))
     w.add_uint32("silero_vad.encoder.n_layers", 4)
     w.add_array("silero_vad.encoder.strides", [1, 2, 2, 1])

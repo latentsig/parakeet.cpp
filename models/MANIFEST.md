@@ -135,3 +135,14 @@ with `--vad drop`.
   compression ratios; exact sizes will be populated after conversion.
 - Q4_K WER for models other than the 110m anchor has not yet been measured (the 110m
   measured WER 0.0 — see `docs/quantization.md`).
+
+### `snakers4/silero-vad` v6.2.3 (voice activity detection, MIT)
+
+Converted with `scripts/convert_silero_vad_to_gguf.py` from the official
+`silero_vad.onnx` (both sample rates in one file). Not published yet. Max
+probability difference vs onnxruntime on the test clip, in `docs/vad.md`.
+
+| Variant | File | Size | Max diff vs onnxruntime | Validated |
+|---|---|---:|---:|---|
+| F32 | `silero-vad-f32.gguf` | 2.2 MB | 2e-6 | PASS |
+| F16 | `silero-vad-f16.gguf` | 1.3 MB | 3e-3 | PASS |
