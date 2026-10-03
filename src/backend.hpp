@@ -55,6 +55,9 @@ public:
     void set_n_threads(int n_threads);
     int  n_threads() const { return n_threads_; }
 
+    // True when graphs run on the plain ggml CPU backend (no GPU device).
+    bool is_cpu() const;
+
     // Name of the selected compute device ("cpu" for the CPU backend, or the
     // registry device name for a GPU backend, e.g. the CUDA device name).
     const char* device_name() const { return device_name_.c_str(); }
@@ -124,6 +127,10 @@ void add_graph_input(ggml_tensor* t, const void* host, size_t nbytes);
 ggml_tensor* graph_input_tensor(ggml_context* ctx, int type, int n_dims,
                                 const int64_t* ne, const void* host,
                                 size_t nbytes);
+
+// True when the Backend driving the current compute is the ggml CPU backend.
+// Must be called from inside a build lambda passed to Backend::compute.
+bool active_backend_is_cpu();
 
 // Capture an intermediate graph tensor for readback after Backend::compute.
 // `*dst` is resized to the tensor's element count and filled with its f32

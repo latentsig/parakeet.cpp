@@ -85,6 +85,7 @@ src/                 libparakeet implementation
                        encoder.cpp / conformer.cpp / relpos_attention.cpp
                        ctc_decoder.cpp    , CTC head + greedy decode
                        prediction.cpp     , stacked LSTM prediction net
+                       exact_matvec.hpp/cpp, multi-column CPU matmul bitwise equal to the one-column ggml matmul (batched decode)
                        joint.cpp          , joint network
                        tdt.cpp / rnnt.cpp , TDT / RNNT greedy loops
                        streaming_encoder.hpp/cpp, cache-aware streaming FastConformer encoder
@@ -150,6 +151,8 @@ tests/               ctest targets
                        test_vad_segmenter.cpp  , segmenter cut rules (model-independent)
                        test_transcribe_vad.cpp , --vad path vs plain pass on long audio (PARAKEET_TEST_GGUF_ULTRA, PARAKEET_TEST_GGUF)
                        test_asr_committer.cpp  , shared word/utterance finalize logic (model-independent)
+                       test_exact_batch.cpp    , batched decode == per-item decode, bit for bit, batch sizes 1 to 16 (PARAKEET_TEST_GGUF, _ULTRA, _REDUX_KEEP, _REDUX_DEQ)
+                       bench_batch_decode.cpp  , timing of per-item vs batched decode (not a ctest)
                        test_ced_parity.cpp     , CedTagger scores == ced.cpp PyTorch baseline (PARAKEET_TEST_CED_GGUF f32 + PARAKEET_TEST_CED_BASELINE)
                        test_sound_stream.cpp   , pk::SoundStream windowing/on-off-min_duration logic (model-independent)
                        test_sound_capi.cpp     , sound_stream_* C-API (PARAKEET_TEST_CED_GGUF)

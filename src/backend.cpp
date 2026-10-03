@@ -173,6 +173,14 @@ void Backend::set_n_threads(int n_threads) {
     }
 }
 
+bool Backend::is_cpu() const {
+    return impl_ && impl_->backend && ggml_backend_is_cpu(impl_->backend);
+}
+
+bool active_backend_is_cpu() {
+    return t_active != nullptr && t_active->is_cpu();
+}
+
 size_t Backend::graph_alloc_bytes() const {
     return impl_ ? impl_->alloc_bytes.load(std::memory_order_relaxed) : 0;
 }

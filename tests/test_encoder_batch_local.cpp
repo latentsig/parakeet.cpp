@@ -19,8 +19,10 @@
 //
 // As in test_encoder_batch, item0 is the full baseline clip and item1 is its
 // first 3/4 zero-padded up to T0. The two correctness properties:
-//   * item0 must be BIT-EXACT to its standalone run (0.0) - the shorter padded
-//     neighbour must not perturb the full clip at all (no cross-item leakage).
+//   * item0 must match its standalone run within 1e-3 (float noise, not bit
+//     identity: the batched encoder uses different matmul kernels). A leak from
+//     the shorter padded neighbour would be of order 1, so this still gates
+//     cross-item leakage.
 //   * item1's valid region must match its standalone run within 5e-2/5e-2.
 //     item1's standalone run is at its OWN (shorter) Tp while the batched run is
 //     at the padded width T0; the differing tensor shapes change ggml reduction
@@ -28,7 +30,7 @@
 //     accumulates over the 17 conformer layers. The tolerance mirrors the
 //     full-attention test. (Tightening the window past production's W=32 sharpens
 //     the banded softmax and amplifies that noise on near-zero elements - a
-//     numerical effect, not pad leakage: item0 stays bit-exact and item1's
+//     numerical effect, not pad leakage: item0 stays within 1e-3 and item1's
 //     mean|d| stays ~1e-2 throughout.)
 int main() {
     const char* gguf = std::getenv("PARAKEET_TEST_GGUF");
