@@ -12,6 +12,8 @@
 #include <cmath>
 #include <vector>
 #include <tuple>
+// Tolerance check against the NeMo-oriented fixtures. The exact, bit for bit
+// comparison with per-item decode is test_exact_batch.
 static bool toks_equal(const std::vector<pk::TokenInfo>& a, const std::vector<pk::TokenInfo>& b){
     if (a.size()!=b.size()) return false;
     for (size_t i=0;i<a.size();++i){
