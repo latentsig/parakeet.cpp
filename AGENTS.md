@@ -148,7 +148,10 @@ tests/               ctest targets
                        test_model_loader_ternary.cpp, ternary + VAD flags from GGUF KVs
                        bench_ternary.cpp       , single-thread throughput of each ternary kernel (not a ctest)
                        test_vad_head.cpp       , VAD head probabilities (PARAKEET_TEST_GGUF_ULTRA)
-                       test_vad_segmenter.cpp  , segmenter cut rules (model-independent)
+                       test_vad_segmenter.cpp  , segmenter cut rules, 32 ms grid, Silero defaults, event tracker (model-independent)
+                       test_vad_options.cpp    , VAD option parser, NULL and bad-file C-API paths (model-independent)
+                       test_capi_vad_silero.cpp, Silero via the C-API: JSON, options, threads, stream (PARAKEET_TEST_SILERO_GGUF)
+                       test_transcribe_vad_silero.cpp, transcribe with Silero segments on a model without a head (PARAKEET_TEST_SILERO_GGUF, PARAKEET_TEST_GGUF)
                        test_transcribe_vad.cpp , --vad path vs plain pass on long audio (PARAKEET_TEST_GGUF_ULTRA, PARAKEET_TEST_GGUF)
                        test_asr_committer.cpp  , shared word/utterance finalize logic (model-independent)
                        test_vad_batched.cpp    , grouped VAD decode == per-segment decode, bit for bit (PARAKEET_TEST_GGUF_ULTRA, _REDUX_KEEP, _REDUX_DEQ)
@@ -320,7 +323,8 @@ parakeet-cli info <model.gguf>
 parakeet-cli transcribe --model <model.gguf> --input <audio.wav> [--decoder ctc|tdt] [--stream] [--timestamps] [--json]
 parakeet-cli quantize <in.gguf> <out.gguf> <type>
 parakeet-cli bench --model <m.gguf> --manifest <file> [--threads N] [--concurrency K] [--json <out>]   # K workers over a pool of K backends
-parakeet-cli transcribe --model <ultra-or-redux.gguf> --input <long.wav> --vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]
+parakeet-cli transcribe --model <asr.gguf> --input <long.wav> --vad [--vad-model <silero.gguf>] [--vad-threshold F] [--vad-min-pause SEC] [--vad-min-speech SEC] [--vad-max-seg SEC]
+parakeet-cli vad --model <ultra-or-redux-or-silero.gguf> --input <wav|-> [--mode speech|segments] [--probabilities]   # speech regions as JSON
 parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]   # dump VAD head probabilities as t_sec,p
 parakeet-cli scene [--model <asr.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>] --input <audio.wav> [--latency model|low|very_low|ultra_low] [--chunk-ms N] [--show-speech] [--json]
 parakeet-cli scene ... --speakers <speaker.gguf> --registry <file> [--speaker-threshold F]   # names diarized speakers
@@ -369,7 +373,12 @@ with a VAD head (Ultra/Redux); see `docs/ternary.md`:
 
 ```
 parakeet_capi_transcribe_path_json_vad   # same JSON as _json, long audio cut at VAD pauses
+parakeet_capi_vad_pcm_json / _path_json  # speech regions as JSON; ctx is a VAD-head model or a Silero GGUF
+parakeet_capi_transcribe_path_json_vad_with # cut with a Silero ctx, so any ASR model can segment
+parakeet_capi_vad_stream_begin / _feed_json / _reset / _free  # streaming Silero: probabilities + speech events
 ```
+
+A Silero VAD GGUF loads into a `parakeet_ctx` of kind `PARAKEET_MODEL_KIND_VAD`; see `docs/vad.md`.
 
 Speaker diarization (ABI v7, additive; not used by LocalAI yet). A
 diarization GGUF loads into its own `parakeet_ctx`; see `docs/diarization.md`:

@@ -110,6 +110,7 @@ set(PARAKEET_SRC
     src/model.cpp
     src/vad_head.cpp
     src/vad_segmenter.cpp
+    src/vad_json.cpp
     src/parakeet_capi.cpp
     src/common.cpp
     src/audio_io.cpp
@@ -155,7 +156,8 @@ set(PARAKEET_SRC
     src/speaker_registry.cpp
     src/speaker_identifier.cpp
     src/speaker_encoder.cpp
-    src/scene_render.cpp)
+    src/scene_render.cpp
+    src/silero_vad.cpp)
 
 if(PARAKEET_SHARED)
   add_library(parakeet SHARED ${PARAKEET_SRC})

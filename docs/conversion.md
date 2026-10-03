@@ -270,3 +270,63 @@ token/duration split point is `vocab+1 = 1025`.
 transposed to `[B, T', d_model]` and sliced to the first `N = joint_enc_frames =
 4` frames before being fed to the joint, keeping `joint_out` small. The C++ joint
 test feeds `encoder_out[:, :N]` to match.
+
+## Silero VAD GGUF (`convert_silero_vad_to_gguf.py`)
+
+`scripts/convert_silero_vad_to_gguf.py` converts the official Silero VAD ONNX
+file (`silero_vad.onnx` from the `snakers4/silero-vad` release, MIT licence) to
+a small GGUF read by `pk::SileroVad` (`src/silero_vad.hpp`). It needs only
+`onnx`, `numpy` and `gguf`. The ONNX file holds two complete weight sets (16 kHz
+and 8 kHz) in the two branches of one `If` node; both go into one GGUF.
+
+```
+python scripts/convert_silero_vad_to_gguf.py silero_vad.onnx silero-vad-f32.gguf --version 6.2.3
+python scripts/convert_silero_vad_to_gguf.py silero_vad.onnx silero-vad-f16.gguf --version 6.2.3 --dtype f16
+```
+
+`--version` is required: it records which release the ONNX file came from. The
+converter checks every tensor shape and dtype and stops on a mismatch.
+
+Header: `general.architecture` = `"silero_vad"`, `general.name` = `"silero-vad"`,
+`general.license` = `"MIT"`, `general.url` = the upstream repository.
+
+| Key | Type | Value |
+| --- | --- | --- |
+| `silero_vad.source.version` | string | upstream release, from `--version` |
+| `silero_vad.source.sha256` | string | SHA-256 of the ONNX file that was converted |
+| `silero_vad.sample_rates` | int32[] | `[8000, 16000]` |
+| `silero_vad.encoder.n_layers` | u32 | 4 |
+| `silero_vad.encoder.strides` | int32[] | `[1, 2, 2, 1]` |
+| `silero_vad.encoder.channels` | int32[] | `[128, 64, 64, 128]` |
+| `silero_vad.encoder.kernel` | u32 | 3 |
+| `silero_vad.lstm.hidden` | u32 | 128 |
+| `silero_vad.<sr>.chunk_samples` | u32 | 512 (16000), 256 (8000) |
+| `silero_vad.<sr>.context_samples` | u32 | 64 (16000), 32 (8000) |
+| `silero_vad.<sr>.stft.n_fft` | u32 | 256 (16000), 128 (8000) |
+| `silero_vad.<sr>.stft.hop` | u32 | 128 (16000), 64 (8000) |
+| `silero_vad.<sr>.stft.right_reflect_pad` | u32 | 64 (16000), 32 (8000) |
+
+The loader checks that the per-rate values equal the ones in the table and
+refuses the file otherwise: the chunk geometry is part of the model.
+
+Tensors: 15 per sample rate, 30 in total. The prefix is `vad16k.` or `vad8k.`;
+the rest is the name in the ONNX graph. Shapes below are the PyTorch shapes
+(ggml sees them reversed). `bins` is `n_fft / 2 + 1` (129 at 16 kHz, 65 at 8 kHz).
+
+| Tensor (after the prefix) | Shape | Stored as |
+| --- | --- | --- |
+| `stft.forward_basis_buffer` | `(2*bins, 1, n_fft)` | F32 (windowed DFT basis: real rows, then imaginary rows) |
+| `encoder.0.reparam_conv.weight` / `.bias` | `(128, bins, 3)` / `(128)` | weight F32 or F16, bias F32 |
+| `encoder.1.reparam_conv.weight` / `.bias` | `(64, 128, 3)` / `(64)` | same |
+| `encoder.2.reparam_conv.weight` / `.bias` | `(64, 64, 3)` / `(64)` | same |
+| `encoder.3.reparam_conv.weight` / `.bias` | `(128, 64, 3)` / `(128)` | same |
+| `decoder.rnn.weight_ih` / `weight_hh` | `(512, 128)` | F32 or F16 |
+| `decoder.rnn.bias_ih` / `bias_hh` | `(512)` | F32 |
+| `decoder.decoder.2.weight` / `.bias` | `(1, 128, 1)` / `(1)` | weight F32 or F16, bias F32 |
+
+`--dtype f16` stores the conv and LSTM weights as F16 and keeps the STFT basis
+and all biases in F32. The loader widens every tensor to F32 in memory, so F16
+only makes the file smaller; it does not change the compute path.
+
+The LSTM gate order is the PyTorch one: input, forget, cell, output. The
+encoder stride pattern reduces the 4 STFT frames of one chunk to one vector.
