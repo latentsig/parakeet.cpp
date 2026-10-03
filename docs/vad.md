@@ -5,7 +5,7 @@ parakeet.cpp has two voice activity detectors behind one API:
 | Detector | Where it comes from | Frame | Input rates |
 | --- | --- | --- | --- |
 | VAD head | Inside the ASR GGUF of `moondream/parakeet-ultra` and `-redux` (see [ternary.md](ternary.md)) | 80 ms | 16 kHz (other rates are resampled) |
-| Silero VAD | Its own small GGUF (`general.architecture` = `silero_vad`) | 32 ms | 16 kHz and 8 kHz (other rates are resampled to 16 kHz) |
+| Silero VAD | Its own small GGUF (`general.architecture` = `silero_vad`), [published](https://huggingface.co/mudler/parakeet-cpp-gguf) as `silero-vad-f32.gguf` and `silero-vad-f16.gguf` | 32 ms | 16 kHz and 8 kHz (other rates are resampled to 16 kHz) |
 
 Both give one speech probability per frame. A shared segmenter
 (`src/vad_segmenter.hpp`) turns the probabilities into speech regions or into
@@ -155,7 +155,9 @@ Licence: the Silero VAD model and code are MIT licensed, copyright Silero Team
 weights of that model. Keep the licence and the attribution when you
 redistribute them; the GGUF carries `general.license` and `general.url`.
 
-Make the file from the official ONNX with `scripts/convert_silero_vad_to_gguf.py`
+Download `silero-vad-f32.gguf` or `silero-vad-f16.gguf` from
+[mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf).
+They were converted from Silero VAD v6.2.3. To reproduce them, make the file from the official ONNX with `scripts/convert_silero_vad_to_gguf.py`
 (see the schema in [conversion.md](conversion.md)). One file holds the 16 kHz
 and the 8 kHz weights. The GGUF records the upstream version and the SHA-256 of
 the ONNX file it came from. F32 is 2.2 MB, F16 is 1.3 MB.

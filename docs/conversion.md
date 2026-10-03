@@ -278,6 +278,8 @@ file (`silero_vad.onnx` from the `snakers4/silero-vad` release, MIT licence) to
 a small GGUF read by `pk::SileroVad` (`src/silero_vad.hpp`). It needs only
 `onnx`, `numpy` and `gguf`. The ONNX file holds two complete weight sets (16 kHz
 and 8 kHz) in the two branches of one `If` node; both go into one GGUF.
+The converted files (v6.2.3) are published in
+[mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf); run the commands below to reproduce them.
 
 ```
 python scripts/convert_silero_vad_to_gguf.py silero_vad.onnx silero-vad-f32.gguf --version 6.2.3

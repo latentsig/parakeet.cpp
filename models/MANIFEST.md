@@ -103,7 +103,7 @@ WER (word error rate) is measured against the NeMo reference on
 ### `moondream/parakeet-ultra` and `moondream/parakeet-redux` (HF safetensors, v3 shape)
 
 Converted with `scripts/convert_hf_parakeet_to_gguf.py --template <v3 gguf>`.
-Neither is published yet; sizes are from local conversions. Transcript on
+Published in [mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf) (CC-BY-4.0: credit Moondream and NVIDIA, and note the files are converted copies). Transcript on
 `tests/fixtures/speech.wav` matches the reference. WER on LibriSpeech-100 and on synthetic long-form clips (with and without `--vad`) is in `docs/ternary.md`.
 
 | Model | Variant | Converter flags | Size | Notes |
@@ -112,13 +112,22 @@ Neither is published yet; sizes are from local conversions. Transcript on
 | parakeet-redux | packed ternary | `--ternary keep` | 213.3 MB | CPU only, no streaming, see `docs/ternary.md` |
 | parakeet-redux | dequantized F16 | `--ternary dequant --dtype f16` | 1441.9 MB | runs on any backend |
 
-Expected file set for a release (names as used by the tests and docs):
-`parakeet-ultra-f16.gguf`, `parakeet-redux-ternary.gguf` (`--ternary keep`, packed) and
-`parakeet-redux-f16.gguf` (`--ternary dequant --dtype f16`). Use it for any GPU backend and for CPUs that would run the packed
+Published files (sizes in bytes and SHA-256 from the Hugging Face listing):
+
+| File | Source and flags | Size (bytes) | SHA-256 |
+|---|---|---:|---|
+| [`ultra-f16.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/ultra-f16.gguf) | ultra, `--dtype f16` | 1,441,900,448 | `5414aea5536178726e8dca20cdfc91cfa3e5443a83a65c4d08acd1c5df65323f` |
+| [`ultra-q8_0.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/ultra-q8_0.gguf) | ultra, `--dtype q8_0` | 941,517,728 | `c2fb452a9df468a141012b01c8c168a25ce93f710897c7de6e353c6cc250986a` |
+| [`redux-packed.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-packed.gguf) | redux, `--ternary keep` (packed) | 213,319,296 | `574614b9a4d9f72ab202877a7ad6a1f4bf819dd1d27b9d42dfe8cd429fcebdd5` |
+| [`redux-f16.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-f16.gguf) | redux, `--ternary dequant --dtype f16` | 1,441,900,448 | `f2e2a9c412191a4ecbeb70f0c9b837749c0147489f7f2d36f3a0b4bc5d41cf79` |
+| [`redux-q8_0.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-q8_0.gguf) | redux, `--ternary dequant --dtype q8_0` | 941,517,728 | `3429a4598946c406dbb4af5bb589d4dd307b069d550d98e24bef6779c4e6988f` |
+
+The packed Redux file is CPU only and offline only. The Redux F16 and Q8_0 files are dequantized
+(ordinary weights expanded from the ternary ones). Use a dequantized file for any GPU backend and for CPUs that would run the packed
 file on the slow scalar kernel: MSVC builds, Windows on ARM and aarch64 without dotprod. x86-64 with AVX2
 or AVX-512 VNNI and aarch64 with dotprod get SIMD kernels for the packed file. The packed file also keeps the
 original packed tensors resident next to the repacked planes, so its memory use is more than 213 MB.
-Ultra Q8_0 (`--dtype q8_0`, 941.5 MB) is measured in `docs/ternary.md` but is optional.
+Ultra Q8_0 is measured in `docs/ternary.md`.
 
 Both carry the `parakeet.vad.*` KVs and `vad_head.*` tensors unless converted
 with `--vad drop`.
@@ -139,10 +148,13 @@ with `--vad drop`.
 ### `snakers4/silero-vad` v6.2.3 (voice activity detection, MIT)
 
 Converted with `scripts/convert_silero_vad_to_gguf.py` from the official
-`silero_vad.onnx` (both sample rates in one file). Not published yet. Max
-probability difference vs onnxruntime on the test clip, in `docs/vad.md`.
+`silero_vad.onnx` (both sample rates in one file). Published in
+[mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf).
+The model is MIT licensed, Copyright (c) 2020-present Silero Team
+(<https://github.com/snakers4/silero-vad>). Max probability difference vs
+onnxruntime on the test clip, in `docs/vad.md`.
 
-| Variant | File | Size | Max diff vs onnxruntime | Validated |
-|---|---|---:|---:|---|
-| F32 | `silero-vad-f32.gguf` | 2.2 MB | 2e-6 | PASS |
-| F16 | `silero-vad-f16.gguf` | 1.3 MB | 3e-3 | PASS |
+| Variant | File | Size (bytes) | SHA-256 | Max diff vs onnxruntime | Validated |
+|---|---|---:|---|---:|---|
+| F32 | [`silero-vad-f32.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/silero-vad-f32.gguf) | 2,184,480 | `1398e5ce230bd8f20c06f825ed3a41dc4528ef7e6fe8f8ec8a5b7aedefbee943` | 2e-6 | PASS |
+| F16 | [`silero-vad-f16.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/silero-vad-f16.gguf) | 1,264,928 | `8160489282352accc0e95925c2f6bf3d76fb8f7bccdce5c7e46808cb15e8443c` | 3e-3 | PASS |
