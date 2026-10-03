@@ -5,6 +5,7 @@
 #include "ggml-alloc.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
+#include <cmath>
 #include <cstring>
 #include <vector>
 #include <utility>
@@ -64,12 +65,12 @@ ModelLoader::~ModelLoader(){
     // from_ptr buffer (free_buffer == NULL) that does NOT own its memory
     // (ctx_ does); for the device path it OWNS the device buffer. The device
     // upload path releases ctx_ as soon as the upload completes.
-    if(weights_buf_) ggml_backend_buffer_free(weights_buf_);
+    if(ggml_backend_buffer_t wb = weights_buf_.load()) ggml_backend_buffer_free(wb);
     if(device_ctx_) ggml_free(device_ctx_);
     if(gguf_) gguf_free(gguf_); if(ctx_) ggml_free(ctx_);
 }
 bool ModelLoader::realize_weights(ggml_backend_t backend){
-    if(weights_buf_) return true;                       // idempotent
+    if(weights_buf_.load(std::memory_order_acquire)) return true;   // idempotent
     if(!backend || !ctx_){ PK_LOG("realize_weights: null backend/ctx"); return false; }
 
     if (ggml_backend_is_cpu(backend)) {
@@ -83,9 +84,11 @@ bool ModelLoader::realize_weights(ggml_backend_t backend){
         // reshapes/views resolve at build time). Eliminates per-call recopy.
         void*  base = ggml_get_mem_buffer(ctx_);
         size_t size = ggml_get_mem_size(ctx_);
-        weights_buf_ = ggml_backend_cpu_buffer_from_ptr(base, size);
-        if(!weights_buf_){ PK_LOG("realize_weights: buffer_from_ptr failed"); return false; }
-        for(auto& kv : tensors_) kv.second->buffer = weights_buf_;
+        ggml_backend_buffer_t wb = ggml_backend_cpu_buffer_from_ptr(base, size);
+        if(!wb){ PK_LOG("realize_weights: buffer_from_ptr failed"); return false; }
+        for(auto& kv : tensors_) kv.second->buffer = wb;
+        // Publish last: a reader that sees the buffer sees the tensors set up.
+        weights_buf_.store(wb, std::memory_order_release);
         return true;
     }
 
@@ -114,8 +117,8 @@ bool ModelLoader::realize_weights(ggml_backend_t backend){
         devmap.emplace(kv.first, d);
         ups.emplace_back(d, s->data);   // host source (valid in ctx_ mem buffer)
     }
-    weights_buf_ = ggml_backend_alloc_ctx_tensors(device_ctx_, backend);
-    if(!weights_buf_){ PK_LOG("realize_weights: alloc_ctx_tensors failed"); return false; }
+    ggml_backend_buffer_t wb = ggml_backend_alloc_ctx_tensors(device_ctx_, backend);
+    if(!wb){ PK_LOG("realize_weights: alloc_ctx_tensors failed"); return false; }
     for (auto& pr : ups)
         ggml_backend_tensor_set(pr.first, pr.second, 0, ggml_nbytes(pr.first));
     tensors_.swap(devmap);   // graphs now reference the device-resident tensors
@@ -126,6 +129,7 @@ bool ModelLoader::realize_weights(ggml_backend_t backend){
     // model) for the lifetime of the process.
     ggml_free(ctx_);
     ctx_ = nullptr;
+    weights_buf_.store(wb, std::memory_order_release);
     return true;
 }
 bool ModelLoader::load(const std::string& path){
@@ -170,6 +174,29 @@ bool ModelLoader::load(const std::string& path){
         cfg_.prompt.dict_keys = kv_str_arr(gguf_, "parakeet.prompt.dictionary.keys");
         cfg_.prompt.dict_vals = kv_i32_arr(gguf_, "parakeet.prompt.dictionary.values");
     }
+    cfg_.ternary.present = kv_bool(gguf_, "parakeet.ternary.present", false);
+    if(cfg_.ternary.present){
+        cfg_.ternary.group_size = kv_u32(gguf_, "parakeet.ternary.group_size", 128);
+        if(cfg_.ternary.group_size != 128){
+            PK_LOG("invalid packed ternary GGUF: parakeet.ternary.group_size is %u, only 128 is supported",
+                   (unsigned)cfg_.ternary.group_size);
+            return false;
+        }
+    }
+    cfg_.vad.present = kv_bool(gguf_, "parakeet.vad.present", false);
+    if(cfg_.vad.present){
+        cfg_.vad.d_in      = kv_u32(gguf_, "parakeet.vad.d_in", 0);
+        cfg_.vad.hidden    = kv_u32(gguf_, "parakeet.vad.hidden", 0);
+        cfg_.vad.kernel    = kv_u32(gguf_, "parakeet.vad.kernel", 0);
+        cfg_.vad.frame_sec = kv_f32(gguf_, "parakeet.vad.frame_sec", 0.08f);
+        if(!std::isfinite(cfg_.vad.frame_sec) || !(cfg_.vad.frame_sec > 0.0f) ||
+           cfg_.vad.d_in==0 || cfg_.vad.hidden==0 || cfg_.vad.kernel==0 || (cfg_.vad.kernel % 2)==0){
+            PK_LOG("invalid VAD config: frame_sec=%g d_in=%u hidden=%u kernel=%u (need finite frame_sec > 0, "
+                   "non-zero sizes and an odd kernel)", (double)cfg_.vad.frame_sec,
+                   (unsigned)cfg_.vad.d_in, (unsigned)cfg_.vad.hidden, (unsigned)cfg_.vad.kernel);
+            return false;
+        }
+    }
     if(cfg_.att_context_style != "regular"){
         StreamingCfg& s = cfg_.streaming;
         s.chunk_size = kv_i32_arr(gguf_, "parakeet.streaming.chunk_size");
@@ -186,6 +213,15 @@ bool ModelLoader::load(const std::string& path){
     cfg_.n_fft       = kv_u32(gguf_, "parakeet.preprocessor.n_fft");
     cfg_.win_length  = kv_u32(gguf_, "parakeet.preprocessor.win_length");
     cfg_.hop_length  = kv_u32(gguf_, "parakeet.preprocessor.hop_length");
+    if(cfg_.vad.present){
+        const double enc_frame = (double)cfg_.hop_length * (double)cfg_.subsampling_factor / (double)cfg_.sample_rate;
+        const double ratio = enc_frame > 0.0 ? (double)cfg_.vad.frame_sec / enc_frame : 0.0;
+        if(!(enc_frame > 0.0) || std::fabs(ratio - std::round(ratio)) > 1e-3 || std::round(ratio) < 1.0){
+            PK_LOG("invalid VAD config: frame_sec=%g is not a whole multiple of the encoder frame (%g s)",
+                   (double)cfg_.vad.frame_sec, enc_frame);
+            return false;
+        }
+    }
     cfg_.preemph     = kv_f32(gguf_, "parakeet.preprocessor.preemph", 0.0f);
     cfg_.mag_power   = kv_f32(gguf_, "parakeet.preprocessor.mag_power", 2.0f);
     cfg_.normalize   = kv_str(gguf_, "parakeet.preprocessor.normalize", "per_feature");

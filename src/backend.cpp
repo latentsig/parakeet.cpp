@@ -8,10 +8,12 @@
 #include "ggml-backend.h"
 #include "ggml-cpu.h"
 
+#include <atomic>
 #include <cassert>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -19,8 +21,9 @@ namespace pk {
 
 // Gallocr buffer size (bytes) after the most recent single-backend (CPU)
 // compute. Lets tests assert attention memory scales O(T*window), not O(T^2).
-static size_t g_last_graph_alloc_bytes = 0;
-size_t last_graph_alloc_bytes() { return g_last_graph_alloc_bytes; }
+// Atomic: concurrent requests on pooled backends each update it.
+static std::atomic<size_t> g_last_graph_alloc_bytes{0};
+size_t last_graph_alloc_bytes() { return g_last_graph_alloc_bytes.load(std::memory_order_relaxed); }
 
 namespace {
 // Number of graph nodes the metadata context must hold. The biggest single
@@ -59,6 +62,9 @@ struct Backend::Impl {
     std::vector<PendingInput> pending;
     // Extra tensors to read back after compute (registered via capture_output).
     std::vector<PendingCapture> captures;
+    // Current gallocr buffer size, published after each compute so another
+    // thread (the pool's memory report) can read it without the compute lock.
+    std::atomic<size_t> alloc_bytes{0};
 };
 
 // Thread-local pointer to the Backend whose compute() build lambda is currently
@@ -68,7 +74,7 @@ struct Backend::Impl {
 // a single pointer is sufficient.
 static thread_local Backend* t_active = nullptr;
 
-Backend::Backend(int n_threads) : impl_(new Impl()) {
+Backend::Backend(int n_threads, bool cpu_only) : impl_(new Impl()) {
     // Optional override via PARAKEET_DEVICE:
     //   - "cpu"            forces the CPU backend (CPU baseline on a GPU box).
     //   - a device name    selects that specific registry device by name, e.g.
@@ -76,7 +82,7 @@ Backend::Backend(int n_threads) : impl_(new Impl()) {
     //   - unset            auto-pick the first GPU / integrated-GPU device.
     const char* force = std::getenv("PARAKEET_DEVICE");
     const std::string want = force ? force : "";
-    const bool force_cpu = want == "cpu" || want == "CPU";
+    const bool force_cpu = cpu_only || want == "cpu" || want == "CPU";
 
     // Case-insensitive equality, used to match PARAKEET_DEVICE against the
     // registry's device names (which are upper-case like "CUDA0"/"Vulkan0").
@@ -165,6 +171,10 @@ void Backend::set_n_threads(int n_threads) {
     if (impl_ && impl_->cpu_backend) {
         ggml_backend_cpu_set_n_threads(impl_->cpu_backend, n_threads_);
     }
+}
+
+size_t Backend::graph_alloc_bytes() const {
+    return impl_ ? impl_->alloc_bytes.load(std::memory_order_relaxed) : 0;
 }
 
 ggml_backend_t Backend::handle() const {
@@ -284,7 +294,11 @@ bool Backend::compute(const std::function<ggml_tensor*(ggml_context*)>& build,
         }
         alloc_ok = ggml_gallocr_alloc_graph(impl_->galloc, gf);
         if (!alloc_ok) PK_LOG("Backend::compute: ggml_gallocr_alloc_graph failed");
-        else g_last_graph_alloc_bytes = ggml_gallocr_get_buffer_size(impl_->galloc, 0);
+        else {
+            const size_t bytes = ggml_gallocr_get_buffer_size(impl_->galloc, 0);
+            g_last_graph_alloc_bytes.store(bytes, std::memory_order_relaxed);
+            impl_->alloc_bytes.store(bytes, std::memory_order_relaxed);
+        }
     }
     if (!alloc_ok) {
         impl_->pending.clear();
@@ -349,6 +363,11 @@ void capture_graph_output(ggml_tensor* t, std::vector<float>* dst) {
 }
 
 void ensure_weights_realized(const ModelLoader& ml) {
+    if (ml.weights_realized()) return;
+    // Two threads may reach a never-realized loader together (a diarization or
+    // tagger model used from several threads). Serialize the one-time setup.
+    static std::mutex realize_mu;
+    std::lock_guard<std::mutex> lk(realize_mu);
     if (ml.weights_realized()) return;
     // realize_weights mutates tensor->buffer; the ModelLoader is held by `const`
     // ref throughout the inference path (the components are read-only views), but

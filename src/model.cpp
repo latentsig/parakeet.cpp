@@ -1,10 +1,14 @@
 #include "model.hpp"
 
 #include "audio_io.hpp"
+#include "common.hpp"
+#include "ternary.hpp"
 #include "mel.hpp"
 #include "mel_gpu.hpp"
 #include "encoder.hpp"
 #include "subsampling.hpp"
+#include "vad_head.hpp"
+#include "vad_segmenter.hpp"
 #include "ctc_decoder.hpp"
 #include "search.hpp"
 #include "tokenizer.hpp"
@@ -17,10 +21,13 @@
 #include "transcription.hpp"
 #include "decode_types.hpp"
 #include "backend.hpp"
+#include "backend_pool.hpp"
 #include "ggml_graph.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <exception>
 #include <stdexcept>
 #include <vector>
 
@@ -50,11 +57,91 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     if (m->loader_.config().arch == "diarization") {
         return nullptr;
     }
+    // A GGUF whose packed tensors and ternary flag disagree would skip the GPU
+    // refusal and the validation below, so refuse it outright.
+    {
+        const std::string err = ternary_flag_consistency_error(m->loader_);
+        if (!err.empty()) {
+            PK_LOG("%s; refusing to load it", err.c_str());
+            return nullptr;
+        }
+    }
+    // Packed ternary weights run on the CPU kernel only. Fail at load with a
+    // clear message instead of crashing inside a GPU graph.
+    if (m->loader_.config().ternary.present &&
+        std::string(pk::global_backend().device_name()) != "cpu") {
+        PK_LOG("this GGUF holds packed ternary weights, which run on the CPU backend only; "
+               "re-convert with --ternary dequant to use a GPU backend, or set PARAKEET_DEVICE=cpu");
+        return nullptr;
+    }
+    // Validate and repack every packed linear now so graph building never throws.
+    if (m->loader_.config().ternary.present) {
+        try {
+            ternary_prepare(m->loader_);
+        } catch (const std::exception& e) {
+            PK_LOG("invalid packed ternary GGUF: %s", e.what());
+            return nullptr;
+        }
+    }
     // Give the weights a CPU backend buffer ONCE so graphs reference them
     // directly as leaves (zero per-call copy). Done at load (vs. lazily on first
     // clone_weight) so the cost is paid up front, not per utterance.
     ensure_weights_realized(m->loader_);
     return m;
+}
+
+std::shared_ptr<BackendPool> Model::pool_snapshot() const {
+    std::lock_guard<std::mutex> lk(pool_mu_);
+    return pool_;
+}
+
+int Model::set_concurrency(int backends, int threads_each) {
+    if (backends < 1) backends = 1;
+    // GPU keeps one backend and the global mutex: the pool is CPU only.
+    if (backends > 1 && std::string(pk::global_backend().device_name()) != "cpu") {
+        PK_LOG("set_concurrency(%d): the compute device is not the CPU; keeping 1 backend", backends);
+        backends = 1;
+    }
+    std::shared_ptr<BackendPool> next;
+    if (backends > 1) {
+        if (threads_each < 1) {
+            // Split the default thread budget across the backends.
+            const int total = pk::effective_threads();
+            threads_each = std::max(1, total / backends);
+        }
+        next = std::make_shared<BackendPool>(backends, threads_each);
+    }
+    std::shared_ptr<BackendPool> old;
+    {
+        std::lock_guard<std::mutex> lk(pool_mu_);
+        old = std::move(pool_);
+        pool_ = std::move(next);
+    }
+    // `old` is released here; requests still holding a lease keep it alive and
+    // it is destroyed after the last of them finishes.
+    return backends;
+}
+
+int Model::concurrency() const {
+    std::shared_ptr<BackendPool> p = pool_snapshot();
+    return p ? p->size() : 1;
+}
+
+int Model::threads_per_backend() const {
+    std::shared_ptr<BackendPool> p = pool_snapshot();
+    return p ? p->threads_each() : 0;
+}
+
+size_t Model::pool_working_set_bytes() const {
+    std::shared_ptr<BackendPool> p = pool_snapshot();
+    return p ? p->working_set_bytes() : 0;
+}
+
+const Model::DecoderObjects& Model::decoder_objects() const {
+    std::call_once(decoder_once_, [this]() {
+        decoder_ = std::make_unique<DecoderObjects>(loader_);
+    });
+    return *decoder_;
 }
 
 // Forward declarations: subsampling-tiling helpers are defined below (after the
@@ -144,6 +231,7 @@ static EncodedAudio encode_16k(const ModelLoader& loader,
 // Decode one item's encoder output (row-major [d_model, Tout], channels-first)
 // into a transcript. Mirrors the tail of transcribe_16k exactly.
 static std::string decode_enc_out(const ModelLoader& loader,
+                                  const PredictionNet* dpred, const Joint* djoint,
                                   const std::vector<float>& enc_out,
                                   int d_model, int Tout, bool use_tdt) {
     const ParakeetConfig& cfg = loader.config();
@@ -152,8 +240,8 @@ static std::string decode_enc_out(const ModelLoader& loader,
         for (int t = 0; t < Tout; ++t)
             for (int c = 0; c < d_model; ++c)
                 enc_row[(size_t)t * d_model + c] = enc_out[(size_t)c * Tout + t];
-        PredictionNet pred(loader);
-        Joint        joint(loader);
+        const PredictionNet& pred  = *dpred;
+        const Joint&         joint = *djoint;
         const int max_symbols = static_cast<int>(cfg.max_symbols);
         std::vector<int32_t> ids;
         if (!cfg.tdt_durations.empty())
@@ -176,6 +264,7 @@ static std::string decode_enc_out(const ModelLoader& loader,
 std::string Model::transcribe_16k(const std::vector<float>& pcm16k,
                                   Decoder decoder,
                                   const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
     EncodedAudio encoded = encode_16k(loader_, pcm16k, prompt_index);
@@ -184,7 +273,10 @@ std::string Model::transcribe_16k(const std::vector<float>& pcm16k,
     const bool use_tdt = (decoder == Decoder::kTDT)
         || (decoder == Decoder::kDefault && arch_prefers_tdt(cfg.arch));
 
-    return decode_enc_out(loader_, encoded.channels_first,
+    return decode_enc_out(loader_,
+                          use_tdt ? &decoder_objects().pred : nullptr,
+                          use_tdt ? &decoder_objects().joint : nullptr,
+                          encoded.channels_first,
                           encoded.d_model, encoded.frames, use_tdt);
 }
 
@@ -192,6 +284,7 @@ void Model::transcribe_16k_ctc_logits(const std::vector<float>& pcm16k,
                                       std::vector<float>& logits, int& T,
                                       int& vocab_plus_1,
                                       const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
 
@@ -237,6 +330,149 @@ void Model::transcribe_16k_ctc_logits(const std::vector<float>& pcm16k,
     CTCDecoder ctc(loader_);
     ctc.forward(enc_out, d_model, Tout, logits, vocab_plus_1);
     T = Tout;
+}
+
+namespace {
+// The VAD runs on blocks of this many seconds, each with its own mel
+// normalisation, so the statistics follow the audio and memory stays bounded.
+constexpr double kVadBlockSec = 120.0;
+// A trailing block shorter than this is folded into the previous one.
+constexpr double kVadMinTailSec = 5.0;
+}  // namespace
+
+std::vector<float> Model::vad_probabilities(const std::vector<float>& pcm16k,
+                                            const VadVariant* v) const {
+    PoolLease lease(pool_snapshot());
+    const ParakeetConfig& cfg = loader_.config();
+    if (!cfg.vad.present) throw std::runtime_error("model has no VAD head");
+    const double fs = cfg.vad.frame_sec;
+    if (!(fs > 0.0) || !std::isfinite(fs)) throw std::runtime_error("invalid VAD frame size");
+    const bool gpu_mel = std::string(pk::global_backend().device_name()) != "cpu";
+    const size_t block = (size_t)std::llround(kVadBlockSec * 16000.0);
+    const size_t min_tail = (size_t)std::llround(kVadMinTailSec * 16000.0);
+    const size_t block_frames = (size_t)std::llround(kVadBlockSec / fs);
+    VadHead head(loader_);
+    std::vector<float> all;
+    size_t pos = 0;
+    do {
+        size_t len = std::min(block, pcm16k.size() - pos);
+        if (pcm16k.size() - pos - len < min_tail) len = pcm16k.size() - pos;  // fold a short tail in
+        const bool last = pos + len >= pcm16k.size();
+        const std::vector<float> chunk(pcm16k.begin() + (std::ptrdiff_t)pos,
+                                       pcm16k.begin() + (std::ptrdiff_t)(pos + len));
+        std::vector<float> feats;
+        int n_mels = 0, T = 0;
+        if (gpu_mel) {
+            GpuMel gmel(loader_);
+            gmel.compute(chunk, feats, n_mels, T);
+        } else {
+            MelFrontend mel(loader_);
+            mel.compute(chunk, feats, n_mels, T);
+        }
+        Subsampling sub(loader_);
+        std::vector<float> out;
+        int Tout = 0, d_model = 0, valid = 0;
+        const int tile = subsampling_tile_for(cfg, loader_, T);
+        if (tile > 0) sub.forward_tiled(feats, n_mels, T, tile, out, Tout, d_model, valid);
+        else          sub.forward(feats, n_mels, T, out, Tout, d_model, valid);
+        if ((uint32_t)d_model != cfg.vad.d_in)
+            throw std::runtime_error("VAD head input width does not match the subsampler output");
+        std::vector<float> p = head.probabilities(out.data(), valid, v);
+        // Keep the frame grid of the whole clip: a full block contributes exactly
+        // block_frames probabilities.
+        if (!last && p.size() > block_frames) p.resize(block_frames);
+        if (!last && p.size() < block_frames) p.resize(block_frames, p.empty() ? 0.0f : p.back());
+        all.insert(all.end(), p.begin(), p.end());
+        pos += len;
+    } while (pos < pcm16k.size());
+    return all;
+}
+
+namespace {
+
+// Slices the caller decodes: [first_sample, last_sample) of the 16 kHz PCM.
+struct Slice { std::vector<float> pcm; double start_sec; int start_frame; };
+
+std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
+                              const SegmenterOpts& opts_in) {
+    SegmenterOpts opts = opts_in;
+    opts.frame_sec = m.config().vad.frame_sec;
+    // Token frame offsets are in ENCODER frames (same formula as the JSON writer).
+    const ParakeetConfig& cfg = m.config();
+    const double enc_frame_sec =
+        (double)cfg.hop_length * (double)cfg.subsampling_factor / (double)cfg.sample_rate;
+    if (!(enc_frame_sec > 0.0) || !std::isfinite(enc_frame_sec))
+        throw std::runtime_error("invalid encoder frame size");
+    const double total_sec = (double)pcm16k.size() / 16000.0;
+    const std::vector<float> p = m.vad_probabilities(pcm16k);
+    const std::vector<VadSegment> segs = segment_by_vad(p, total_sec, opts);
+    std::vector<Slice> out;
+    const size_t n = pcm16k.size();
+    auto at = [&](double sec) {
+        const long long v = std::llround(sec * 16000.0);
+        return (size_t)std::min<long long>(std::max<long long>(v, 0), (long long)n);
+    };
+    for (size_t i = 0; i < segs.size(); ++i) {
+        // Kept segments are ordered and disjoint; segments without speech were dropped.
+        const size_t a = at(segs[i].start);
+        const size_t b = std::max(a, at(segs[i].end));
+        Slice s;
+        s.pcm.assign(pcm16k.begin() + (std::ptrdiff_t)a, pcm16k.begin() + (std::ptrdiff_t)b);
+        if (s.pcm.size() < 3200) s.pcm.resize(3200, 0.0f);  // 0.2 s minimum
+        s.start_sec = segs[i].start;
+        s.start_frame = (int)std::llround(segs[i].start / enc_frame_sec);
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+}  // namespace
+
+std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
+                                      Decoder decoder, const std::string& target_lang,
+                                      const SegmenterOpts& opts) const {
+    PoolLease lease(pool_snapshot());
+    if (!loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
+    const std::vector<float> pcm16k =
+        sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
+    if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
+        return transcribe_16k(pcm16k, decoder, target_lang);
+    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
+    if (slices.empty()) return std::string();  // no speech found
+    std::string text;
+    for (const Slice& s : slices) {
+        const std::string t = transcribe_16k(s.pcm, decoder, target_lang);
+        if (t.empty()) continue;
+        if (!text.empty()) text += ' ';
+        text += t;
+    }
+    return text;
+}
+
+Transcription Model::transcribe_pcm_vad_with_timestamps(const std::vector<float>& pcm, int sample_rate,
+                                                        Decoder decoder, const std::string& target_lang,
+                                                        const SegmenterOpts& opts) const {
+    PoolLease lease(pool_snapshot());
+    if (!loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
+    const std::vector<float> pcm16k =
+        sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
+    if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
+        return transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
+    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
+    if (slices.empty()) return Transcription();  // no speech found
+    Transcription all;
+    for (const Slice& s : slices) {
+        Transcription t = transcribe_with_timestamps(s.pcm, 16000, decoder, target_lang);
+        for (Word& w : t.words) { w.start += (float)s.start_sec; w.end += (float)s.start_sec; }
+        for (TokenInfo& k : t.tokens) k.frame += s.start_frame;
+        if (!t.text.empty()) {
+            if (!all.text.empty()) all.text += ' ';
+            all.text += t.text;
+        }
+        all.words.insert(all.words.end(), t.words.begin(), t.words.end());
+        all.tokens.insert(all.tokens.end(), t.tokens.begin(), t.tokens.end());
+    }
+    return all;
 }
 
 // Max mel frames per encoder pass before the first subsampling conv output
@@ -322,6 +558,7 @@ static void batch_enc_to_row_major(const std::vector<std::vector<float>>& enc_ou
 std::vector<std::string> Model::transcribe_16k_batch(
     const std::vector<std::vector<float>>& pcms16k, Decoder decoder,
     const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
     const bool use_tdt = (decoder == Decoder::kTDT)
@@ -357,8 +594,8 @@ std::vector<std::string> Model::transcribe_16k_batch(
         std::vector<std::vector<float>> encs;
         std::vector<int> Ts;
         batch_enc_to_row_major(enc_outs, valid_Tout, d_model, encs, Ts);
-        PredictionNet pred(loader_);
-        Joint        joint(loader_);
+        const PredictionNet& pred  = decoder_objects().pred;
+        const Joint&         joint = decoder_objects().joint;
         std::vector<std::vector<int32_t>> ids;
         pk::transducer_greedy_batch(pred, joint, encs, Ts, d_model,
                                     cfg.tdt_durations, (int)cfg.blank_id,
@@ -369,7 +606,10 @@ std::vector<std::string> Model::transcribe_16k_batch(
     } else {
         // CTC stays per-item (no autoregressive decode to batch).
         for (int b = 0; b < mb.B; ++b)
-            outs[b] = decode_enc_out(loader_, enc_outs[b], d_model, valid_Tout[b], use_tdt);
+            outs[b] = decode_enc_out(loader_,
+                                   use_tdt ? &decoder_objects().pred : nullptr,
+                                   use_tdt ? &decoder_objects().joint : nullptr,
+                                   enc_outs[b], d_model, valid_Tout[b], use_tdt);
     }
     return outs;
 }
@@ -391,7 +631,8 @@ std::vector<std::string> Model::transcribe_pcm_batch(
 // Transcription (text + per-word timestamps + tokens). Mirrors the decode tail
 // of transcribe_16k_with_timestamps exactly.
 static Transcription decode_enc_out_with_timestamps(
-        const ModelLoader& loader, const std::vector<float>& enc_out,
+        const ModelLoader& loader, const PredictionNet* dpred, const Joint* djoint,
+        const std::vector<float>& enc_out,
         int d_model, int Tout, bool use_tdt, float frame_sec) {
     const ParakeetConfig& cfg = loader.config();
     Transcription result;
@@ -401,8 +642,8 @@ static Transcription decode_enc_out_with_timestamps(
         for (int t = 0; t < Tout; ++t)
             for (int c = 0; c < d_model; ++c)
                 enc_row[(size_t)t * d_model + c] = enc_out[(size_t)c * Tout + t];
-        PredictionNet pred(loader);
-        Joint        joint(loader);
+        const PredictionNet& pred  = *dpred;
+        const Joint&         joint = *djoint;
         const int max_symbols = (int)cfg.max_symbols;
         if (!cfg.tdt_durations.empty())
             tdt_greedy(pred, joint, enc_row, Tout, d_model, cfg.tdt_durations,
@@ -436,6 +677,7 @@ static Transcription decode_enc_out_with_timestamps(
 Transcription Model::transcribe_16k_with_timestamps(
     const std::vector<float>& pcm16k, Decoder decoder,
     const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
 
@@ -450,7 +692,8 @@ Transcription Model::transcribe_16k_with_timestamps(
         || (decoder == Decoder::kDefault && arch_prefers_tdt(cfg.arch));
 
     Transcription result = decode_enc_out_with_timestamps(
-        loader_, encoded.channels_first, encoded.d_model, encoded.frames,
+        loader_, use_tdt ? &decoder_objects().pred : nullptr,
+        use_tdt ? &decoder_objects().joint : nullptr, encoded.channels_first, encoded.d_model, encoded.frames,
         use_tdt, frame_sec);
     return result;
 }
@@ -458,6 +701,7 @@ Transcription Model::transcribe_16k_with_timestamps(
 std::vector<Transcription> Model::transcribe_16k_batch_with_timestamps(
         const std::vector<std::vector<float>>& pcms16k, Decoder decoder,
         const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
     const int prompt_index = resolve_prompt_index(target_lang);
     const float frame_sec =
@@ -492,8 +736,8 @@ std::vector<Transcription> Model::transcribe_16k_batch_with_timestamps(
         std::vector<std::vector<float>> encs;
         std::vector<int> Ts;
         batch_enc_to_row_major(enc_outs, valid_Tout, d_model, encs, Ts);
-        PredictionNet pred(loader_);
-        Joint        joint(loader_);
+        const PredictionNet& pred  = decoder_objects().pred;
+        const Joint&         joint = decoder_objects().joint;
         std::vector<std::vector<int32_t>> ids;
         std::vector<std::vector<TokenInfo>> toks;
         pk::transducer_greedy_batch(pred, joint, encs, Ts, d_model,
@@ -512,7 +756,8 @@ std::vector<Transcription> Model::transcribe_16k_batch_with_timestamps(
         // CTC stays per-item (not a transducer; no autoregressive decode).
         for (int b = 0; b < mb.B; ++b)
             outs[b] = decode_enc_out_with_timestamps(
-                loader_, enc_outs[b], d_model, valid_Tout[b], use_tdt, frame_sec);
+                loader_, use_tdt ? &decoder_objects().pred : nullptr,
+                use_tdt ? &decoder_objects().joint : nullptr, enc_outs[b], d_model, valid_Tout[b], use_tdt, frame_sec);
     }
     return outs;
 }
@@ -533,6 +778,7 @@ std::vector<Transcription> Model::transcribe_pcm_batch_with_timestamps(
 std::vector<NBestTranscription> Model::transcribe_16k_nbest(
         const std::vector<float>& pcm16k, int beam_size, int nbest,
         bool score_norm, const std::string& target_lang) const {
+    PoolLease lease(pool_snapshot());
     const ParakeetConfig& cfg = loader_.config();
 
     const int prompt_index = resolve_prompt_index(target_lang);
@@ -545,8 +791,8 @@ std::vector<NBestTranscription> Model::transcribe_16k_nbest(
             enc_row[(size_t)t * encoded.d_model + c] =
                 encoded.channels_first[(size_t)c * encoded.frames + t];
 
-    PredictionNet pred(loader_);
-    Joint joint(loader_);
+    const PredictionNet& pred  = decoder_objects().pred;
+    const Joint&         joint = decoder_objects().joint;
     std::vector<TdtBeamHypothesis> beam = tdt_beam_search(
         pred, joint, enc_row, encoded.frames, encoded.d_model,
         cfg.tdt_durations, (int)cfg.blank_id,

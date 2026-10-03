@@ -1,4 +1,5 @@
 #pragma once
+#include <mutex>
 #include "model_loader.hpp"
 #include <vector>
 #include <cstdint>
@@ -96,9 +97,15 @@ private:
     int vocab_p1_; // vocab + 1 (embedding rows)
     int n_layers_; // pred_rnn_layers (stacked LSTM layers)
 
+    // Returns the host-side embedding table, fetching it on first use.
+    const float* embed_table() const;
+
     // Host-side copy of the embedding table, lazily fetched on the first step()
     // via ggml_backend_tensor_get (works for both CPU and device-resident
-    // weights). [vocab_p1_ * H_], row-major: embed_host_[id*H_ + h].
+    // weights). [vocab_p1_ * H_], row-major: embed_host_[id*H_ + h]. Filled
+    // exactly once under embed_once_ and read-only afterwards, so a shared
+    // PredictionNet is safe to use from several threads.
+    mutable std::once_flag embed_once_;
     mutable std::vector<float> embed_host_;
 };
 

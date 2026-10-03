@@ -28,6 +28,23 @@ PredState PredictionNet::zero_state() const {
     return s;
 }
 
+// Fetch the embedding table to the host once (device-safe), thread-safe so a
+// PredictionNet can be shared by concurrent decodes. Ensure the loader's
+// weights have a backend buffer first (idempotent) so the tensor is readable
+// via ggml_backend_tensor_get even when step()/forward() runs before the
+// encoder graph has realized the weights. After the call_once the table is
+// read-only.
+const float* PredictionNet::embed_table() const {
+    std::call_once(embed_once_, [this]() {
+        pk::ensure_weights_realized(ml_);
+        ggml_tensor* emb = ml_.tensor("decoder.prediction.embed.weight");
+        assert(emb && "missing decoder.prediction.embed.weight");
+        embed_host_.resize((size_t)vocab_p1_ * H_);
+        ggml_backend_tensor_get(emb, embed_host_.data(), 0, ggml_nbytes(emb));
+    });
+    return embed_host_.data();
+}
+
 // ---------------------------------------------------------------------------
 // Advance the stacked LSTM by one token, as a single ggml graph that runs on
 // whatever backend pk::Backend selected (CPU or device). The embedding table is
@@ -48,23 +65,13 @@ void PredictionNet::step(int32_t token_id, bool is_sos,
     const int H = H_;
     const int L = n_layers_;
 
-    // Lazily fetch the embedding table to the host (device-safe). Ensure the
-    // loader's weights have a backend buffer first (idempotent) so the tensor
-    // is readable via ggml_backend_tensor_get even when step()/forward() is
-    // exercised before the encoder graph has realized the weights.
-    if (embed_host_.empty()) {
-        pk::ensure_weights_realized(ml_);
-        ggml_tensor* emb = ml_.tensor("decoder.prediction.embed.weight");
-        assert(emb && "missing decoder.prediction.embed.weight");
-        embed_host_.resize((size_t)vocab_p1_ * H);
-        ggml_backend_tensor_get(emb, embed_host_.data(), 0, ggml_nbytes(emb));
-    }
+    const float* embed_host = embed_table();
 
     // Layer-0 input: zeros for SOS, else the embedding row for token_id.
     std::vector<float> x0((size_t)H, 0.0f);
     if (!is_sos) {
         assert(token_id >= 0 && token_id < vocab_p1_ && "embedding id out of range");
-        std::memcpy(x0.data(), &embed_host_[(size_t)token_id * H],
+        std::memcpy(x0.data(), embed_host + (size_t)token_id * H,
                     (size_t)H * sizeof(float));
     }
 
@@ -128,22 +135,14 @@ void PredictionNet::step_batch(const std::vector<int32_t>& token_ids,
     const int N = (int)token_ids.size();
     assert(N > 0 && (int)is_sos.size() == N && "batch size mismatch");
 
-    // Lazily fetch the embedding table to the host (device-safe), exactly as
-    // step() does.
-    if (embed_host_.empty()) {
-        pk::ensure_weights_realized(ml_);
-        ggml_tensor* emb = ml_.tensor("decoder.prediction.embed.weight");
-        assert(emb && "missing decoder.prediction.embed.weight");
-        embed_host_.resize((size_t)vocab_p1_ * H);
-        ggml_backend_tensor_get(emb, embed_host_.data(), 0, ggml_nbytes(emb));
-    }
+    const float* embed_host = embed_table();
 
     // Layer-0 input [H*N]: zeros for SOS items, else the embedding row.
     std::vector<float> x0((size_t)H * N, 0.0f);
     for (int n = 0; n < N; ++n) {
         if (!is_sos[n]) {
             assert(token_ids[n] >= 0 && token_ids[n] < vocab_p1_ && "embedding id out of range");
-            std::memcpy(&x0[(size_t)n * H], &embed_host_[(size_t)token_ids[n] * H],
+            std::memcpy(&x0[(size_t)n * H], embed_host + (size_t)token_ids[n] * H,
                         (size_t)H * sizeof(float));
         }
     }

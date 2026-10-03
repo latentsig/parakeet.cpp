@@ -69,8 +69,10 @@ ggml_tensor* Subsampling::build_graph_batched(ggml_context* ctx,
     // the leading ggml_pad_ext (lp1=2/rp1=1 on time) uniformly across the batch,
     // and the per-item trailing-pad time masking (mask_time on the batch axis)
     // plus the all_paddings=3 valid-length recurrence reproduce, per item, the
-    // exact standalone causal boundary. A clip in a B>1 batch is byte-identical
-    // to the same clip transcribed standalone (see test_subsampling_batch_causal).
+    // exact standalone causal boundary. A clip in a B>1 batch gets the same
+    // transcript as the same clip transcribed standalone on the test clips (see
+    // test_subsampling_batch_causal); float values are close but not guaranteed
+    // bit-identical, since ggml picks different matmul kernels for B>1.
 
     // --- Input (host-side): ggml conv data layout is [W=feat, H=T, IC=1, N=B].
     // NeMo conv input is [B,1,T,feat] (H=T, W=feat). We must feed

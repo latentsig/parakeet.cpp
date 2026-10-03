@@ -159,6 +159,16 @@ int parakeet_capi_transcribe_pcm_batch_lang(parakeet_ctx* ctx,
 char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx, const char* wav_path,
                                          int decoder);
 
+// Like parakeet_capi_transcribe_path_json, but long audio is cut at pauses found
+// by the model's own VAD head into segments of at most 30 s, and the segments are
+// transcribed one by one (word/token times are relative to the whole file). Audio
+// of 30 s or less gives the same document as the plain function. Returns NULL and
+// sets the context's last error to "model has no VAD head" when the model has no
+// VAD head. It always uses the default segmenter options (30 s cap, threshold
+// 0.5). Additive; no ABI bump.
+char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_path,
+                                             int decoder);
+
 // Batched transcription with timestamps, returning ONE malloc'd JSON string that
 // is a JSON ARRAY of n_clips objects, each identical in shape to
 // parakeet_capi_transcribe_path_json's document ({"text","words","tokens"}).
@@ -351,6 +361,45 @@ void parakeet_capi_free_string(char* s);
 // The returned pointer is owned by the context and valid until the next call on
 // it (or until parakeet_capi_free). Returns "" if `ctx` is NULL.
 const char* parakeet_capi_last_error(parakeet_ctx* ctx);
+// (See also "Concurrent requests" below for how last_error behaves when several
+// threads use one context.)
+
+// ---------------------------------------------------------------------------
+// Concurrent requests (additive, ABI unchanged)
+//
+// By default a context runs one request at a time: calls from several threads
+// are safe but queue behind one compute backend. parakeet_capi_set_concurrency
+// turns on a pool of `backends` CPU backends for the context's ASR model, each
+// with `threads_each` compute threads (<= 0: the default thread budget divided
+// by `backends`, at least 1). After that, concurrent
+// parakeet_capi_transcribe_* calls on the same context run in parallel, up to
+// `backends` at a time; further callers wait for a free backend. The library
+// starts no threads of its own: each call runs on its caller's thread and
+// borrows one backend for its whole duration. Transcripts, token ids and
+// timestamps are the same as with one backend.
+//
+// Choose backends * threads_each at most the number of physical cores: the
+// compute thread teams spin, and oversubscribing the machine slows everything.
+// Each backend also keeps its own graph buffers, so memory grows with
+// `backends`.
+//
+// Returns the effective number of backends: 1 when `backends` <= 1 (the pool is
+// removed and the process-wide thread count of the CLI applies, as before), and
+// also 1 on a GPU device, which keeps a single backend. Returns 0 if `ctx` is
+// NULL or has no ASR model (the context's last error is set in the second case).
+// Call it while no request is running, for example right after load; calls
+// already running finish on the old pool. Streaming sessions and diarization
+// are not affected by the pool and keep their single-call semantics.
+//
+// last_error and threads: the message is written under a lock, so concurrent
+// failures are safe. parakeet_capi_last_error(ctx) returns the message of the
+// most recently finished call on that context, from any thread (a successful
+// call clears it). The pointer stays valid until the next
+// parakeet_capi_last_error call on that context or until the context is freed;
+// copy the text if you need it longer. A caller that needs the exact error of
+// its own call should use one context per thread. The transcribe functions keep
+// returning NULL (or non-zero) on failure.
+int parakeet_capi_set_concurrency(parakeet_ctx* ctx, int backends, int threads_each);
 
 // ---------------------------------------------------------------------------
 // Speaker diarization (nvidia/Nemotron-3-Diarization and compatible Sortformer

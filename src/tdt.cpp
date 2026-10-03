@@ -55,6 +55,7 @@ std::vector<int32_t> tdt_greedy(const PredictionNet& pred, const Joint& joint,
         int symbols_added = 0;
         bool need_loop = true;
         int skip = 0;
+        bool blank_dur0 = false;
 
         while (need_loop && symbols_added < max_symbols) {
             // Prediction net step from the committed state — only when the cache
@@ -106,6 +107,16 @@ std::vector<int32_t> tdt_greedy(const PredictionNet& pred, const Joint& joint,
             symbols_added += 1;
             t += skip;
             need_loop = (skip == 0);
+
+            // A blank with duration 0 changes nothing: the committed state, the
+            // cached prediction output and `t` stay the same, so every further
+            // step in this frame would repeat this exact joint call and end at
+            // max_symbols, where the frame advances by one. Advance now instead.
+            if (k == blank_id && skip == 0) {
+                t += 1;
+                blank_dur0 = true;
+                break;
+            }
         }
 
         // Infinite-loop guard: if we exited with duration 0 (blank + dur 0), step
@@ -114,7 +125,7 @@ std::vector<int32_t> tdt_greedy(const PredictionNet& pred, const Joint& joint,
 
         // If we stopped because max_symbols was hit (not because of a positive
         // duration), advance the frame by one to make progress.
-        if (symbols_added == max_symbols) t += 1;
+        if (!blank_dur0 && symbols_added == max_symbols) t += 1;
     }
 
     return hyp;

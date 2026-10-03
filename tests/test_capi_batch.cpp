@@ -9,7 +9,8 @@
 //
 // Loads the real-speech fixture, transcribes it single-clip, then runs it as a
 // 2-clip batch of the same audio. Asserts both batch results equal the single
-// result, proving the batch path is byte-identical to the single path. This is
+// result, proving the batch path gives the same transcript as the single path
+// (text equality; batched floats are close, not bit-identical). This is
 // self-consistency (our own code on both sides), so it only needs
 // PARAKEET_TEST_GGUF.
 int main() {

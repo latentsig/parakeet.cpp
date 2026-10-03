@@ -28,6 +28,15 @@ With a local model:
 ./build/examples/server/parakeet-server --model path/to/model.gguf --port 8080
 ```
 
+To run several transcriptions at once, add `--concurrency K` (default 1). The
+server then keeps K CPU backends, and `--threads` is the thread count of each
+one. Keep `K x threads` at or below the physical cores. See
+[`docs/concurrency.md`](../../docs/concurrency.md).
+
+```sh
+./build/examples/server/parakeet-server --model path/to/model.gguf --concurrency 4 --threads 2
+```
+
 With a published model by alias (downloaded once and cached under
 `${XDG_CACHE_HOME:-$HOME/.cache}/parakeet.cpp/models`, override with
 `--cache-dir` or `PARAKEET_CACHE_DIR`):

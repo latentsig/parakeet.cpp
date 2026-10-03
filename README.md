@@ -42,7 +42,38 @@ Every model below is validated at WER 0 against NeMo and published as GGUF (f16,
 | [parakeet-tdt_ctc-1.1b](https://huggingface.co/nvidia/parakeet-tdt_ctc-1.1b) | hybrid TDT+CTC | 1.1B | English | NVIDIA |
 | [parakeet_realtime_eou_120m-v1](https://huggingface.co/nvidia/parakeet_realtime_eou_120m-v1) | RNNT, streaming | 120M | cache-aware streaming with end-of-utterance detection (`--stream`) | NVIDIA |
 | [nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) | RNNT, streaming | 0.6B | multilingual (40+ locales), prompt-conditioned, offline and cache-aware streaming, pick a language with `--lang` (default `auto`). OpenMDW-1.1 | NVIDIA |
+| [parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) | TDT | 0.6B | Moondream's post-trained derivative of parakeet-tdt-0.6b-v3, with a VAD head. CC-BY-4.0. Not NeMo-validated, see below | Moondream, from NVIDIA |
+| [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | TDT | 0.6B | Moondream's ternary-encoder derivative of parakeet-tdt-0.6b-v3, with a VAD head. CPU only. CC-BY-4.0. Not NeMo-validated, see below | Moondream, from NVIDIA |
 
+
+### Moondream Ultra and Redux (not yet published)
+
+[moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and
+[moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) are Moondream's
+post-trained (Ultra, F16) and ternary-encoder (Redux) derivatives of NVIDIA's
+[parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3). Both are released under
+[CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). They are HF safetensors, converted with
+`scripts/convert_hf_parakeet_to_gguf.py`. They are not part of the NeMo-validated set above: there is
+no NeMo baseline for them, so parity is transcript-level against our own v3 path (see
+[`docs/parity.md`](docs/parity.md)), and no GGUFs are published yet.
+
+The models were trained by NVIDIA (the base) and Moondream (Ultra and Redux). parakeet.cpp only
+converts and quantizes the weights; nothing is trained or fine-tuned here. A dequantized Redux file
+(`--ternary dequant`, the converter default) holds ordinary F16 or Q8_0 weights expanded from the
+ternary ones.
+
+- Redux packs the encoder as ternary weights: a 213 MB GGUF, 6.8x smaller than F16. It runs on CPU
+  only and offline only. On x86 with AVX-512 VNNI it reaches median RTF 75.6 per utterance on
+  LibriSpeech-100 (8 threads) against 46.1 for the same model in F16; on a single 180 s clip the
+  gain is about 10 percent; WER on the 100 LibriSpeech utterances is 1.96 percent. See
+  [`docs/ternary.md`](docs/ternary.md). SIMD kernels exist for x86-64 with AVX2 or AVX-512 VNNI and
+  aarch64 with dotprod; MSVC builds, Windows on ARM and aarch64 without dotprod use a slow scalar
+  kernel (about 1 GMAC/s), and the load logs a warning. The packed file also stays resident next to
+  the repacked planes, so memory use is more than the file size.
+- Both carry a voice-activity head, used by `transcribe --vad` to cut long audio at pauses. Speech
+  is a probability of at least 0.5; pauses of at least 0.2 s are candidate cuts, segments are at most
+  30 s, and segments without speech are dropped. On long-form clips it does not change WER
+  meaningfully. Details and measurements: [`docs/ternary.md`](docs/ternary.md).
 ---
 
 ## Performance
@@ -243,6 +274,10 @@ parakeet-cli transcribe --model m.gguf --input audio.wav --decoder tdt \
 # Read WAV bytes from stdin (useful with ffmpeg/curl pipelines)
 ffmpeg -i input.mp3 -f wav - | parakeet-cli transcribe --model m.gguf --input -
 
+# Long audio on Ultra/Redux: cut at VAD pauses, transcribe each piece (offline only).
+# Tune with --vad-threshold F (0.5), --vad-min-pause SEC (0.2), --vad-max-seg SEC (30)
+parakeet-cli transcribe --model ultra.gguf --input long.wav --vad
+
 # Print model metadata (arch, dims, mel params, vocab size, TDT durations)
 parakeet-cli info m.gguf
 
@@ -300,7 +335,7 @@ OpenAI API surface, auth, and metrics.
 
 Single-clip transcription is the default and needs no flags: every `transcribe` call runs one clip at a time, byte-for-byte identical to before. Batching is an opt-in path for decoding several clips together, which matters when you serve many concurrent requests on a GPU.
 
-The win is on the **decode** side. A transducer (TDT/RNN-T) decodes autoregressively with tiny per-step prediction-LSTM and joint GEMMs; one clip launches hundreds of these matvec-sized kernels and leaves the GPU mostly idle between launches. Decoding N clips together coalesces each step into one batched GEMM, so the device stays busy. On the NVIDIA GB10 this reaches about **10-12x** at batch size 16 (CPU about 3-5x); the encoder is already compute-bound, so batching it gives no throughput win. CTC has no autoregressive decode, so batching does not apply to standalone CTC models. The batched path is bit-identical to running the clips one by one (greedy decode is deterministic). Full numbers and per-model tables are in [`benchmarks/BENCHMARK.md`](benchmarks/BENCHMARK.md#batched-decode-throughput).
+The win is on the **decode** side. A transducer (TDT/RNN-T) decodes autoregressively with tiny per-step prediction-LSTM and joint GEMMs; one clip launches hundreds of these matvec-sized kernels and leaves the GPU mostly idle between launches. Decoding N clips together coalesces each step into one batched GEMM, so the device stays busy. On the NVIDIA GB10 this reaches about **10-12x** at batch size 16 (CPU about 3-5x); the encoder is already compute-bound, so batching it gives no throughput win. CTC has no autoregressive decode, so batching does not apply to standalone CTC models. The batched path is not guaranteed to be bit-identical to running the clips one by one: ggml uses a different matmul kernel for batch sizes above 1, so logits agree to about 1e-4 rather than exactly. The emitted token sequences were identical on the test clips, and the tests compare with a tolerance. Full numbers and per-model tables are in [`benchmarks/BENCHMARK.md`](benchmarks/BENCHMARK.md#batched-decode-throughput).
 
 Measure it yourself:
 
@@ -316,6 +351,12 @@ To batch from code, use the batched entry points (single-clip B=1 is just N=1):
 
 - C++ (`src/model.hpp`): `Model::transcribe_16k_batch(pcms16k, decoder)` and `transcribe_16k_batch_with_timestamps(...)` take N clips of 16 kHz mono float PCM and return N results.
 - C-API (`include/parakeet_capi.h`): `parakeet_capi_transcribe_pcm_batch(...)` (N transcripts) and `parakeet_capi_transcribe_pcm_batch_json(...)` (one JSON array of N `{text,words,tokens}` objects). These are what LocalAI's `parakeet-cpp` backend calls to coalesce concurrent requests; it leaves batching off by default and exposes a `batch_max_size` option to opt in.
+
+---
+
+## Concurrent requests
+
+One loaded model runs one request at a time by default. To serve several requests in parallel, give the model a pool of CPU backends: `parakeet_capi_set_concurrency(ctx, backends, threads_each)`, `pk::Model::set_concurrency`, or `--concurrency K` on `parakeet-server` and `parakeet-cli bench`. Results are identical to the single-backend run, aggregate throughput can go up or down depending on model size and core count (about 1.2x to 1.3x on a 110M model with 8 cores, but slower than one backend on 0.6B models with 8 threads; all measured on loaded machines, see [`docs/concurrency.md`](docs/concurrency.md)), and each request gets somewhat slower because it has fewer threads. Try it only when `backends x threads_each` fits the physical cores, measure before you enable it, and expect extra memory per backend (`Model::pool_working_set_bytes()`). The default is one backend and behaves as before.
 
 ---
 
@@ -485,6 +526,7 @@ If you use parakeet.cpp, please cite this repository and the original models:
 ```
 
 The Parakeet models are by NVIDIA NeMo ([NVIDIA-NeMo/NeMo](https://github.com/NVIDIA-NeMo/NeMo)).
+Parakeet Ultra and Redux are by [Moondream](https://huggingface.co/moondream), derived from NVIDIA's parakeet-tdt-0.6b-v3.
 
 ## Author
 
@@ -492,4 +534,4 @@ Ettore Di Giacinto ([@mudler](https://github.com/mudler)).
 
 ## License
 
-parakeet.cpp is released under the [MIT License](LICENSE). The model weights are governed by NVIDIA's original Parakeet model licenses, so check each model card on HuggingFace.
+parakeet.cpp is released under the [MIT License](LICENSE). The model weights are governed by the licenses of the original models, so check each model card on HuggingFace. The NVIDIA Parakeet models are mostly CC-BY-4.0 (nemotron-3.5-asr-streaming is OpenMDW-1.1). Moondream's [parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) are CC-BY-4.0 too: credit Moondream and NVIDIA ([parakeet-tdt-0.6b-v3](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)), link the [license](https://creativecommons.org/licenses/by/4.0/), and note that GGUF files made here are converted (and quantized, or dequantized for Redux) copies, not retrained models.

@@ -1,11 +1,13 @@
 #include "relpos_attention.hpp"
 #include "ggml_graph.hpp"
 #include "backend.hpp"
+#include "ternary.hpp"
 #include "ggml.h"
 #include <cassert>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace pk {
@@ -19,6 +21,31 @@ namespace pk {
 static ggml_tensor* clone_weight(ggml_context* ctx, const ModelLoader& ml,
                                  const std::string& name) {
     return pk::clone_weight(ctx, ml, name.c_str());
+}
+
+// One projection for every attention path (single, batched, local, chunked).
+// Packed ternary GGUFs carry `<base>.qweight` + `<base>.scales` and no
+// `<base>.weight`; everything else goes through ggml_mul_mat on the zero-copy
+// loader tensor. The bias is added only when requested AND present. A weight
+// that is neither packed nor plain is a hard error, never a null into ggml.
+static ggml_tensor* attn_linear(ggml_context* ctx, const ModelLoader& ml,
+                                const std::string& pre, const char* w, const char* b,
+                                ggml_tensor* in) {
+    std::string base = pre + w;   // e.g. "...self_attn.linear_q.weight"
+    base.resize(base.size() - 7); // drop ".weight"
+    ggml_tensor* y;
+    if (has_ternary(ml, base)) {
+        y = ternary_linear(ctx, ml, base, in);  // [out, *]
+    } else {
+        if (!ml.tensor(pre + w))
+            throw std::runtime_error("missing encoder weight " + pre + w);
+        y = ggml_mul_mat(ctx, clone_weight(ctx, ml, pre + w), in);  // [out, *]
+    }
+    if (b && ml.tensor(pre + b)) {
+        ggml_tensor* B = clone_weight(ctx, ml, pre + b);
+        y = ggml_add(ctx, y, B);                // broadcast [out] over cols
+    }
+    return y;
 }
 
 RelPosAttention::RelPosAttention(const ModelLoader& ml, int layer_idx)
@@ -59,13 +86,7 @@ ggml_tensor* RelPosAttention::build_graph(ggml_context* ctx, ggml_tensor* xt,
     // attention linears with bias=False in some checkpoints
     // (parakeet-tdt-0.6b-v2/-v3) and bias=True in others (110m).
     auto linear = [&](const char* w, const char* b, ggml_tensor* in) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + w);
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);  // [out, *]
-        if (b && ml.tensor(pre + b)) {
-            ggml_tensor* B = clone_weight(ctx, ml, pre + b);
-            y = ggml_add(ctx, y, B);                // broadcast [out] over cols
-        }
-        return y;
+        return attn_linear(ctx, ml, pre, w, b, in);
     };
     ggml_tensor* q = linear("linear_q.weight", "linear_q.bias", xt); // [D, T]
     ggml_tensor* k = linear("linear_k.weight", "linear_k.bias", xt); // [D, T]
@@ -194,13 +215,7 @@ ggml_tensor* RelPosAttention::build_graph_batched(
     // attention linears with bias=False in some checkpoints
     // (parakeet-tdt-0.6b-v2/-v3) and bias=True in others (110m).
     auto linear = [&](const char* w, const char* b, ggml_tensor* in) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + w);
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);  // [out, *]
-        if (b && ml.tensor(pre + b)) {
-            ggml_tensor* B = clone_weight(ctx, ml, pre + b);
-            y = ggml_add(ctx, y, B);                // broadcast [out] over cols
-        }
-        return y;
+        return attn_linear(ctx, ml, pre, w, b, in);
     };
     // xt is [D, T, B]; mul_mat batches over ne2 -> q/k/v are [D, T, B]. pe is
     // shared [D, P] (NO batch) -> p is [D, P].
@@ -347,10 +362,7 @@ ggml_tensor* RelPosAttention::build_graph_batched_local(
     const std::string pre = "encoder.layers." + std::to_string(layer_idx_) + ".self_attn.";
     const ModelLoader& ml = ml_;
     auto linear = [&](const char* wn, const char* bn, ggml_tensor* in) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + wn);
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);
-        if (bn && ml.tensor(pre + bn)) y = ggml_add(ctx, y, clone_weight(ctx, ml, pre + bn));
-        return y;
+        return attn_linear(ctx, ml, pre, wn, bn, in);
     };
     ggml_tensor* q = linear("linear_q.weight", "linear_q.bias", xt); // [D, T, B]
     ggml_tensor* k = linear("linear_k.weight", "linear_k.bias", xt);
@@ -480,10 +492,7 @@ ggml_tensor* RelPosAttention::build_graph_local(ggml_context* ctx, ggml_tensor* 
         const std::string pre = "encoder.layers." + std::to_string(layer_idx_) + ".self_attn.";
         const ModelLoader& ml = ml_;
         auto linear = [&](const char* wn, const char* bn, ggml_tensor* in) {
-            ggml_tensor* W = clone_weight(ctx, ml, pre + wn);
-            ggml_tensor* y = ggml_mul_mat(ctx, W, in);
-            if (bn && ml.tensor(pre + bn)) y = ggml_add(ctx, y, clone_weight(ctx, ml, pre + bn));
-            return y;
+            return attn_linear(ctx, ml, pre, wn, bn, in);
         };
         ggml_tensor* q = linear("linear_q.weight", "linear_q.bias", xt);
         ggml_tensor* k = linear("linear_k.weight", "linear_k.bias", xt);
@@ -560,10 +569,7 @@ ggml_tensor* RelPosAttention::build_graph_local(ggml_context* ctx, ggml_tensor* 
                                      qm.data(), qm.size() * sizeof(float));
             merged = ggml_mul(ctx, merged, qmask);
         }
-        ggml_tensor* Wo = clone_weight(ctx, ml, pre + "linear_out.weight");
-        ggml_tensor* y = ggml_mul_mat(ctx, Wo, merged);
-        if (ml.tensor(pre + "linear_out.bias"))
-            y = ggml_add(ctx, y, clone_weight(ctx, ml, pre + "linear_out.bias"));
+        ggml_tensor* y = attn_linear(ctx, ml, pre, "linear_out.weight", "linear_out.bias", merged);
         return y; // [D, T]
     }
 }
@@ -618,10 +624,7 @@ ggml_tensor* RelPosAttention::build_graph_local_chunked(
     const std::string pre = "encoder.layers." + std::to_string(layer_idx_) + ".self_attn.";
     const ModelLoader& ml = ml_;
     auto linear = [&](const char* wn, const char* bn, ggml_tensor* in) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + wn);
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);
-        if (bn && ml.tensor(pre + bn)) y = ggml_add(ctx, y, clone_weight(ctx, ml, pre + bn));
-        return y;
+        return attn_linear(ctx, ml, pre, wn, bn, in);
     };
     ggml_tensor* q = linear("linear_q.weight", "linear_q.bias", xt);
     ggml_tensor* k = linear("linear_k.weight", "linear_k.bias", xt);
@@ -725,10 +728,7 @@ ggml_tensor* RelPosAttention::build_graph_local_chunked(
                                  qm.data(), qm.size() * sizeof(float));
         merged = ggml_mul(ctx, merged, qmask);
     }
-    ggml_tensor* Wo = clone_weight(ctx, ml, pre + "linear_out.weight");
-    ggml_tensor* y = ggml_mul_mat(ctx, Wo, merged);
-    if (ml.tensor(pre + "linear_out.bias"))
-        y = ggml_add(ctx, y, clone_weight(ctx, ml, pre + "linear_out.bias"));
+    ggml_tensor* y = attn_linear(ctx, ml, pre, "linear_out.weight", "linear_out.bias", merged);
     return y; // [D, T]
 }
 

@@ -160,6 +160,36 @@ reversed relative to numpy, so the GGUF tensor shape reads `[257, 80, 1]`. The
 Hann `window` buffer (`preprocessor.featurizer.window`, shape `(win_length,)`) is
 exported the same way.
 
+## HF safetensors checkpoints (`convert_hf_parakeet_to_gguf.py`)
+
+`scripts/convert_hf_parakeet_to_gguf.py` imports checkpoints in the transformers
+`ParakeetForTDT` layout that derive from `nvidia/parakeet-tdt-0.6b-v3`
+(`moondream/parakeet-ultra`, `moondream/parakeet-redux`). It needs `numpy` and
+`gguf` but not NeMo. The HF repos carry no mel filterbank, window or
+SentencePiece vocab, so those and all KV metadata come from a v3 GGUF made by
+`convert_parakeet_to_gguf.py`. The HF `config.json` is checked against that
+template and every tensor shape is checked too; a mismatch aborts the run.
+HF tensor names are mapped back to the verbatim NeMo names described below.
+
+| Argument | Meaning |
+|---|---|
+| `--hf DIR` | local directory with `model.safetensors`, `config.json` (and `ternary.json` for Redux) |
+| `--template GGUF` | v3 GGUF that supplies KVs, vocab, filterbank and window |
+| `--output GGUF` | output path |
+| `--dtype f32\|f16\|q8_0` | storage type of ordinary linear weights (default `f32`) |
+| `--name NAME` | `general.name` (default: the `--hf` directory name) |
+| `--ternary dequant\|keep` | `dequant` (default) expands ternary weights to ordinary ones. `keep` stores them packed, see `docs/ternary.md` |
+| `--vad keep\|drop` | keep (default) or drop the `vad_head.*` tensors and `parakeet.vad.*` KVs when the checkpoint has them |
+
+Extra GGUF content written by this converter:
+
+| Key or tensor | Written when | Meaning |
+|---|---|---|
+| `parakeet.ternary.present` (bool), `parakeet.ternary.group_size` (u32, 128) | `--ternary keep` | the file holds packed ternary linears |
+| `<base>.qweight` (I8), `<base>.scales` (F16) | `--ternary keep` | replace `<base>.weight` of each ternary linear. Packed bytes must be below 243 (five base-3 digits); the converter and the loader both reject larger values |
+| `parakeet.vad.present` (bool), `parakeet.vad.d_in`, `parakeet.vad.hidden`, `parakeet.vad.kernel` (u32), `parakeet.vad.frame_sec` (f32) | the checkpoint has a VAD head and `--vad keep` | shape of the head; the loader reads them into `ParakeetConfig::vad` |
+| `vad_head.proj.*`, `vad_head.ctx.*`, `vad_head.out.*` (weight and bias) | same | the VAD head tensors. The upstream checkpoint stores them as F16; the converter widens them and writes F32 in the GGUF, and the loader requires F32 |
+
 ## Worked example — `parakeet-tdt_ctc-110m`
 
 ```

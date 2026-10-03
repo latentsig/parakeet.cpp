@@ -100,6 +100,29 @@ WER (word error rate) is measured against the NeMo reference on
 | Q8_0 | `mudler/parakeet.cpp-parakeet-rnnt-1.1b-q8_0` | ~400 MB | **0.0** | PASS |
 | Q4_K | `mudler/parakeet.cpp-parakeet-rnnt-1.1b-q4_k` | ~300 MB | not yet measured | — |
 
+### `moondream/parakeet-ultra` and `moondream/parakeet-redux` (HF safetensors, v3 shape)
+
+Converted with `scripts/convert_hf_parakeet_to_gguf.py --template <v3 gguf>`.
+Neither is published yet; sizes are from local conversions. Transcript on
+`tests/fixtures/speech.wav` matches the reference. WER on LibriSpeech-100 and on synthetic long-form clips (with and without `--vad`) is in `docs/ternary.md`.
+
+| Model | Variant | Converter flags | Size | Notes |
+|---|---|---|---:|---|
+| parakeet-ultra | F16 | `--dtype f16` | 1441.9 MB | ordinary v3-shaped GGUF |
+| parakeet-redux | packed ternary | `--ternary keep` | 213.3 MB | CPU only, no streaming, see `docs/ternary.md` |
+| parakeet-redux | dequantized F16 | `--ternary dequant --dtype f16` | 1441.9 MB | runs on any backend |
+
+Expected file set for a release (names as used by the tests and docs):
+`parakeet-ultra-f16.gguf`, `parakeet-redux-ternary.gguf` (`--ternary keep`, packed) and
+`parakeet-redux-f16.gguf` (`--ternary dequant --dtype f16`). Use it for any GPU backend and for CPUs that would run the packed
+file on the slow scalar kernel: MSVC builds, Windows on ARM and aarch64 without dotprod. x86-64 with AVX2
+or AVX-512 VNNI and aarch64 with dotprod get SIMD kernels for the packed file. The packed file also keeps the
+original packed tensors resident next to the repacked planes, so its memory use is more than 213 MB.
+Ultra Q8_0 (`--dtype q8_0`, 941.5 MB) is measured in `docs/ternary.md` but is optional.
+
+Both carry the `parakeet.vad.*` KVs and `vad_head.*` tensors unless converted
+with `--vad drop`.
+
 ---
 
 ## Notes

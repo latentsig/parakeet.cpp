@@ -52,9 +52,12 @@ void usage() {
     std::fprintf(stderr,
         "usage:\n"
         "  parakeet-server --model <path|url|alias> [--host 127.0.0.1] "
-        "[--port 8080] [--threads N] [--cache-dir <dir>] [--sound-model <path>]\n"
+        "[--port 8080] [--threads N] [--concurrency K] [--cache-dir <dir>] [--sound-model <path>]\n"
         "\n"
         "Serves POST /v1/audio/transcriptions (OpenAI-compatible) for one model.\n"
+        "--concurrency K runs up to K transcriptions at once on K CPU backends "
+        "(default 1); --threads is then the thread count of each backend, and "
+        "K x threads should not exceed the physical cores.\n"
         "--sound-model loads a ced.cpp sound-event tagger (local GGUF path); "
         "verbose_json responses then include a \"sound_events\" array.\n");
 }
@@ -63,7 +66,7 @@ void usage() {
 
 int main(int argc, char** argv) {
     std::string model_arg, host = "127.0.0.1", cache_dir, sound_model;
-    int port = 8080, threads = 0;
+    int port = 8080, threads = 0, concurrency = 1;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -75,6 +78,7 @@ int main(int argc, char** argv) {
         else if (a == "--host")    host = next("--host");
         else if (a == "--port")    port = std::atoi(next("--port").c_str());
         else if (a == "--threads") threads = std::atoi(next("--threads").c_str());
+        else if (a == "--concurrency") concurrency = std::atoi(next("--concurrency").c_str());
         else if (a == "--cache-dir") cache_dir = next("--cache-dir");
         else if (a == "--sound-model") sound_model = next("--sound-model");
         else if (a == "-h" || a == "--help") { usage(); return 0; }
@@ -104,7 +108,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (threads > 0) pk::set_num_threads(threads);
+    if (concurrency < 1) concurrency = 1;
+    // With a pool, --threads is the thread count of each backend and the global
+    // override stays unset (pooled backends ignore it).
+    if (threads > 0 && concurrency == 1) pk::set_num_threads(threads);
 
     std::unique_ptr<pk::Model> model = pk::Model::load(model_path);
     if (!model) {
@@ -112,6 +119,14 @@ int main(int argc, char** argv) {
         pk::shutdown_backend();
         return 1;
     }
+    if (concurrency > 1) {
+        const int eff = model->set_concurrency(concurrency, threads);
+        if (eff != concurrency)
+            std::fprintf(stderr, "parakeet-server: --concurrency %d not available on this device; using %d\n",
+                         concurrency, eff);
+        concurrency = eff;
+    }
+    const bool pooled = concurrency > 1;
 
     // --sound-model is a local path only; it does not go through the ASR
     // model's alias/URL resolver.
@@ -177,13 +192,18 @@ int main(int argc, char** argv) {
             std::vector<SoundEventOut> sound_events;
             bool have_sounds = false;
             {
-                std::lock_guard<std::mutex> lock(infer_mu);
+                // One backend: hold the lock across ASR and tagging, as before.
+                // With a pool, ASR runs in parallel on its own backend and only
+                // the tagger (not thread-safe) takes the lock.
+                std::unique_lock<std::mutex> lock(infer_mu, std::defer_lock);
+                if (!pooled) lock.lock();
                 tr = model->transcribe_with_timestamps(pcm, sr, pk::Decoder::kDefault);
 
                 // Sound tagging is verbose_json-only so json/text requests never
                 // pay for it. Runs under the same lock as ASR: the tagger is not
                 // thread-safe. A failure here must not fail the transcription.
                 if (tagger && fmt == Format::kVerboseJson) {
+                    if (pooled) lock.lock();
                     try {
                         const std::vector<float>* mono16k = &pcm;
                         std::vector<float> resampled;

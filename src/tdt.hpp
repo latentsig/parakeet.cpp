@@ -50,6 +50,9 @@ struct TdtBeamHypothesis {
 //     if skip == 0: skip = 1                  # infinite-loop guard
 //     if symbols_added == max_symbols: t += 1
 //
+// Shortcut (same output): a blank with duration 0 repeats the same joint call
+// until max_symbols, then advances one frame. The loop advances one frame at once.
+//
 // Argmax is taken over the RAW joint logits — NeMo log_softmaxes the token and
 // duration slices separately only for confidence; argmax is invariant under a
 // monotonic log_softmax, so greedy needs no softmax.

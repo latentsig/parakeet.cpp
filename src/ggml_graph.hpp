@@ -32,6 +32,9 @@ bool run_graph(size_t mem_bytes, int n_threads,
 // is unchanged. Setting it back to 0 clears the override.
 void set_num_threads(int n);
 int  num_threads();  // current override (0 == unset)
+// The thread count the global backend uses when callers pass none: the override
+// if set, else the built-in default (8).
+int  effective_threads();
 
 // Gallocr buffer size (bytes) reserved for the most recent single-backend (CPU)
 // run_graph compute. Used by tests to assert that banded attention memory scales

@@ -108,6 +108,8 @@ endif()
 set(PARAKEET_SRC
     src/parakeet.cpp
     src/model.cpp
+    src/vad_head.cpp
+    src/vad_segmenter.cpp
     src/parakeet_capi.cpp
     src/common.cpp
     src/audio_io.cpp
@@ -115,6 +117,7 @@ set(PARAKEET_SRC
     src/model_loader.cpp
     src/backend.cpp
     src/ggml_graph.cpp
+    src/backend_pool.cpp
     src/fft.cpp
     src/mel.cpp
     src/mel_gpu.cpp
@@ -129,6 +132,9 @@ set(PARAKEET_SRC
     src/prediction.cpp
     src/joint.cpp
     src/prompt_kernel.cpp
+    src/ternary.cpp
+    src/ternary_kernels_x86.cpp
+    src/ternary_kernels_neon.cpp
     src/tdt.cpp
     src/rnnt.cpp
     src/transducer_batch.cpp
@@ -159,6 +165,13 @@ if(PARAKEET_SHARED)
   set_target_properties(parakeet PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 else()
   add_library(parakeet STATIC ${PARAKEET_SRC})
+endif()
+if(NOT MSVC)
+  set_source_files_properties(src/ternary.cpp src/ternary_kernels_x86.cpp src/ternary_kernels_neon.cpp
+                              PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" AND NOT APPLE AND NOT MSVC)
+  set_property(SOURCE src/ternary_kernels_neon.cpp APPEND PROPERTY COMPILE_OPTIONS "-march=armv8.2-a+dotprod")
 endif()
 target_include_directories(parakeet PUBLIC include PRIVATE src ${CMAKE_SOURCE_DIR}/third_party)
 target_compile_definitions(parakeet PUBLIC $<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>)

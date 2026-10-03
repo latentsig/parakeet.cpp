@@ -1,0 +1,92 @@
+#pragma once
+// Native ternary (1.58 bit) linear layers for moondream/parakeet-redux.
+// See docs/superpowers/specs/2026-09-29-hf-ternary-vad-design.md.
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+struct ggml_context;
+struct ggml_tensor;
+
+namespace pk {
+
+class ModelLoader;
+
+constexpr int kTernaryGroup = 128;
+constexpr int kTernaryRowBlock = 16;
+
+// Repacked weight, N output rows by K input columns (K % 128 == 0). Rows are
+// padded to a multiple of 16 with zero codes and zero scales, and stored in
+// blocks of 16 rows so that a kernel can keep one output row per vector lane.
+// planes: per row block b, per group g, per step s (0..7, 16 elements each),
+// 64 bytes. Byte 4*i + j of a step holds, in bit pairs 0-1, 2-3, 4-5, 6-7
+// (plane p = 0..3), the code (0,1,2) of row 16*b + i at element
+// 128*g + 16*s + 4*p + j. scales: per row block, per group, 16 floats (one per
+// row of the block). w[n][k] = scale(n, k/128) * (code(n, k) - 1).
+struct TernaryWeight {
+    int N = 0;
+    int K = 0;
+    std::vector<uint8_t> planes;   // row_blocks() * groups() * 512 bytes
+    std::vector<float>   scales;   // row_blocks() * groups() * 16
+    int groups() const { return K / kTernaryGroup; }
+    int row_blocks() const { return (N + kTernaryRowBlock - 1) / kTernaryRowBlock; }
+    // The layout above, spelled out. The scalar reference uses these.
+    int code(int n, int k) const {
+        const int b = n / kTernaryRowBlock, i = n % kTernaryRowBlock;
+        const int g = k / kTernaryGroup, r = k % kTernaryGroup;
+        const int s = r / 16, p = (r % 16) / 4, j = r % 4;
+        const uint8_t byte = planes[((size_t)b * groups() + g) * 512 + (size_t)s * 64 + 4 * i + j];
+        return (byte >> (2 * p)) & 3;
+    }
+    float scale(int n, int g) const {
+        const int b = n / kTernaryRowBlock, i = n % kTernaryRowBlock;
+        return scales[((size_t)b * groups() + g) * kTernaryRowBlock + i];
+    }
+};
+
+// Upstream packing (5 trits per byte, base 3, LSD first) plus F16 group scales
+// to the kernel layout. qweight is N rows of ceil(K/5) bytes.
+void ternary_repack(const uint8_t* qweight, const uint16_t* scales_f16, int N, int K,
+                    TernaryWeight& out);
+// Float reference dequantization, W becomes N*K row-major.
+void ternary_dequant(const uint8_t* qweight, const uint16_t* scales_f16, int N, int K,
+                     std::vector<float>& W);
+
+// Quantized activations, one row per token: K int8 values, one float scale,
+// K/128 int32 group sums of the int8 values.
+inline size_t ternary_act_row_bytes(int K) {
+    return (size_t)K + 4 + 4 * (size_t)(K / kTernaryGroup);
+}
+// x is the full [T][K] float input; writes rows [t0, t1) of act. The reference
+// defines the bytes; the dispatching entry point picks a vector version for
+// this CPU that writes identical bytes.
+void ternary_quant_rows_ref(const float* x, int K, int t0, int t1, uint8_t* act);
+void ternary_quant_rows(const float* x, int K, int t0, int t1, uint8_t* act);
+
+// y[t*N + n] for n in [r0, r1) and all t < T. The reference defines correctness;
+// the dispatching entry point picks the best kernel for this CPU.
+void ternary_matmul_rows_ref(const TernaryWeight& w, const uint8_t* act, int T, float* y,
+                             int r0, int r1);
+void ternary_matmul_rows(const TernaryWeight& w, const uint8_t* act, int T, float* y,
+                         int r0, int r1);
+const char* ternary_kernel_name();
+
+// True iff the GGUF holds <base>.qweight (a packed ternary linear).
+bool has_ternary(const ModelLoader& ml, const std::string& base);
+// nn.Linear over x (f32, ne = [K, ...]) with the packed weight <base>.qweight /
+// <base>.scales. Returns f32 with ne = [N, ...]. Bias is the caller's job.
+ggml_tensor* ternary_linear(ggml_context* ctx, const ModelLoader& ml, const std::string& base,
+                            ggml_tensor* x);
+
+// "" when parakeet.ternary.present agrees with the tensors: a packed tensor
+// (any name ending in .qweight) exists iff the flag is set. Otherwise a message
+// naming the mismatch. Scans every tensor, not just layer 0.
+std::string ternary_flag_consistency_error(const ModelLoader& ml);
+
+// Validate and repack every packed linear of the encoder up front, so graph
+// building never throws. Throws std::runtime_error on a malformed or
+// half-converted file.
+void ternary_prepare(const ModelLoader& ml);
+
+}  // namespace pk

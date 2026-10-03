@@ -2,10 +2,12 @@
 #include "relpos_attention.hpp"
 #include "ggml_graph.hpp"
 #include "backend.hpp"
+#include "ternary.hpp"
 #include "ggml.h"
 #include <cassert>
 #include <cmath>
 #include <cstring>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -46,10 +48,15 @@ static ggml_tensor* build_conv_module(ggml_context* ctx, const ModelLoader& ml,
     const int pad = (K - 1) / 2;  // symmetric padding (offline model)
 
     // -- pointwise_conv1 (Conv1d d->2d, k=1): 1x1 conv == linear over channels.
-    ggml_tensor* pw1w = clone_weight(ctx, ml, pre + "conv.pointwise_conv1.weight");
-    pw1w = ggml_reshape_2d(ctx, pw1w, D, 2 * D); // [in=d, out=2d]
     ggml_tensor* pw1b = clone_weight_opt(ctx, ml, pre + "conv.pointwise_conv1.bias");
-    ggml_tensor* y = ggml_mul_mat(ctx, pw1w, c); // [2d, T, B]
+    ggml_tensor* y;
+    if (has_ternary(ml, pre + "conv.pointwise_conv1")) {
+        y = ternary_linear(ctx, ml, pre + "conv.pointwise_conv1", c);  // [2d, T, B]
+    } else {
+        ggml_tensor* pw1w = clone_weight(ctx, ml, pre + "conv.pointwise_conv1.weight");
+        pw1w = ggml_reshape_2d(ctx, pw1w, D, 2 * D);                     // [in=d, out=2d]
+        y = ggml_mul_mat(ctx, pw1w, c);                                  // [2d, T, B]
+    }
     if (pw1b) y = ggml_add(ctx, y, pw1b);
 
     // -- GLU over channel dim (NeMo F.glu(x, dim=1)). y is [2D, T, B]; each half
@@ -155,10 +162,15 @@ static ggml_tensor* build_conv_module(ggml_context* ctx, const ModelLoader& ml,
 
     // -- SiLU (Swish), then pointwise_conv2 (Conv1d d->d, k=1).
     normed = ggml_silu(ctx, normed);
-    ggml_tensor* pw2w = clone_weight(ctx, ml, pre + "conv.pointwise_conv2.weight");
-    pw2w = ggml_reshape_2d(ctx, pw2w, D, D); // [in=d, out=d]
     ggml_tensor* pw2b = clone_weight_opt(ctx, ml, pre + "conv.pointwise_conv2.bias");
-    ggml_tensor* cout = ggml_mul_mat(ctx, pw2w, normed); // [d, T, B]
+    ggml_tensor* cout;
+    if (has_ternary(ml, pre + "conv.pointwise_conv2")) {
+        cout = ternary_linear(ctx, ml, pre + "conv.pointwise_conv2", normed);  // [d, T, B]
+    } else {
+        ggml_tensor* pw2w = clone_weight(ctx, ml, pre + "conv.pointwise_conv2.weight");
+        pw2w = ggml_reshape_2d(ctx, pw2w, D, D);                                // [in=d, out=d]
+        cout = ggml_mul_mat(ctx, pw2w, normed);                                 // [d, T, B]
+    }
     if (pw2b) cout = ggml_add(ctx, cout, pw2b);
     return cout; // [D, T, B]; this is layers[i].conv output
 }
@@ -179,10 +191,15 @@ static ggml_tensor* build_conv_module(ggml_context* ctx, const ModelLoader& ml,
     const int pad = (K - 1) / 2;  // symmetric padding (offline model)
 
     // -- pointwise_conv1 (Conv1d d->2d, k=1): 1x1 conv == linear over channels.
-    ggml_tensor* pw1w = clone_weight(ctx, ml, pre + "conv.pointwise_conv1.weight");
-    pw1w = ggml_reshape_2d(ctx, pw1w, D, 2 * D); // [in=d, out=2d]
     ggml_tensor* pw1b = clone_weight_opt(ctx, ml, pre + "conv.pointwise_conv1.bias");
-    ggml_tensor* y = ggml_mul_mat(ctx, pw1w, c); // [2d, T]
+    ggml_tensor* y;
+    if (has_ternary(ml, pre + "conv.pointwise_conv1")) {
+        y = ternary_linear(ctx, ml, pre + "conv.pointwise_conv1", c);  // [2d, T]
+    } else {
+        ggml_tensor* pw1w = clone_weight(ctx, ml, pre + "conv.pointwise_conv1.weight");
+        pw1w = ggml_reshape_2d(ctx, pw1w, D, 2 * D);                     // [in=d, out=2d]
+        y = ggml_mul_mat(ctx, pw1w, c);                                  // [2d, T]
+    }
     if (pw1b) y = ggml_add(ctx, y, pw1b);
 
     // -- GLU over channel dim (NeMo F.glu(x, dim=1)).
@@ -260,10 +277,15 @@ static ggml_tensor* build_conv_module(ggml_context* ctx, const ModelLoader& ml,
 
     // -- SiLU (Swish), then pointwise_conv2 (Conv1d d->d, k=1).
     normed = ggml_silu(ctx, normed);
-    ggml_tensor* pw2w = clone_weight(ctx, ml, pre + "conv.pointwise_conv2.weight");
-    pw2w = ggml_reshape_2d(ctx, pw2w, D, D); // [in=d, out=d]
     ggml_tensor* pw2b = clone_weight_opt(ctx, ml, pre + "conv.pointwise_conv2.bias");
-    ggml_tensor* cout = ggml_mul_mat(ctx, pw2w, normed); // [d, T]
+    ggml_tensor* cout;
+    if (has_ternary(ml, pre + "conv.pointwise_conv2")) {
+        cout = ternary_linear(ctx, ml, pre + "conv.pointwise_conv2", normed);  // [d, T]
+    } else {
+        ggml_tensor* pw2w = clone_weight(ctx, ml, pre + "conv.pointwise_conv2.weight");
+        pw2w = ggml_reshape_2d(ctx, pw2w, D, D);                                // [in=d, out=d]
+        cout = ggml_mul_mat(ctx, pw2w, normed);                                 // [d, T]
+    }
     if (pw2b) cout = ggml_add(ctx, cout, pw2b);
     return cout; // [D, T] -> row-major [T, D]; this is layers[i].conv output
 }
@@ -310,8 +332,9 @@ ggml_tensor* ConformerLayer::build_graph_batched(ggml_context* ctx,
     };
     // nn.Linear: ggml weight ne = [in, out]. in ne [in, T, B] -> [out, T, B].
     auto linear = [&](ggml_tensor* in, const std::string& nm, bool bias) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + nm + ".weight");
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);
+        ggml_tensor* y = has_ternary(ml, pre + nm)
+            ? ternary_linear(ctx, ml, pre + nm, in)
+            : ggml_mul_mat(ctx, clone_weight(ctx, ml, pre + nm + ".weight"), in);
         if (bias) {
             ggml_tensor* B = clone_weight_opt(ctx, ml, pre + nm + ".bias");
             if (B) y = ggml_add(ctx, y, B);
@@ -387,8 +410,9 @@ ggml_tensor* ConformerLayer::build_graph(ggml_context* ctx, ggml_tensor* xt,
     };
     // nn.Linear: ggml weight ne = [in, out]. in ne [in, T] -> [out, T].
     auto linear = [&](ggml_tensor* in, const std::string& nm, bool bias) {
-        ggml_tensor* W = clone_weight(ctx, ml, pre + nm + ".weight");
-        ggml_tensor* y = ggml_mul_mat(ctx, W, in);
+        ggml_tensor* y = has_ternary(ml, pre + nm)
+            ? ternary_linear(ctx, ml, pre + nm, in)
+            : ggml_mul_mat(ctx, clone_weight(ctx, ml, pre + nm + ".weight"), in);
         if (bias) {
             ggml_tensor* B = clone_weight_opt(ctx, ml, pre + nm + ".bias");
             if (B) y = ggml_add(ctx, y, B);
@@ -496,8 +520,14 @@ void ConformerLayer::forward_with_conv(const std::vector<float>& x, int T,
                     return y;
                 };
                 auto linear = [&](ggml_tensor* in, const std::string& nm, bool bias) {
-                    ggml_tensor* W = clone_weight(ctx, ml_, pre + nm + ".weight");
-                    ggml_tensor* y = ggml_mul_mat(ctx, W, in);
+                    ggml_tensor* y;
+                    if (has_ternary(ml_, pre + nm)) {
+                        y = ternary_linear(ctx, ml_, pre + nm, in);
+                    } else {
+                        if (!ml_.tensor(pre + nm + ".weight"))
+                            throw std::runtime_error("missing encoder weight " + pre + nm + ".weight");
+                        y = ggml_mul_mat(ctx, clone_weight(ctx, ml_, pre + nm + ".weight"), in);
+                    }
                     if (bias) { ggml_tensor* B = clone_weight_opt(ctx, ml_, pre + nm + ".bias");
                                 if (B) y = ggml_add(ctx, y, B); }
                     return y;

@@ -1,14 +1,21 @@
 #pragma once
 #include "parakeet.h"          // pk::Decoder
+#include "joint.hpp"
 #include "model_loader.hpp"
+#include "prediction.hpp"
 #include "tdt.hpp"             // pk::TdtBeamToken
 #include "transcription.hpp"   // pk::Transcription
+#include "vad_head.hpp"
+#include "vad_segmenter.hpp"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace pk {
+
+class BackendPool;
 
 // One text hypothesis returned by the opt-in offline TDT N-best path.
 struct NBestTranscription {
@@ -26,7 +33,10 @@ struct NBestTranscription {
 //
 // The component objects (MelFrontend, Encoder, PredictionNet, Joint, ...) are
 // lightweight views over the ModelLoader (they hold `const ModelLoader&`), so
-// they are constructed per call; the expensive part — parsing the GGUF and
+// they are constructed per call, except the transducer decoder objects
+// (PredictionNet, Joint), which are built once on first use and shared by every
+// decode (they are immutable after construction; see decoder_objects()). The
+// expensive part — parsing the GGUF and
 // mapping every weight tensor — happens exactly once, in load().
 class Model {
 public:
@@ -120,10 +130,47 @@ public:
         const std::string& target_lang = "") const;
 
     const ParakeetConfig& config() const { return loader_.config(); }
+    // Per-frame speech probability from the model's own VAD head (80 ms frames,
+    // cfg.vad.frame_sec). `v` overrides the head wiring for experiments; nullptr
+    // uses the defaults. Throws std::runtime_error if the model has no VAD head.
+    std::vector<float> vad_probabilities(const std::vector<float>& pcm16k,
+                                         const VadVariant* v = nullptr) const;
+
+    // Transcribe long audio in VAD-cut segments (see vad_segmenter.hpp). Audio no
+    // longer than opts.max_seg_sec takes the plain path. Longer audio is cut at
+    // pauses and segments without speech are dropped, so audio with no speech
+    // gives an empty transcript. Requires a model with a
+    // VAD head (throws std::runtime_error("model has no VAD head") otherwise).
+    std::string transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
+                                   Decoder decoder = Decoder::kDefault,
+                                   const std::string& target_lang = "",
+                                   const SegmenterOpts& opts = SegmenterOpts()) const;
+    Transcription transcribe_pcm_vad_with_timestamps(
+        const std::vector<float>& pcm, int sample_rate,
+        Decoder decoder = Decoder::kDefault, const std::string& target_lang = "",
+        const SegmenterOpts& opts = SegmenterOpts()) const;
 
     // The underlying loaded GGUF. Exposed so the streaming C-API can build a
     // pk::StreamingSession (and a MelFrontend) over the same load-once model.
     const ModelLoader& loader() const { return loader_; }
+
+    // Concurrent requests (opt-in). With `backends` > 1 the model keeps a pool
+    // of that many CPU backends, each with `threads_each` ggml threads
+    // (<= 0: the default thread budget divided by `backends`, at least 1). Every
+    // public transcribe method then borrows one backend for the whole call, so
+    // up to `backends` calls from different threads run in parallel and the
+    // results are the same as with one backend. The library starts no threads
+    // of its own. `backends` x `threads_each` should not exceed the physical
+    // cores. With `backends` <= 1 the pool is removed and the process-global
+    // backend (and `pk::set_num_threads`) is used, which is the default.
+    // A GPU device keeps one backend. Returns the effective backend count.
+    // Safe to call at any time; calls already running finish on the old pool.
+    int set_concurrency(int backends, int threads_each = 0);
+    int concurrency() const;            // effective backends (1 = no pool)
+    int threads_per_backend() const;    // 0 when there is no pool
+    // Graph allocator memory held by the pool's backends, in bytes (0 without
+    // a pool). Grows to the largest graph each backend has run.
+    size_t pool_working_set_bytes() const;
 
     // Non-copyable (owns the GGUF mapping).
     Model(const Model&) = delete;
@@ -162,7 +209,31 @@ private:
                                    int& vocab_plus_1,
                                    const std::string& target_lang = "") const;
 
+    // The current backend pool, or null for the process-global backend.
+    // Requests copy the pointer so a replaced pool outlives them.
+    std::shared_ptr<BackendPool> pool_snapshot() const;
+
     ModelLoader loader_;
+
+    // The transducer decoder objects, built once per model on first use
+    // (thread-safe) so the 21 MB embedding table is not re-copied per
+    // utterance. PredictionNet and Joint are read-only after construction
+    // (the embedding table is filled once under a std::once_flag), so
+    // concurrent decodes may share them. Only valid for transducer models.
+    struct DecoderObjects {
+        PredictionNet pred;
+        Joint         joint;
+        explicit DecoderObjects(const ModelLoader& ml) : pred(ml), joint(ml) {}
+    };
+    const DecoderObjects& decoder_objects() const;
+
+    mutable std::once_flag decoder_once_;
+    mutable std::unique_ptr<DecoderObjects> decoder_;
+
+    // Declared last so the pool is destroyed before the loader and decoder
+    // objects it computes against.
+    mutable std::mutex pool_mu_;
+    std::shared_ptr<BackendPool> pool_;
 };
 
 } // namespace pk

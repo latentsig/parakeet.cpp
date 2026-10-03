@@ -389,6 +389,63 @@ heads — and the C++ port reproduces each head exactly, including the second he
 # -> MODEL nvidia/parakeet-tdt_ctc-1.1b HEAD rnnt arch=hybrid_tdt_ctc xscaling=false WER 0.0000 ... PASS
 ```
 
+## Ultra and Redux (moondream, HF safetensors)
+
+`moondream/parakeet-ultra` (F16) and `moondream/parakeet-redux` (ternary
+encoder) share the v3 architecture and are converted with
+`scripts/convert_hf_parakeet_to_gguf.py` (see `docs/conversion.md`). There is no
+NeMo baseline for these checkpoints, so parity means the transcript on
+`tests/fixtures/speech.wav` equals the reference transcript in `AGENTS.md`,
+and the packed ternary kernels agree with the dequantized model.
+
+| Model | GGUF form | Kernel | Transcript equals the reference transcript in AGENTS.md |
+|---|---|---|---|
+| parakeet-ultra | F16 | n/a | yes |
+| parakeet-redux | packed ternary (`--ternary keep`) | scalar | yes |
+| parakeet-redux | packed ternary (`--ternary keep`) | avx2 | yes |
+| parakeet-redux | packed ternary (`--ternary keep`) | vnni | yes |
+| parakeet-redux | dequantized F16 | n/a | yes |
+
+WER on long audio. Measured on three synthetic long-form clips per set, built from
+LibriSpeech utterances of `benchmarks/librispeech_manifest.tsv` (30 utterances,
+218 to 354 s each, gaps of low-level noise), not on TED-LIUM or other real long
+recordings. Reference = the joined manifest texts; WER from `scripts/asr_metrics.py`
+(case and punctuation normalized); `parakeet-cli transcribe --decoder tdt`, plain
+single pass and `--vad`. Mean over three clips, percent. Details, per-clip values and the
+parameter sweep are in `docs/ternary.md`.
+
+| Model | Gap between utterances | Plain WER | `--vad` WER |
+|---|---|---:|---:|
+| parakeet-ultra F16 | 0.45 s | 1.71 | 1.69 |
+| parakeet-ultra F16 | 0.16 s | 1.69 | 1.78 |
+| parakeet-ultra F16 | none | 1.63 | 1.84 |
+| parakeet-redux packed ternary | 0.45 s | 1.97 | 1.92 |
+| parakeet-redux packed ternary | 0.16 s | 1.95 | 1.69 |
+| parakeet-redux packed ternary | none | 1.83 | 1.71 |
+
+Ultra Q8_0 and dequantized Redux were not measured on the long-form sets. On the 100 LibriSpeech
+utterances (`docs/ternary.md`) Ultra Q8_0 has 1.71 percent and Redux packed 1.96 percent.
+
+Speed numbers are in `docs/ternary.md`.
+
+Multilingual and real long-form results (measured, no NeMo baseline; details, commands and caveats in
+`docs/ternary.md`, section "Multilingual and long-form validation"). Scoring uses the plain `normalize` from
+`scripts/asr_metrics.py`, not the Open ASR Leaderboard normalizer, so compare models with each other and not with
+upstream cards.
+
+| Check | v3 F16 | Ultra F16 | Redux packed | Redux dequantized F16 |
+|---|---:|---:|---:|---:|
+| FLEURS, 25 languages x first 50 test utterances, mean WER percent | 12.77 | 10.71 | 12.09 | 11.99 |
+| TED-LIUM long-form, 11 talks, plain single pass, mean WER percent | 4.40 | 3.73 | 4.32 | 5.07 |
+| TED-LIUM long-form, `--vad`, mean WER percent | no VAD head | 3.64 | 4.38 | 5.17 |
+
+The 5.5 s clip among the 11 talks skews the Redux dequantized means; without it the packed and dequantized `--vad`
+means are 4.82 and 4.85. Without the short clip the plain means are 4.75 packed and 4.74 dequantized. Ultra against the transformers `ParakeetForTDT` reference (fp32, CPU) on 60 FLEURS utterances
+(en_us, de_de, fr_fr): 56 of 60 transcripts identical after normalization, WER of ours against HF 0.33 percent.
+Packed Redux single-pass used to segfault above 8192 encoder frames (about 11 minutes, local attention paths without the
+packed branch); fixed, and a 714 s clip gives the same transcript as the dequantized GGUF. On the seven talks that crashed, packed plain
+WER is 4.92 against 4.91 dequantized, and the packed transcripts differ from the dequantized ones by 0.28 percent of words.
+
 ## Test suite status
 
 `ctest --test-dir build --output-on-failure` (with `PARAKEET_TEST_GGUF`,

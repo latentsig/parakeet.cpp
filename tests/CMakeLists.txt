@@ -10,8 +10,13 @@ pk_add_test(test_smoke)
 pk_add_test(test_nbest_json)
 pk_add_test(test_tdt_beam_core)
 pk_add_test(test_backend_device)
+pk_add_test(test_backend_pool)
 pk_add_test(test_audio_io)
 pk_add_test(test_model_loader)
+pk_add_test(test_model_loader_ternary)
+pk_add_test(test_ternary_load_negative)
+pk_add_test(test_vad_head)
+pk_add_test(test_vad_segmenter)
 pk_add_test(test_fft)
 pk_add_test(test_mel)
 pk_add_test(test_mel_gpu)
@@ -40,6 +45,12 @@ pk_add_test(test_prediction_step_batch)
 pk_add_test(test_joint)
 pk_add_test(test_joint_step_batch)
 pk_add_test(test_prompt_kernel)
+pk_add_test(test_ternary)
+pk_add_test(test_ternary_model)
+pk_add_test(test_ternary_long)
+add_executable(bench_ternary bench_ternary.cpp)
+target_link_libraries(bench_ternary PRIVATE parakeet)
+target_include_directories(bench_ternary PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
 pk_add_test(test_transducer_core)
 pk_add_test(test_tdt_greedy)
 pk_add_test(test_tdt_beam)
@@ -48,6 +59,7 @@ pk_add_test(test_transducer_greedy_batch_rnnt)
 pk_add_test(test_timestamps_tokens)
 pk_add_test(test_timestamps)
 pk_add_test(test_transcribe_batch_ts)
+pk_add_test(test_decoder_reuse)
 pk_add_test(test_tokenizer)
 pk_add_test(test_special_token_filter)
 pk_add_test(test_transcribe)
@@ -59,12 +71,16 @@ pk_add_test(test_transcribe_ctc)
 pk_add_test(test_transcribe_rnnt)
 pk_add_test(test_transcribe_eou)
 pk_add_test(test_transcribe_nemotron)
+pk_add_test(test_transcribe_vad)
 pk_add_test(test_streaming_decode)
 pk_add_test(test_streaming_eou_reset)
 pk_add_test(test_streaming_nemotron)
 pk_add_test(test_streaming_mel)
 pk_add_test(test_capi)
 pk_add_test(test_capi_batch)
+pk_add_test(test_capi_concurrency)
+pk_add_test(test_pool_stress)
+pk_add_test(test_pool_shutdown)
 pk_add_test(test_capi_stream)
 pk_add_test(test_capi_stream_json)
 pk_add_test(test_capi_timestamps)
@@ -159,10 +175,12 @@ set_tests_properties(test_model_loader test_mel test_mel_gpu test_subsampling te
                      test_timestamps_tokens test_timestamps test_transcribe_batch_ts test_tokenizer test_transcribe
                      test_transcribe_speech test_transcribe_tiled test_transcribe_tdt test_transcribe_0_6b
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
-                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_stream test_capi_stream_json
+                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_concurrency test_pool_stress test_pool_shutdown test_capi_stream test_capi_stream_json
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
                      test_combined_offline test_streaming_diarization test_diarization_accuracy test_diarization
                      PROPERTIES LABELS "model")
+set_tests_properties(test_ternary_model test_ternary_long test_decoder_reuse test_transcribe_vad test_vad_head test_model_loader_ternary
+                     test_ternary_load_negative PROPERTIES LABELS "model")
 # These tests read fixtures/baselines via paths relative to the project root.
 set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_batch test_subsampling_batch_causal test_relpos_attention test_relpos_attention_batch test_conformer test_conformer_batch
                      test_conv_eou test_encoder test_encoder_batch test_encoder_batch_local test_encoder_eou test_streaming_encoder
@@ -176,10 +194,15 @@ set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_bat
                      test_tokenizer test_transcribe
                      test_transcribe_speech test_transcribe_tiled test_transcribe_tdt test_transcribe_0_6b
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
-                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_stream test_capi_stream_json
+                     test_streaming_decode test_streaming_eou_reset test_streaming_nemotron test_streaming_mel test_capi test_capi_batch test_capi_concurrency test_pool_stress test_pool_shutdown test_capi_stream test_capi_stream_json
                      test_capi_timestamps test_capi_batch_json test_capi_ctc_logits
-                     test_combined_offline test_streaming_diarization test_diarization_accuracy
+                     test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model test_ternary_long test_transcribe_vad test_decoder_reuse
                      PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# ctest runs the stress test in its short form (it is heavy on a loaded machine
+# and under sanitizers). Run the binary directly, without
+# PARAKEET_STRESS_QUICK, for the full matrix.
+set_tests_properties(test_pool_stress PROPERTIES ENVIRONMENT "PARAKEET_STRESS_QUICK=1" TIMEOUT 900)
 
 # Python converter check (skips with exit 77 when the venv/model are absent).
 find_program(PARAKEET_PY NAMES python3 HINTS ${CMAKE_SOURCE_DIR}/.venv/bin)
@@ -189,6 +212,9 @@ if(PARAKEET_PY)
 
   add_test(NAME check_baseline COMMAND ${PARAKEET_PY} ${CMAKE_SOURCE_DIR}/tests/python/check_baseline.py)
   set_tests_properties(check_baseline PROPERTIES SKIP_RETURN_CODE 77 LABELS "model")
+
+  add_test(NAME check_hf_convert COMMAND ${PARAKEET_PY} ${CMAKE_SOURCE_DIR}/tests/python/check_hf_convert.py)
+  set_tests_properties(check_hf_convert PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 pk_add_test(test_speaker_profiles)

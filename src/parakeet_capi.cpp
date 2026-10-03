@@ -20,6 +20,7 @@
 
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
+#include "audio_io.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -31,6 +32,7 @@
 #include <exception>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <vector>
@@ -67,6 +69,29 @@
 //      additive.
 #define PARAKEET_CAPI_ABI_VERSION 10
 
+// The last error message of a context. Every write takes a lock, so several
+// threads can fail on one context at once (concurrent requests on a pooled
+// model). The slot holds the most recent message; read() copies it into a
+// snapshot and returns the snapshot's pointer, which stays valid until the next
+// read() or the context is freed. The assignment operators keep the syntax of
+// the plain std::string this replaces.
+class ErrorSlot {
+public:
+    ErrorSlot& operator=(const std::string& s) { std::lock_guard<std::mutex> l(mu_); msg_ = s; return *this; }
+    ErrorSlot& operator=(const char* s)        { std::lock_guard<std::mutex> l(mu_); msg_ = s ? s : ""; return *this; }
+    ErrorSlot& operator+=(const std::string& s){ std::lock_guard<std::mutex> l(mu_); msg_ += s; return *this; }
+    void clear() { std::lock_guard<std::mutex> l(mu_); msg_.clear(); }
+    const char* read() {
+        std::lock_guard<std::mutex> l(mu_);
+        snapshot_ = msg_;
+        return snapshot_.c_str();
+    }
+private:
+    std::mutex mu_;
+    std::string msg_;
+    std::string snapshot_;
+};
+
 // The opaque context: a loaded model plus a buffer for the last error message.
 // Exactly one of `model` / `diar` / `tagger` / `speaker` is non-null: ASR models
 // use `model`, diarization models (Sortformer) use `diar`, CED sound-event
@@ -77,7 +102,7 @@ struct parakeet_ctx {
     std::unique_ptr<pk::CedTagger> tagger;
     std::unique_ptr<pk::SpeakerEncoder> speaker;
     std::string speaker_identity;
-    std::string last_error;
+    ErrorSlot last_error;
 };
 
 // Enrolled voices plus a buffer for the last save/load error.
@@ -461,6 +486,42 @@ extern "C" char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx,
         pk::Transcription tr =
             ctx->model->transcribe_path_with_timestamps(wav_path, to_decoder(decoder));
         // frame_sec = hop_length * subsampling_factor / sample_rate (token "t").
+        const pk::ParakeetConfig& cfg = ctx->model->config();
+        const float frame_sec =
+            (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;
+        std::string json = pk::transcription_to_json(tr, frame_sec);
+        ctx->last_error.clear();
+        char* out = dup_to_c(json);
+        if (!out) { ctx->last_error = "out of memory"; return nullptr; }
+        return out;
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+extern "C" char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx,
+                                                        const char* wav_path,
+                                                        int decoder) {
+    if (!ctx) return nullptr;
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
+    if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
+    try {
+        pk::Audio audio;
+        if (!pk::load_audio_16k_mono(wav_path, audio)) {
+            ctx->last_error = std::string("failed to load audio: ") + wav_path;
+            return nullptr;
+        }
+        pk::Transcription tr = ctx->model->transcribe_pcm_vad_with_timestamps(
+            audio.samples, audio.sample_rate, to_decoder(decoder));
         const pk::ParakeetConfig& cfg = ctx->model->config();
         const float frame_sec =
             (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;
@@ -960,7 +1021,25 @@ extern "C" void parakeet_capi_free_string(char* s) {
 
 extern "C" const char* parakeet_capi_last_error(parakeet_ctx* ctx) {
     if (!ctx) return "";
-    return ctx->last_error.c_str();
+    return ctx->last_error.read();
+}
+
+extern "C" int parakeet_capi_set_concurrency(parakeet_ctx* ctx, int backends,
+                                             int threads_each) {
+    if (!ctx) return 0;
+    if (!ctx->model) {
+        ctx->last_error = "set_concurrency needs a context with a loaded ASR model";
+        return 0;
+    }
+    try {
+        return ctx->model->set_concurrency(backends, threads_each);
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return 0;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return 0;
+    }
 }
 
 // ---------------------------------------------------------------------------

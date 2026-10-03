@@ -1,4 +1,6 @@
 #pragma once
+#include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -44,6 +46,20 @@ struct PromptCfg {
     // paths so both reject typos identically (matches the C-API contract).
     int resolve_index_or_throw(const std::string& target_lang) const;
 };
+// Packed ternary encoder linears (moondream/parakeet-redux). present=false for
+// every other model; the encoder then uses ordinary <name>.weight tensors.
+struct TernaryCfg {
+    bool present = false;
+    uint32_t group_size = 128;   // scales are per (row, 128 columns)
+};
+// Voice-activity head on the subsampler output (moondream ultra/redux).
+struct VadCfg {
+    bool present = false;
+    uint32_t d_in = 0;           // input channels (subsampler d_model)
+    uint32_t hidden = 0;
+    uint32_t kernel = 0;
+    float frame_sec = 0.08f;     // seconds per head output frame
+};
 struct ParakeetConfig {
     std::string arch;
     // encoder
@@ -59,6 +75,8 @@ struct ParakeetConfig {
     bool use_bias=true;     // false for nemotron (encoder linears have no bias)
     StreamingCfg streaming;
     PromptCfg prompt;       // prompt conditioning (present=false for non-prompt)
+    TernaryCfg ternary;     // present=false unless parakeet.ternary.present
+    VadCfg vad;             // present=false unless parakeet.vad.present
     // preprocessor
     uint32_t sample_rate=16000, n_mels=0, n_fft=0, win_length=0, hop_length=0;
     float preemph=0.0f, mag_power=2.0f, log_zero_guard=0.0f;
@@ -115,6 +133,14 @@ public:
     const std::vector<std::string>& tokenizer_pieces() const { return cfg_.tokenizer_pieces; }
     ggml_tensor* tensor(const std::string& name) const; // nullptr if absent
     ggml_context* ggml_ctx() const { return ctx_; }
+    // True iff any tensor name ends with suffix (a scan of every tensor).
+    bool has_tensor_with_suffix(const std::string& suffix) const {
+        for(const auto& kv : tensors_){
+            const std::string& n = kv.first;
+            if(n.size() >= suffix.size() && n.compare(n.size()-suffix.size(), suffix.size(), suffix)==0) return true;
+        }
+        return false;
+    }
 
     // Give every weight tensor a CPU backend buffer (ONCE), so graphs can
     // reference the loader's tensors DIRECTLY as leaves with zero per-call
@@ -126,14 +152,19 @@ public:
     // at build time. Idempotent; safe to call once at load. The backend must be
     // the same CPU backend the compute path uses. Returns false on failure.
     bool realize_weights(ggml_backend_t backend);
-    bool weights_realized() const { return weights_buf_ != nullptr; }
+    bool weights_realized() const { return weights_buf_.load(std::memory_order_acquire) != nullptr; }
+    // Opaque per-loader slot for the ternary weight cache (see ternary.cpp).
+    // Owned here so cached repacked weights die with the loader that owns the
+    // tensors they were built from.
+    std::shared_ptr<void>& ternary_store() const { return ternary_store_; }
 private:
+    mutable std::shared_ptr<void> ternary_store_;
     ParakeetConfig cfg_;
     gguf_context* gguf_ = nullptr;
     ggml_context* ctx_ = nullptr;
     // CPU backend: wraps ctx_ mem_buffer (zero-copy). Device backend: owns the
     // device buffer holding the uploaded weights (mirrored into device_ctx_).
-    ggml_backend_buffer_t weights_buf_ = nullptr;
+    std::atomic<ggml_backend_buffer_t> weights_buf_{nullptr};
     ggml_context* device_ctx_ = nullptr;  // no_alloc mirror ctx for device weights
     std::unordered_map<std::string, ggml_tensor*> tensors_;
 };

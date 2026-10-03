@@ -1,5 +1,6 @@
 #include "ggml_graph.hpp"
 #include "backend.hpp"
+#include "backend_pool.hpp"
 #include "common.hpp"
 #include "ggml.h"
 #include <atomic>
@@ -25,14 +26,15 @@ namespace {
 // Task 2+ will fuse graphs on top of the same Backend.
 std::unique_ptr<Backend> g_backend;
 int g_backend_threads = 0;
-// Serializes access to the process-global Backend. The old run_graph allocated
-// a fresh per-call ggml context (so concurrent transcribes were independent);
-// the shared Backend (one gallocr + pending-input list, not re-entrant) is not,
-// so we serialize compute() across threads. In practice inference is driven
-// from a single thread per process (the parallelism is inside the graph's
-// worker threads), so this lock is uncontended; it only guards against a caller
-// that drives transcribe() concurrently from multiple threads.
-std::mutex g_backend_mutex;
+// Serializes access to the process-global Backend and guards its lazy creation.
+// The shared Backend (one gallocr + pending-input list, not re-entrant) is not
+// safe for concurrent compute, so run_graph serializes it. Callers that need
+// real parallelism lease a backend from a pool (backend_pool.hpp); a thread
+// with a lease never takes this lock for compute.
+// Recursive: run_graph holds it while the build lambda runs, and a build lambda
+// that touches a loader whose weights are not yet realized calls
+// global_backend() (through ensure_weights_realized) on the same thread.
+std::recursive_mutex g_backend_mutex;
 } // namespace
 
 // Default ggml compute-thread count when --threads is unset. On this class of
@@ -46,10 +48,15 @@ std::mutex g_backend_mutex;
 // are unaffected by this default.
 constexpr int kDefaultThreads = 8;
 
-Backend& global_backend() {
+int effective_threads() {
+    const int g = g_num_threads.load(std::memory_order_relaxed);
+    return g > 0 ? g : kDefaultThreads;
+}
+
+// Caller holds g_backend_mutex.
+static Backend& global_backend_locked() {
     // Lazy create (reset-safe: shutdown_backend() can free it, and a later call
-    // recreates it). Always reached under g_backend_mutex (run_graph holds it)
-    // or before any inference thread exists, so a plain null-check is sufficient.
+    // recreates it).
     if (!g_backend) {
         const int g = g_num_threads.load(std::memory_order_relaxed);
         const int n = g > 0 ? g : kDefaultThreads;
@@ -66,6 +73,14 @@ Backend& global_backend() {
     return *g_backend;
 }
 
+Backend& global_backend() {
+    // Taken for the lazy create and the late thread-count sync. Concurrent
+    // requests on pooled backends still ask the global backend for its device
+    // name, so this must be safe to call from several threads.
+    std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
+    return global_backend_locked();
+}
+
 void shutdown_backend() {
     // Free the process-global backend explicitly. Required for GPU backends: the
     // backend (and its gallocr's device buffer) must be released while the CUDA/
@@ -73,7 +88,7 @@ void shutdown_backend() {
     // process exit, AFTER the driver's atexit handler, which aborts with
     // "driver shutting down". Call from main() before returning (model objects,
     // which hold their own device weight buffers, must already be destroyed).
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
+    std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
     g_backend.reset();
     g_backend_threads = 0;
 }
@@ -81,8 +96,16 @@ void shutdown_backend() {
 bool run_graph(size_t /*mem_bytes*/, int n_threads,
                const std::function<ggml_tensor*(ggml_context*)>& build,
                std::vector<float>& out) {
-    std::lock_guard<std::mutex> lock(g_backend_mutex);
-    Backend& be = global_backend();
+    // A thread that leased a pool backend computes there: its own gallocr, its
+    // own thread count (set when the pool was built), its own mutex. The global
+    // thread override and the per-call n_threads do not apply.
+    if (PoolSlot* slot = current_route()) {
+        std::lock_guard<std::mutex> slot_lock(slot->mu);
+        slot->runs.fetch_add(1, std::memory_order_relaxed);
+        return slot->backend.compute(build, out);
+    }
+    std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
+    Backend& be = global_backend_locked();
     // When no global override is set, honor the caller's per-call n_threads (the
     // historical behavior, used by the unit tests). A positive global override
     // already pinned the backend's thread count in global_backend().

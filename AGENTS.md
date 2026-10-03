@@ -40,6 +40,14 @@ cache-aware streaming byte-for-byte.
 
 ## Performance invariants (do not regress)
 
+- **The backend pool is opt-in.** With K = 1 (the default) every call uses the
+  process-global backend and its mutex, exactly as before. A request on a pool
+  borrows one backend for its whole duration through a thread-local route
+  (`PoolLease`); code below `run_graph` does not know about the pool. Weights
+  are realized once on the global backend and shared. Do not create weights per
+  backend, and keep every mutable member of a shared object (decoder objects,
+  loader) behind a lock or `std::once_flag`.
+
 These are measured wins. An agent "simplifying" them has caused real regressions
 before, so do not change them without an A/B benchmark that proves parity.
 
@@ -52,6 +60,9 @@ before, so do not change them without an A/B benchmark that proves parity.
   (so the unsupported op can run on CPU); when every op is supported, the fast
   gallocr path runs. If you think gallocr can go, you are about to reintroduce
   that regression.
+- **Ternary weights stay packed in the GGUF and are repacked once per loader; do not dequantize per call.**
+  The packed Redux form is what makes it 6.8x smaller than F16 and what the
+  CPU kernels in `src/ternary*.cpp` read.
 - **Zero-copy weights.** `clone_weight` returns loader tensors directly so the
   same device buffer is reused every utterance; do not copy weights per call.
 
@@ -62,7 +73,9 @@ include/             public C/C++ headers
                        parakeet.h         , C++ API
                        parakeet_capi.h    , flat C-API for FFI / dlopen
 src/                 libparakeet implementation
-                       model.hpp/cpp      , load-once pk::Model
+                       backend.hpp/cpp    , pk::Backend: one CPU (or GPU) backend + persistent gallocr
+                       backend_pool.hpp/cpp, pk::BackendPool + PoolLease: K CPU backends borrowed per request (thread-local routing in run_graph)
+                       model.hpp/cpp      , load-once pk::Model (+ set_concurrency for the pool)
                        parakeet.cpp       , thin transcribe() wrapper
                        parakeet_capi.cpp  , flat C-API implementation
                        common.hpp/cpp     , logging helpers
@@ -84,6 +97,10 @@ src/                 libparakeet implementation
                        ced_tagger.hpp/cpp , pk::CedTagger: loads a CED GGUF (ced.cpp) into a tagger context, pk::SoundScorer
                        sound_stream.hpp/cpp, pk::SoundStream: sliding-window sound-event detection over live PCM
                        scene_stream.hpp/cpp, pk::SceneStream: combined ASR + diarization + sound-event stream
+                       ternary.hpp/cpp    , packed ternary (moondream/parakeet-redux) linears: repack once, int8 activations, scalar ref + two-op ggml custom op
+                       ternary_kernels.hpp, ternary_kernels_x86.cpp (AVX-512 VNNI / AVX2), ternary_kernels_neon.cpp
+                       vad_head.hpp/cpp   , voice-activity head of Ultra/Redux (plain C++ loops), Model::vad_probabilities
+                       vad_segmenter.hpp/cpp, pk::segment_by_vad: cut long audio at VAD pauses (SegmenterOpts), used by `transcribe --vad`
                        scene_render.hpp/cpp, pk::SceneRenderer + format_span/is_speech_label: `parakeet-cli scene` text rendering
                        speaker_registry.hpp/cpp, pk::SpeakerRegistry: enrolled voices (centroid per name), match, binary save/load
                        speaker_identifier.hpp/cpp, pk::SpeakerIdentifier: names diarization slots from their clean audio; identify_offline
@@ -94,6 +111,7 @@ examples/cli/        parakeet-cli binary
                      diarize binary: diarize <diar.gguf> <wav> [--stream]
 scripts/             Python tooling
                        convert_parakeet_to_gguf.py, .nemo/.hf -> GGUF (--dtype f32|f16|q8_0)
+                       convert_hf_parakeet_to_gguf.py, HF safetensors (moondream/parakeet-ultra, -redux) to GGUF (--template, --ternary keep|dequant, --vad keep|drop)
                        gen_nemo_baseline.py        , NeMo intermediates -> baseline.gguf
                        gen_stream_baseline.py      , NeMo cache-aware streaming encode+decode -> stream baseline.gguf
                        gen_diar_baseline.py        , NeMo offline + streaming diarization -> diar baseline.gguf
@@ -104,6 +122,10 @@ tests/               ctest targets
                        test_smoke.cpp          , version string (model-independent)
                        test_audio_io.cpp       , wav load + resample (model-independent)
                        test_fft.cpp            , FFT cross-check (model-independent)
+                       test_backend_pool.cpp   , backend pool routing, limits, reentrancy, shutdown (model-independent)
+                       test_capi_concurrency.cpp, set_concurrency + concurrent last_error writes (PARAKEET_TEST_GGUF)
+                       test_pool_stress.cpp    , N threads x K backends == single-thread results; PARAKEET_STRESS_QUICK=1 for slow builds (PARAKEET_TEST_GGUF, _ULTRA, _REDUX_KEEP)
+                       test_pool_shutdown.cpp  , pool create/destroy leaves no threads, results equal (PARAKEET_TEST_GGUF)
                        test_model_loader.cpp   , config + tensor map (model-dependent)
                        test_capi.cpp           , C-API load -> transcribe -> free (model-dependent)
                        test_transcribe_speech.cpp, end-to-end CTC transcript (model-dependent)
@@ -120,6 +142,13 @@ tests/               ctest targets
                        test_streaming_diarization.cpp, streaming diarization == NeMo streaming, every latency mode (same baseline)
                        test_combined_offline.cpp, SAS + streaming diarization/SAS through the C-API
                        test_sas_merge.cpp      , SAS merge/grouping (model-independent)
+                       test_ternary.cpp        , ternary repack, int8 quant, every kernel == scalar (model-independent)
+                       test_ternary_model.cpp  , packed Redux == dequantized Redux transcript (PARAKEET_TEST_GGUF_REDUX_KEEP + _DEQ)
+                       test_model_loader_ternary.cpp, ternary + VAD flags from GGUF KVs
+                       bench_ternary.cpp       , single-thread throughput of each ternary kernel (not a ctest)
+                       test_vad_head.cpp       , VAD head probabilities (PARAKEET_TEST_GGUF_ULTRA)
+                       test_vad_segmenter.cpp  , segmenter cut rules (model-independent)
+                       test_transcribe_vad.cpp , --vad path vs plain pass on long audio (PARAKEET_TEST_GGUF_ULTRA, PARAKEET_TEST_GGUF)
                        test_asr_committer.cpp  , shared word/utterance finalize logic (model-independent)
                        test_ced_parity.cpp     , CedTagger scores == ced.cpp PyTorch baseline (PARAKEET_TEST_CED_GGUF f32 + PARAKEET_TEST_CED_BASELINE)
                        test_sound_stream.cpp   , pk::SoundStream windowing/on-off-min_duration logic (model-independent)
@@ -152,6 +181,8 @@ docs/
   conversion.md     , GGUF schema reference
   quantization.md   , quantization allowlist, policy, measured size + WER per type
   parity.md         , full model coverage matrix + per-stage tensor parity
+  concurrency.md    , backend pool: concurrent requests, thread rules, measured throughput, TSan recipe
+  ternary.md        , packed ternary Redux: GGUF form, kernels, limits, measured speed
   diarization.md    , speaker diarization + speaker-attributed ASR: parity, C-API, speed
   sound.md          , sound-event detection (CED) and the combined scene stream
   speaker.md        , speaker identification: enroll, scene naming, C-API v9 and v10, measured numbers
@@ -203,6 +234,10 @@ ctest --test-dir build --output-on-failure
 Tests return exit code 77 (ctest SKIP) when the venv or checkpoint is absent,
 so they never break a CI environment that lacks them.
 
+Ultra/Redux tests read `PARAKEET_TEST_GGUF_ULTRA` (F16 Ultra),
+`PARAKEET_TEST_GGUF_REDUX_KEEP` (packed ternary) and `PARAKEET_TEST_GGUF_REDUX_DEQ`
+(dequantized Redux); they skip (77) when unset.
+
 ### Test labels
 
 | Label   | Tests                                                        | Needs              |
@@ -234,6 +269,17 @@ Convert (HuggingFace id or local `.nemo`):
 
 Featurizer window and filterbank are lifted from the checkpoint at runtime;
 mel/fft parameters do not need to be specified manually.
+
+## Ternary GGUF flags
+
+Two optional GGUF flags, both read into `ParakeetConfig`:
+
+- `parakeet.ternary.present` (with `parakeet.ternary.group_size` = 128): the
+  encoder linears are stored as `<name>.qweight` (I8) + `<name>.scales` (F16).
+  CPU only, offline only (no streaming). `PARAKEET_TERNARY_KERNEL=scalar|avx2|vnni|neon`
+  forces a kernel. See `docs/ternary.md`.
+- `parakeet.vad.present` (with `parakeet.vad.d_in/hidden/kernel/frame_sec`): the
+  file carries `vad_head.*` tensors.
 
 ## Quantization policy
 
@@ -269,6 +315,9 @@ The binary is at `build/examples/cli/parakeet-cli`.
 parakeet-cli info <model.gguf>
 parakeet-cli transcribe --model <model.gguf> --input <audio.wav> [--decoder ctc|tdt] [--stream] [--timestamps] [--json]
 parakeet-cli quantize <in.gguf> <out.gguf> <type>
+parakeet-cli bench --model <m.gguf> --manifest <file> [--threads N] [--concurrency K] [--json <out>]   # K workers over a pool of K backends
+parakeet-cli transcribe --model <ultra-or-redux.gguf> --input <long.wav> --vad [--vad-threshold F] [--vad-min-pause SEC] [--vad-max-seg SEC]
+parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]   # dump VAD head probabilities as t_sec,p
 parakeet-cli scene [--model <asr.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>] --input <audio.wav> [--latency model|low|very_low|ultra_low] [--chunk-ms N] [--show-speech] [--json]
 parakeet-cli scene ... --speakers <speaker.gguf> --registry <file> [--speaker-threshold F]   # names diarized speakers
 parakeet-cli enroll --model <speaker.gguf> --name <name> --input <wav> [--input <wav> ...] --registry <file>
@@ -302,6 +351,20 @@ parakeet_capi_stream_begin
 parakeet_capi_stream_feed       # 16k mono f32 PCM -> newly-finalized text; *eou_out = event bitmask (ABI v5)
 parakeet_capi_stream_finalize   # flush the end-of-stream tail
 parakeet_capi_stream_free
+```
+
+Concurrent requests (additive, ABI unchanged; not used by LocalAI yet). Default is one
+backend, as before. See `docs/concurrency.md` for the rules (cores, `last_error`):
+
+```
+parakeet_capi_set_concurrency   # K CPU backends for one ASR ctx; concurrent transcribe_* calls then run in parallel
+```
+
+VAD segmentation (additive, ABI unchanged; not used by LocalAI yet). Needs a GGUF
+with a VAD head (Ultra/Redux); see `docs/ternary.md`:
+
+```
+parakeet_capi_transcribe_path_json_vad   # same JSON as _json, long audio cut at VAD pauses
 ```
 
 Speaker diarization (ABI v7, additive; not used by LocalAI yet). A

@@ -67,7 +67,7 @@ int main() {
     // Prompt (multilingual / nemotron) model: exercise the batched target_lang
     // variant. This fixture is a CAUSAL streaming prompt model
     // (causal_downsampling=True). Batched causal subsampling is now supported
-    // (byte-identical to per-item), so a valid-language 2-clip batch runs through
+    // (same transcripts as per-item), so a valid-language 2-clip batch runs through
     // the batched encoder and returns a JSON array of length 2. We also assert
     // the catchable error path: an unknown locale is rejected by
     // resolve_prompt_index (which runs before the encoder) -> NULL + non-empty

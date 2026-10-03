@@ -41,7 +41,10 @@ class Backend {
 public:
     // Construct a CPU backend with `n_threads` worker threads (<=0 -> 1). The
     // gallocr is created lazily on the first compute and reused afterwards.
-    explicit Backend(int n_threads);
+    //
+    // `cpu_only` skips the GPU device search and PARAKEET_DEVICE, so a backend
+    // pool always gets plain CPU backends.
+    explicit Backend(int n_threads, bool cpu_only = false);
     ~Backend();
 
     Backend(const Backend&) = delete;
@@ -55,6 +58,11 @@ public:
     // Name of the selected compute device ("cpu" for the CPU backend, or the
     // registry device name for a GPU backend, e.g. the CUDA device name).
     const char* device_name() const { return device_name_.c_str(); }
+
+    // Size in bytes of this backend's graph allocator buffer (its working set
+    // for graph intermediates). It grows to the largest graph run so far and
+    // stays there. 0 before the first compute. Safe to call from any thread.
+    size_t graph_alloc_bytes() const;
 
     // The underlying CPU ggml backend. Exposed so the loader can give its weight
     // tensors a backend buffer over the SAME backend graphs run on (see

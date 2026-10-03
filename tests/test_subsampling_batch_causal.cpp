@@ -8,7 +8,7 @@
 // Batched CAUSAL subsampling parity for the multilingual streaming nemotron
 // model (causal_downsampling=True). Greedy decode is deterministic and the
 // per-item causal path is NeMo-validated at WER 0, so the gold check is
-// byte-identical equivalence: a clip transcribed inside a B>1 batch MUST equal
+// transcript equality: a clip transcribed inside a B>1 batch MUST equal
 // the SAME clip transcribed standalone. Mixed-length batches exercise the
 // per-item trailing-pad masking that interacts with the causal right pad of 1.
 //
@@ -60,7 +60,8 @@ int main() {
     }
 
     // (b) MIXED-LENGTH batch (the real test): different lengths exercise the
-    //     per-item causal masking; each item must be byte-identical to standalone.
+    //     per-item causal masking; each item must give the same transcript as standalone
+    //     (text equality; batched floats are close, not bit-identical).
     {
         auto out = model->transcribe_pcm_batch({speech.samples, clip.samples}, 16000,
                                                pk::Decoder::kDefault, lang);
@@ -90,8 +91,8 @@ int main() {
     }
 
     // (b'') MIXED-LENGTH with a non-empty shorter item, both orderings. The half
-    //       slice is the padded/masked item in one ordering; its tokens must be
-    //       byte-identical to its standalone transcript.
+    //       slice is the padded/masked item in one ordering; its tokens must
+    //       give the same transcript as its standalone run.
     {
         auto out1 = model->transcribe_pcm_batch({speech.samples, half}, 16000,
                                                 pk::Decoder::kDefault, lang);
