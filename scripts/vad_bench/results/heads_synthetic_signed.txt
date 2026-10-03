@@ -1,0 +1,11 @@
+silero_matched start signed median 237 ms, p10 2 p90 548
+silero_matched end signed median 3 ms, p10 -404 p90 124
+silero_default start signed median 232 ms, p10 -46 p90 523
+silero_default end signed median 20 ms, p10 -370 p90 153
+ultra_q8 start signed median 162 ms, p10 -86 p90 469
+ultra_q8 end signed median -10 ms, p10 -420 p90 163
+redux_packed start signed median 147 ms, p10 -91 p90 459
+redux_packed end signed median 54 ms, p10 -332 p90 183
+silero_matched segments per ref span: 1.96
+ultra_q8 segments per ref span: 1.92
+redux_packed segments per ref span: 1.76
