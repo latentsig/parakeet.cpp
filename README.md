@@ -46,7 +46,7 @@ Every model below is validated at WER 0 against NeMo and published as GGUF (f16,
 | [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | TDT | 0.6B | Moondream's ternary-encoder derivative of parakeet-tdt-0.6b-v3, with a VAD head. CPU only. CC-BY-4.0. Not NeMo-validated, see below | Moondream, from NVIDIA |
 
 
-### Moondream Ultra and Redux (not yet published)
+### Moondream Ultra and Redux
 
 [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and
 [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) are Moondream's
@@ -55,7 +55,10 @@ post-trained (Ultra, F16) and ternary-encoder (Redux) derivatives of NVIDIA's
 [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). They are HF safetensors, converted with
 `scripts/convert_hf_parakeet_to_gguf.py`. They are not part of the NeMo-validated set above: there is
 no NeMo baseline for them, so parity is transcript-level against our own v3 path (see
-[`docs/parity.md`](docs/parity.md)), and no GGUFs are published yet.
+[`docs/parity.md`](docs/parity.md)), and the GGUFs are published in
+[mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf): `ultra-f16.gguf`, `ultra-q8_0.gguf`, `redux-packed.gguf`
+(packed ternary), `redux-f16.gguf` and `redux-q8_0.gguf` (dequantized). Sizes and SHA-256 sums are in
+[`models/MANIFEST.md`](models/MANIFEST.md).
 
 The models were trained by NVIDIA (the base) and Moondream (Ultra and Redux). parakeet.cpp only
 converts and quantizes the weights; nothing is trained or fine-tuned here. A dequantized Redux file
