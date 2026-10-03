@@ -139,10 +139,13 @@ with `--vad drop`.
 ### `snakers4/silero-vad` v6.2.3 (voice activity detection, MIT)
 
 Converted with `scripts/convert_silero_vad_to_gguf.py` from the official
-`silero_vad.onnx` (both sample rates in one file). Not published yet. Max
-probability difference vs onnxruntime on the test clip, in `docs/vad.md`.
+`silero_vad.onnx` (both sample rates in one file). Published in
+[mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf).
+The model is MIT licensed, Copyright (c) 2020-present Silero Team
+(<https://github.com/snakers4/silero-vad>). Max probability difference vs
+onnxruntime on the test clip, in `docs/vad.md`.
 
-| Variant | File | Size | Max diff vs onnxruntime | Validated |
-|---|---|---:|---:|---|
-| F32 | `silero-vad-f32.gguf` | 2.2 MB | 2e-6 | PASS |
-| F16 | `silero-vad-f16.gguf` | 1.3 MB | 3e-3 | PASS |
+| Variant | File | Size (bytes) | SHA-256 | Max diff vs onnxruntime | Validated |
+|---|---|---:|---|---:|---|
+| F32 | [`silero-vad-f32.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/silero-vad-f32.gguf) | 2,184,480 | `1398e5ce230bd8f20c06f825ed3a41dc4528ef7e6fe8f8ec8a5b7aedefbee943` | 2e-6 | PASS |
+| F16 | [`silero-vad-f16.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/silero-vad-f16.gguf) | 1,264,928 | `8160489282352accc0e95925c2f6bf3d76fb8f7bccdce5c7e46808cb15e8443c` | 3e-3 | PASS |

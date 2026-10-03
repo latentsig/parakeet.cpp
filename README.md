@@ -78,7 +78,7 @@ ternary ones.
   `parakeet_capi_vad_pcm_json` / `parakeet_capi_vad_path_json` from the C-API. They return speech
   segments (start and end in seconds) as JSON, and optionally the per-frame probabilities. A model
   without the head fails with `model has no VAD head`. See [`docs/vad.md`](docs/vad.md).
-- Silero VAD (MIT, 32 ms frames, 16 kHz and 8 kHz) runs from its own small GGUF through the same
+- Silero VAD (MIT, 32 ms frames, 16 kHz and 8 kHz) runs from its own small GGUF ([download](https://huggingface.co/mudler/parakeet-cpp-gguf)) through the same
   functions, as a stream (`parakeet_capi_vad_stream_*`), and as the cutter for any ASR model:
   `parakeet-cli transcribe --vad --vad-model silero.gguf`. See [`docs/vad.md`](docs/vad.md).
 ---
@@ -294,8 +294,9 @@ parakeet-cli vad --model ultra.gguf --input audio.wav
 
 # The same with a Silero VAD GGUF (frame_sec 0.032; defaults 250 ms min speech,
 # 100 ms min pause, 30 ms pad). Any ASR model can then cut long audio with it.
-# The Silero GGUF is not published yet; make it with scripts/convert_silero_vad_to_gguf.py
-# (see docs/vad.md and docs/conversion.md):
+# Download it from the collection repo (F16 is 1.3 MB, F32 is 2.2 MB). To make the
+# file yourself, see scripts/convert_silero_vad_to_gguf.py, docs/vad.md and docs/conversion.md.
+curl -LO https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/silero-vad-f16.gguf
 parakeet-cli vad --model silero-vad-f16.gguf --input audio.wav
 parakeet-cli transcribe --model tdt-0.6b-v3.gguf --input long.wav --vad --vad-model silero-vad-f16.gguf
 
