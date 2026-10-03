@@ -26,6 +26,7 @@
 #include "scene_render.hpp"
 #include "vad_head.hpp"
 #include "vad_json.hpp"
+#include "silero_vad.hpp"
 #include "speaker_encoder.hpp"
 #include "speaker_registry.hpp"
 #include <atomic>
@@ -36,6 +37,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -205,9 +207,22 @@ static int cmd_transcribe_stream(const std::string& model, const std::string& in
     return 0;
 }
 
+// Segmenter options the user set on the command line. A value left unset keeps
+// the default of the VAD in use (Ultra/Redux head or Silero).
+struct VadOverrides {
+    std::optional<double> threshold, min_pause, min_speech, max_seg, pad;
+    void apply(pk::SegmenterOpts& o) const {
+        if (threshold) o.threshold = (float)*threshold;
+        if (min_pause) o.min_pause_sec = *min_pause;
+        if (min_speech) o.min_speech_sec = *min_speech;
+        if (max_seg) o.max_seg_sec = *max_seg;
+        if (pad) o.pad_sec = *pad;
+    }
+};
+
 static int cmd_transcribe_vad(const std::string& model, const std::string& input, pk::Decoder dec,
                               const std::string& lang, bool timestamps, bool json,
-                              const pk::SegmenterOpts& opts) {
+                              const VadOverrides& ov, const std::string& vad_model) {
     pk::Audio audio;
     if (!load_audio_arg_16k_mono(input, audio)) {
         std::fprintf(stderr, "parakeet-cli: failed to load audio %s\n", input.c_str());
@@ -216,9 +231,25 @@ static int cmd_transcribe_vad(const std::string& model, const std::string& input
     try {
         std::unique_ptr<pk::Model> m = pk::Model::load(model);
         if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
+        pk::SegmenterOpts opts = pk::default_segmenter_opts(vad_model.empty() ? pk::VadKind::kHead : pk::VadKind::kSilero);
+        ov.apply(opts);
+        std::unique_ptr<pk::SileroVad> silero;
+        pk::Model::VadProbabilityFn fn;
+        if (!vad_model.empty()) {
+            std::string err;
+            silero = pk::SileroVad::load(vad_model, &err);
+            if (!silero) { std::fprintf(stderr, "parakeet-cli: failed to load VAD model %s: %s\n", vad_model.c_str(), err.c_str()); return 1; }
+            const pk::SileroVad* sv = silero.get();
+            fn = [sv](const std::vector<float>& pcm16k) {
+                std::vector<float> p = sv->probabilities(pcm16k.data(), pcm16k.size(), 16000);
+                if (p.empty() && !pcm16k.empty()) throw std::runtime_error("Silero VAD failed");
+                return p;
+            };
+        }
+        const pk::Model::VadProbabilityFn* ext = silero ? &fn : nullptr;
         if (json || timestamps) {
             pk::Transcription tr =
-                m->transcribe_pcm_vad_with_timestamps(audio.samples, audio.sample_rate, dec, lang, opts);
+                m->transcribe_pcm_vad_with_timestamps(audio.samples, audio.sample_rate, dec, lang, opts, ext);
             if (json) {
                 std::printf("%s\n", pk::transcription_to_json(tr, model_frame_sec(*m)).c_str());
             } else {
@@ -226,7 +257,7 @@ static int cmd_transcribe_vad(const std::string& model, const std::string& input
                     std::printf("%.2f-%.2f  %s  (%.2f)\n", w.start, w.end, w.text.c_str(), w.conf);
             }
         } else {
-            std::printf("%s\n", m->transcribe_pcm_vad(audio.samples, audio.sample_rate, dec, lang, opts).c_str());
+            std::printf("%s\n", m->transcribe_pcm_vad(audio.samples, audio.sample_rate, dec, lang, opts, ext).c_str());
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "parakeet-cli: transcribe failed: %s\n", e.what());
@@ -246,7 +277,8 @@ static int cmd_transcribe(int argc, char** argv) {
     bool timestamps = false;
     bool json = false;
     bool vad = false;
-    pk::SegmenterOpts vad_opts;
+    std::string vad_model;
+    VadOverrides vad_ov;
     double d = 0.0;
     auto parse_pos = [](const char* str, double& out) {
         char* end = nullptr;
@@ -282,15 +314,21 @@ static int cmd_transcribe(int argc, char** argv) {
             score_norm = false;
         } else if (std::strcmp(argv[i], "--vad") == 0) {
             vad = true;
+        } else if (std::strcmp(argv[i], "--vad-model") == 0 && i + 1 < argc) {
+            vad_model = argv[++i];
+            vad = true;
         } else if (std::strcmp(argv[i], "--vad-threshold") == 0 && i + 1 < argc) {
             if (!parse_pos(argv[++i], d) || d > 1.0) { std::fprintf(stderr, "parakeet-cli: --vad-threshold must be in (0,1]\n"); return 2; }
-            vad_opts.threshold = (float)d;
+            vad_ov.threshold = d;
         } else if (std::strcmp(argv[i], "--vad-min-pause") == 0 && i + 1 < argc) {
             if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-min-pause must be > 0\n"); return 2; }
-            vad_opts.min_pause_sec = d;
+            vad_ov.min_pause = d;
+        } else if (std::strcmp(argv[i], "--vad-min-speech") == 0 && i + 1 < argc) {
+            if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-min-speech must be > 0\n"); return 2; }
+            vad_ov.min_speech = d;
         } else if (std::strcmp(argv[i], "--vad-max-seg") == 0 && i + 1 < argc) {
             if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-max-seg must be > 0\n"); return 2; }
-            vad_opts.max_seg_sec = d;
+            vad_ov.max_seg = d;
         }
     }
     if (model.empty() || input.empty()) {
@@ -298,7 +336,8 @@ static int cmd_transcribe(int argc, char** argv) {
             "usage: parakeet-cli transcribe --model <m.gguf> --input <wav|-> "
             "[--decoder ctc|tdt] [--lang <locale>] [--stream] [--timestamps] "
             "[--threads N] [--json] "
-            "[--vad [--vad-threshold F=0.5] [--vad-min-pause SEC=0.2] [--vad-max-seg SEC=30]] "
+            "[--vad [--vad-model <silero.gguf>] [--vad-threshold F=0.5] [--vad-min-pause SEC] "
+            "[--vad-min-speech SEC] [--vad-max-seg SEC=30]] "
             "[--beam-size N [--nbest N] [--no-score-norm]]\n");
         return 2;
     }
@@ -350,7 +389,7 @@ static int cmd_transcribe(int argc, char** argv) {
             std::fprintf(stderr, "parakeet-cli: --vad works with greedy decoding only\n");
             return 2;
         }
-        return cmd_transcribe_vad(model, input, dec, lang, timestamps, json, vad_opts);
+        return cmd_transcribe_vad(model, input, dec, lang, timestamps, json, vad_ov, vad_model);
     }
     if (nbest != 0 && beam_size == 0) {
         std::fprintf(stderr,
@@ -1859,52 +1898,59 @@ static int cmd_vad_probe(int argc, char** argv) {
 }
 
 // parakeet-cli vad --model <m.gguf> --input <wav|-> [--threshold F=0.5]
-//   [--min-pause SEC=0.2] [--min-speech SEC=0.1] [--max-segment SEC=30]
+//   [--min-pause SEC] [--min-speech SEC] [--speech-pad SEC] [--max-segment SEC=30]
 //   [--mode speech|segments] [--probabilities] [--threads N]
-// Prints the same JSON as parakeet_capi_vad_path_json. Needs a VAD head.
+// Prints the same JSON as parakeet_capi_vad_path_json. The model is an ASR GGUF
+// with a VAD head (Ultra, Redux) or a Silero VAD GGUF. Unset options keep the
+// defaults of that model kind.
 static int cmd_vad(int argc, char** argv) {
     std::string model, input;
-    pk::VadRequest req;
+    VadOverrides ov;
+    std::optional<pk::VadRequest::Mode> mode;
+    bool want_probs = false;
     int threads = 0;
     auto bad = [](const char* what) {
         std::fprintf(stderr, "parakeet-cli: %s\n", what);
         return 2;
     };
-    auto num = [](const char* s, double& out) {
+    auto num = [](const char* s, double& out, bool allow_zero) {
         char* end = nullptr;
         out = std::strtod(s, &end);
-        return end != s && *end == '\0' && std::isfinite(out) && out > 0.0;
+        return end != s && *end == '\0' && std::isfinite(out) && (allow_zero ? out >= 0.0 : out > 0.0);
     };
     for (int i = 0; i < argc; ++i) {
         double d = 0.0;
         if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) model = argv[++i];
         else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) input = argv[++i];
         else if (std::strcmp(argv[i], "--threshold") == 0 && i + 1 < argc) {
-            if (!num(argv[++i], d) || d > 1.0) return bad("--threshold must be in (0,1]");
-            req.opts.threshold = (float)d;
+            if (!num(argv[++i], d, false) || d > 1.0) return bad("--threshold must be in (0,1]");
+            ov.threshold = d;
         } else if (std::strcmp(argv[i], "--min-pause") == 0 && i + 1 < argc) {
-            if (!num(argv[++i], d)) return bad("--min-pause must be > 0");
-            req.opts.min_pause_sec = d;
+            if (!num(argv[++i], d, false)) return bad("--min-pause must be > 0");
+            ov.min_pause = d;
         } else if (std::strcmp(argv[i], "--min-speech") == 0 && i + 1 < argc) {
-            if (!num(argv[++i], d)) return bad("--min-speech must be > 0");
-            req.opts.min_speech_sec = d;
+            if (!num(argv[++i], d, false)) return bad("--min-speech must be > 0");
+            ov.min_speech = d;
+        } else if (std::strcmp(argv[i], "--speech-pad") == 0 && i + 1 < argc) {
+            if (!num(argv[++i], d, true)) return bad("--speech-pad must be >= 0");
+            ov.pad = d;
         } else if (std::strcmp(argv[i], "--max-segment") == 0 && i + 1 < argc) {
-            if (!num(argv[++i], d)) return bad("--max-segment must be > 0");
-            req.opts.max_seg_sec = d;
+            if (!num(argv[++i], d, false)) return bad("--max-segment must be > 0");
+            ov.max_seg = d;
         } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             const char* v = argv[++i];
-            if (std::strcmp(v, "speech") == 0) req.mode = pk::VadRequest::Mode::kSpeech;
-            else if (std::strcmp(v, "segments") == 0) req.mode = pk::VadRequest::Mode::kSegments;
+            if (std::strcmp(v, "speech") == 0) mode = pk::VadRequest::Mode::kSpeech;
+            else if (std::strcmp(v, "segments") == 0) mode = pk::VadRequest::Mode::kSegments;
             else return bad("--mode must be speech or segments");
-        } else if (std::strcmp(argv[i], "--probabilities") == 0) req.probabilities = true;
+        } else if (std::strcmp(argv[i], "--probabilities") == 0) want_probs = true;
         else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) threads = std::atoi(argv[++i]);
         else return bad("unknown or incomplete option for vad");
     }
     if (model.empty() || input.empty()) {
         std::fprintf(stderr,
-            "usage: parakeet-cli vad --model <m.gguf> --input <wav|-> [--threshold F=0.5] "
-            "[--min-pause SEC=0.2] [--min-speech SEC=0.1] [--max-segment SEC=30] "
-            "[--mode speech|segments] [--probabilities] [--threads N]\n");
+            "usage: parakeet-cli vad --model <asr-with-vad-head.gguf|silero.gguf> --input <wav|-> "
+            "[--threshold F=0.5] [--min-pause SEC] [--min-speech SEC] [--speech-pad SEC] "
+            "[--max-segment SEC=30] [--mode speech|segments] [--probabilities] [--threads N]\n");
         return 2;
     }
     if (threads > 0) pk::set_num_threads(threads);
@@ -1914,6 +1960,20 @@ static int cmd_vad(int argc, char** argv) {
         return 1;
     }
     try {
+        const bool is_silero = pk::gguf_is_silero(model);
+        pk::VadRequest req;
+        req.kind = is_silero ? pk::VadKind::kSilero : pk::VadKind::kHead;
+        req.opts = pk::default_segmenter_opts(req.kind);
+        ov.apply(req.opts);
+        if (mode) req.mode = *mode;
+        req.probabilities = want_probs;
+        if (is_silero) {
+            std::string err;
+            std::unique_ptr<pk::SileroVad> sv = pk::SileroVad::load(model, &err);
+            if (!sv) { std::fprintf(stderr, "parakeet-cli: failed to load model %s: %s\n", model.c_str(), err.c_str()); return 1; }
+            std::printf("%s\n", pk::silero_vad_to_json(*sv, audio.samples, 16000, req).c_str());
+            return 0;
+        }
         std::unique_ptr<pk::Model> m = pk::Model::load(model);
         if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
         std::printf("%s\n", pk::vad_to_json(*m, audio.samples, req).c_str());
@@ -1952,15 +2012,16 @@ int main(int argc, char** argv) {
         return run_and_shutdown(cmd_vad_probe, argc - 2, argv + 2);
     std::fprintf(stderr,
         "usage:\n"
-        "  parakeet-cli vad --model <m.gguf> --input <wav|-> [--threshold F=0.5] "
-        "[--min-pause SEC=0.2] [--min-speech SEC=0.1] [--max-segment SEC=30] "
-        "[--mode speech|segments] [--probabilities] [--threads N]\n"
+        "  parakeet-cli vad --model <asr-with-vad-head.gguf|silero.gguf> --input <wav|-> "
+        "[--threshold F=0.5] [--min-pause SEC] [--min-speech SEC] [--speech-pad SEC] "
+        "[--max-segment SEC=30] [--mode speech|segments] [--probabilities] [--threads N]\n"
         "  parakeet-cli vad-probe --model <m.gguf> --input <wav|-> [--variant N]\n"
         "  parakeet-cli info <model.gguf>\n"
         "  parakeet-cli transcribe --model <model.gguf> --input <wav|-> "
         "[--decoder ctc|tdt] [--lang <locale>] [--stream] [--timestamps] "
         "[--threads N] [--json] "
-        "[--vad [--vad-threshold F=0.5] [--vad-min-pause SEC=0.2] [--vad-max-seg SEC=30]] "
+        "[--vad [--vad-model <silero.gguf>] [--vad-threshold F=0.5] [--vad-min-pause SEC] "
+            "[--vad-min-speech SEC] [--vad-max-seg SEC=30]] "
         "[--beam-size N [--nbest N] [--no-score-norm]]\n"
         "  parakeet-cli quantize <in.gguf> <out.gguf> "
         "<q4_0|q5_0|q8_0|q4_k|q5_k|q6_k>\n"

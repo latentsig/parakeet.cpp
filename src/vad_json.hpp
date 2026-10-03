@@ -10,20 +10,33 @@
 namespace pk {
 
 class Model;
+class SileroVad;
 
 struct VadRequest {
     enum class Mode { kSpeech, kSegments };
     SegmenterOpts opts;               // threshold, min_pause, min_speech, max_segment
     Mode mode = Mode::kSpeech;
     bool probabilities = false;       // add "probabilities" to the document
+    VadKind kind = VadKind::kHead;    // which model the defaults in `opts` are for
 };
 
 // Parses an options document: a flat JSON object, or NULL / "" for the
 // defaults. Keys: "threshold" (0 < x <= 1), "min_pause", "min_speech",
 // "max_segment" (seconds, > 0), "mode" ("speech" or "segments"),
-// "probabilities" (bool). Unknown keys and bad values are errors. Returns false
-// and sets `err` on failure.
-bool parse_vad_options(const char* json, VadRequest& req, std::string& err);
+// "probabilities" (bool), "speech_pad" (seconds >= 0, "speech" mode). Unknown
+// keys and bad values are errors. The values that a key leaves out come from
+// default_segmenter_opts(kind). Returns false and sets `err` on failure.
+bool parse_vad_options(const char* json, VadRequest& req, std::string& err,
+                       VadKind kind = VadKind::kHead);
+
+// Same document for a Silero VAD model. `pcm` is mono at `sample_rate`, which
+// must be 16000 or 8000 (the caller resamples anything else); times are on the
+// input timeline and frame_sec is 0.032 at both rates.
+std::string silero_vad_to_json(const SileroVad& m, const std::vector<float>& pcm, int sample_rate,
+                               const VadRequest& req);
+
+// True when the GGUF's general.architecture is "silero_vad". Reads only the header.
+bool gguf_is_silero(const std::string& gguf_path);
 
 // Runs the VAD head over 16 kHz mono PCM and returns the JSON document
 // {"mode","duration","frame_sec","backend","segments":[{"start","end"}],

@@ -21,6 +21,7 @@
 #include "transcription.hpp"  // pk::Transcription, pk::Word
 #include "transcription_json.hpp"
 #include "vad_json.hpp"
+#include "silero_vad.hpp"
 #include "audio_io.hpp"
 
 #include <algorithm>
@@ -94,14 +95,16 @@ private:
 };
 
 // The opaque context: a loaded model plus a buffer for the last error message.
-// Exactly one of `model` / `diar` / `tagger` / `speaker` is non-null: ASR models
-// use `model`, diarization models (Sortformer) use `diar`, CED sound-event
-// taggers use `tagger`, voice-detect speaker encoders use `speaker`.
+// Exactly one of `model` / `diar` / `tagger` / `speaker` / `silero` is non-null:
+// ASR models use `model`, diarization models (Sortformer) use `diar`, CED
+// sound-event taggers use `tagger`, voice-detect speaker encoders use `speaker`,
+// Silero VAD models use `silero`.
 struct parakeet_ctx {
     std::unique_ptr<pk::Model> model;
     std::unique_ptr<pk::DiarizationModel> diar;
     std::unique_ptr<pk::CedTagger> tagger;
     std::unique_ptr<pk::SpeakerEncoder> speaker;
+    std::unique_ptr<pk::SileroVad> silero;   // Silero VAD model (architecture "silero_vad")
     std::string speaker_identity;
     ErrorSlot last_error;
 };
@@ -249,6 +252,15 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
         if (pk::gguf_is_ced(gguf_path)) {
             ctx->tagger = pk::CedTagger::load(gguf_path);
             if (ctx->tagger) return ctx;
+            delete ctx;
+            return nullptr;
+        }
+
+        // A Silero VAD GGUF (architecture "silero_vad") is a standalone detector.
+        if (pk::gguf_is_silero(gguf_path)) {
+            std::string err;
+            ctx->silero = pk::SileroVad::load(gguf_path, &err);
+            if (ctx->silero) return ctx;
             delete ctx;
             return nullptr;
         }
@@ -541,22 +553,25 @@ extern "C" char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx,
 }
 
 namespace {
-// Shared body of the two VAD entry points. `pcm` is 16 kHz mono.
-char* vad_json_common(parakeet_ctx* ctx, const std::vector<float>& pcm, const char* options_json) {
+// Shared body of the two VAD entry points. `pcm` is mono at `rate`; an ASR
+// context needs 16 kHz, a Silero context also takes 8 kHz.
+char* vad_json_common(parakeet_ctx* ctx, const std::vector<float>& pcm, int rate, const char* options_json) {
     pk::VadRequest req;
     std::string err;
-    if (!pk::parse_vad_options(options_json, req, err)) { ctx->last_error = err; return nullptr; }
-    std::string json = pk::vad_to_json(*ctx->model, pcm, req);
+    const pk::VadKind kind = ctx->silero ? pk::VadKind::kSilero : pk::VadKind::kHead;
+    if (!pk::parse_vad_options(options_json, req, err, kind)) { ctx->last_error = err; return nullptr; }
+    std::string json = ctx->silero ? pk::silero_vad_to_json(*ctx->silero, pcm, rate, req)
+                                   : pk::vad_to_json(*ctx->model, pcm, req);
     ctx->last_error.clear();
     char* out = dup_to_c(json);
     if (!out) { ctx->last_error = "out of memory"; return nullptr; }
     return out;
 }
 bool vad_ctx_ok(parakeet_ctx* ctx) {
-    if (ctx->model) return true;
+    if (ctx->model || ctx->silero) return true;
     ctx->last_error = ctx->diar
         ? "context holds a diarization model; use parakeet_capi_diarize_*"
-        : "context has no loaded model";
+        : "context has no loaded model or VAD model";
     return false;
 }
 }  // namespace
@@ -570,8 +585,13 @@ extern "C" char* parakeet_capi_vad_pcm_json(parakeet_ctx* ctx, const float* samp
     if (sample_rate <= 0) { ctx->last_error = "invalid sample rate"; return nullptr; }
     try {
         std::vector<float> pcm(samples, samples + n_samples);
-        if (sample_rate != 16000 && !pcm.empty()) pcm = pk::resample_linear(pcm, sample_rate, 16000);
-        return vad_json_common(ctx, pcm, options_json);
+        int rate = sample_rate;
+        const bool native = ctx->silero && ctx->silero->supports(sample_rate);
+        if (!native && sample_rate != 16000) {
+            if (!pcm.empty()) pcm = pk::resample_linear(pcm, sample_rate, 16000);
+            rate = 16000;
+        }
+        return vad_json_common(ctx, pcm, rate, options_json);
     } catch (const std::exception& e) {
         ctx->last_error = e.what();
         return nullptr;
@@ -592,7 +612,7 @@ extern "C" char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_
             ctx->last_error = std::string("failed to load audio: ") + wav_path;
             return nullptr;
         }
-        return vad_json_common(ctx, audio.samples, options_json);
+        return vad_json_common(ctx, audio.samples, 16000, options_json);
     } catch (const std::exception& e) {
         ctx->last_error = e.what();
         return nullptr;
@@ -600,6 +620,168 @@ extern "C" char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_
         ctx->last_error = "unknown error";
         return nullptr;
     }
+}
+
+extern "C" char* parakeet_capi_transcribe_path_json_vad_with(parakeet_ctx* ctx, parakeet_ctx* vad_ctx,
+                                                             const char* wav_path, int decoder,
+                                                             const char* options_json) {
+    if (!ctx) return nullptr;
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : "context has no loaded model";
+        return nullptr;
+    }
+    if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
+    if (vad_ctx && !vad_ctx->silero) { ctx->last_error = "vad_ctx does not hold a Silero VAD model"; return nullptr; }
+    try {
+        pk::VadRequest req;
+        std::string err;
+        if (!pk::parse_vad_options(options_json, req, err,
+                                   vad_ctx ? pk::VadKind::kSilero : pk::VadKind::kHead)) {
+            ctx->last_error = err;
+            return nullptr;
+        }
+        pk::Audio audio;
+        if (!pk::load_audio_16k_mono(wav_path, audio)) {
+            ctx->last_error = std::string("failed to load audio: ") + wav_path;
+            return nullptr;
+        }
+        pk::Model::VadProbabilityFn fn;
+        if (vad_ctx) {
+            pk::SileroVad* sv = vad_ctx->silero.get();
+            fn = [sv](const std::vector<float>& pcm16k) {
+                std::vector<float> p = sv->probabilities(pcm16k.data(), pcm16k.size(), 16000);
+                if (p.empty() && !pcm16k.empty()) throw std::runtime_error("Silero VAD failed");
+                return p;
+            };
+        }
+        pk::SegmenterOpts so = req.opts;
+        pk::Transcription tr = ctx->model->transcribe_pcm_vad_with_timestamps(
+            audio.samples, audio.sample_rate, to_decoder(decoder), "", so, vad_ctx ? &fn : nullptr);
+        const pk::ParakeetConfig& cfg = ctx->model->config();
+        const float frame_sec =
+            (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;
+        std::string json = pk::transcription_to_json(tr, frame_sec);
+        ctx->last_error.clear();
+        char* out = dup_to_c(json);
+        if (!out) { ctx->last_error = "out of memory"; return nullptr; }
+        return out;
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+// Streaming Silero VAD: a SileroVad::Stream plus the event tracker that turns
+// its probabilities into speech start / end events.
+struct parakeet_vad_stream {
+    parakeet_ctx* ctx = nullptr;   // borrowed; must outlive the stream
+    pk::SileroVad::Stream stream;
+    std::unique_ptr<pk::VadEventTracker> tracker;
+    int sample_rate = 16000;
+    bool probabilities = false;
+    bool finished = false;
+    unsigned long long samples = 0;
+};
+
+extern "C" parakeet_vad_stream* parakeet_capi_vad_stream_begin(parakeet_ctx* vad, int sample_rate,
+                                                               const char* options_json) {
+    if (!vad) return nullptr;
+    if (!vad->silero) { vad->last_error = "context does not hold a Silero VAD model"; return nullptr; }
+    if (!vad->silero->supports(sample_rate)) { vad->last_error = "Silero VAD streams need 16000 or 8000 Hz audio"; return nullptr; }
+    try {
+        pk::VadRequest req;
+        std::string err;
+        if (!pk::parse_vad_options(options_json, req, err, pk::VadKind::kSilero)) { vad->last_error = err; return nullptr; }
+        if (req.mode != pk::VadRequest::Mode::kSpeech) { vad->last_error = "VAD streams support mode \"speech\" only"; return nullptr; }
+        req.opts.frame_sec = pk::kSileroFrameSec;
+        auto* s = new (std::nothrow) parakeet_vad_stream();
+        if (!s) { vad->last_error = "out of memory"; return nullptr; }
+        s->ctx = vad;
+        s->stream = vad->silero->new_stream(sample_rate);
+        s->tracker.reset(new pk::VadEventTracker(req.opts));
+        s->sample_rate = sample_rate;
+        s->probabilities = req.probabilities;
+        if (!s->stream.valid()) { delete s; vad->last_error = "failed to create the Silero stream"; return nullptr; }
+        vad->last_error.clear();
+        return s;
+    } catch (const std::exception& e) {
+        vad->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        vad->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+extern "C" char* parakeet_capi_vad_stream_feed_json(parakeet_vad_stream* s, const float* pcm,
+                                                    int n_samples, int is_last) {
+    if (!s) return nullptr;
+    parakeet_ctx* ctx = s->ctx;
+    if (n_samples < 0 || (n_samples > 0 && !pcm)) { ctx->last_error = "invalid samples buffer"; return nullptr; }
+    if (s->finished) { ctx->last_error = "stream is finished; call parakeet_capi_vad_stream_reset"; return nullptr; }
+    try {
+        const long long first = s->tracker->frames();
+        std::vector<float> probs;
+        if (!s->stream.process_chunk(pcm, (size_t)n_samples, &probs)) {
+            ctx->last_error = "Silero VAD failed";
+            return nullptr;
+        }
+        s->samples += (unsigned long long)n_samples;
+        if (is_last && !s->stream.flush(&probs)) { ctx->last_error = "Silero VAD failed"; return nullptr; }
+        std::vector<pk::VadEvent> ev;
+        for (float p : probs) s->tracker->push(p, &ev);
+        if (is_last) {
+            s->tracker->finish((double)s->samples / (double)s->sample_rate, &ev);
+            s->finished = true;
+        }
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "{\"frame_sec\":%.3f,\"first_frame\":%lld,\"events\":[",
+                      pk::kSileroFrameSec, first);
+        std::string j = buf;
+        for (size_t i = 0; i < ev.size(); ++i) {
+            std::snprintf(buf, sizeof(buf), "%s{\"type\":\"%s\",\"time\":%.3f}", i ? "," : "",
+                          ev[i].start ? "start" : "end", ev[i].time);
+            j += buf;
+        }
+        j += ']';
+        if (s->probabilities) {
+            j += ",\"probabilities\":[";
+            for (size_t i = 0; i < probs.size(); ++i) {
+                std::snprintf(buf, sizeof(buf), "%s%.4f", i ? "," : "", (double)probs[i]);
+                j += buf;
+            }
+            j += ']';
+        }
+        j += '}';
+        ctx->last_error.clear();
+        char* out = dup_to_c(j);
+        if (!out) { ctx->last_error = "out of memory"; return nullptr; }
+        return out;
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
+extern "C" int parakeet_capi_vad_stream_reset(parakeet_vad_stream* s) {
+    if (!s) return -1;
+    s->stream.reset();
+    s->tracker->reset();
+    s->samples = 0;
+    s->finished = false;
+    return 0;
+}
+
+extern "C" void parakeet_capi_vad_stream_free(parakeet_vad_stream* s) {
+    delete s;
 }
 
 extern "C" char* parakeet_capi_transcribe_pcm_batch_json_lang(parakeet_ctx* ctx,
@@ -1709,6 +1891,7 @@ extern "C" int parakeet_capi_model_kind(const parakeet_ctx* ctx) {
     if (ctx->diar) return PARAKEET_MODEL_KIND_DIARIZATION;
     if (ctx->tagger) return PARAKEET_MODEL_KIND_SOUND;
     if (ctx->speaker) return PARAKEET_MODEL_KIND_SPEAKER;
+    if (ctx->silero) return PARAKEET_MODEL_KIND_VAD;
     return PARAKEET_MODEL_KIND_NONE;
 }
 

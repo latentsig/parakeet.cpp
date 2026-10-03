@@ -67,6 +67,10 @@ typedef struct parakeet_ctx parakeet_ctx;
 //      and diarize-only naming (parakeet_capi_diarize_named_pcm_json), for
 //      callers that keep speaker embeddings themselves. Additive: no
 //      existing signature changed.
+// Standalone VAD (parakeet_capi_vad_*, parakeet_capi_vad_stream_*,
+//      parakeet_capi_transcribe_path_json_vad*) and Silero VAD contexts are
+//      additive and keep ABI v10: a caller that needs them checks for the symbols
+//      (dlsym) or for PARAKEET_MODEL_KIND_VAD.
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -169,54 +173,116 @@ char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx, const char* wav_path
 char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_path,
                                              int decoder);
 
-// Standalone voice-activity detection (additive; no ABI bump). Runs only the
-// model's own VAD head (80 ms frames) and returns the speech segments as
-// JSON, without transcribing. Needs a model with a VAD head (moondream
-// parakeet-ultra / -redux): other models set the context's last error to
-// "model has no VAD head" and return NULL. NULL is also returned for a bad
-// argument or option (see last_error). Free the result with
-// parakeet_capi_free_string.
+// Standalone voice-activity detection (additive; no ABI bump). Returns the
+// speech segments as JSON, without transcribing. The context can hold either
+// kind of detector:
+//   * an ASR model with a VAD head (moondream parakeet-ultra / -redux): the head
+//     gives one probability per 80 ms frame;
+//   * a Silero VAD model (GGUF with general.architecture "silero_vad", loaded
+//     with parakeet_capi_load, parakeet_capi_model_kind == PARAKEET_MODEL_KIND_VAD):
+//     one probability per 32 ms chunk.
+// Other models set the context's last error to "model has no VAD head" and
+// return NULL. NULL is also returned for a bad argument or option (see
+// last_error). Free the result with parakeet_capi_free_string.
 //
 //   parakeet_capi_vad_pcm_json: `samples` is n_samples mono float PCM at
-//     `sample_rate` Hz (resampled to 16 kHz when different); times in the result
-//     are on the original timeline. n_samples == 0 gives no segments.
-//   parakeet_capi_vad_path_json: reads a WAV file instead.
+//     `sample_rate` Hz; times in the result are on the original timeline.
+//     n_samples == 0 gives no segments. A Silero context takes 16000 and 8000 Hz
+//     as they are; any other rate (and every rate for an ASR context) is
+//     resampled to 16 kHz with the library's linear resampler first.
+//   parakeet_capi_vad_path_json: reads a WAV file instead (resampled to 16 kHz).
 //
 // `options_json` may be NULL or "" (all defaults) or a flat JSON object:
 //   "threshold"     frame is speech when p >= threshold; (0, 1]; default 0.5
 //   "min_pause"     seconds; a silence at least this long separates regions
-//                   (shorter gaps are merged); default 0.2
+//                   (shorter gaps are merged); default 0.2 (Silero: 0.1)
 //   "min_speech"    seconds; shorter speech runs are dropped; default 0.1
+//                   (Silero: 0.25)
+//   "speech_pad"    seconds >= 0; "speech" mode: each region is widened by this
+//                   on both sides; default 0 (Silero: 0.03)
 //   "max_segment"   seconds; segment cap in "segments" mode; default 30
 //   "mode"          "speech" (default) or "segments"
 //   "probabilities" true to add the per-frame probabilities; default false
-// Unknown keys and out-of-range values are errors.
+// Unknown keys and out-of-range values are errors. The Silero defaults are the
+// values of Silero's own get_speech_timestamps (docs/vad.md).
 //
-// Result:
+// Result (same shape for both kinds):
 //   {"mode":"speech","duration":12.340,"frame_sec":0.080,"backend":"cpu",
 //    "segments":[{"start":0.480,"end":3.200},...],
 //    "probabilities":[0.0123,...]}      // only with "probabilities":true
-// Times are seconds (3 decimals). "probabilities" has one value per
-// frame_sec frame, starting at time 0. "backend" is the compute device the
-// head ran on.
+// Times are seconds (3 decimals). "frame_sec" is 0.080 for the VAD head and
+// 0.032 for Silero. "probabilities" has one value per frame_sec frame, starting
+// at time 0 (the last Silero chunk is zero padded). "backend" is the compute
+// device the model ran on.
 //
 // Modes. "speech" returns the speech regions after smoothing (gaps shorter
 // than 0.1 s bridged, runs shorter than min_speech dropped, regions closer than
-// min_pause merged). They are ordered and disjoint, for audio of any length,
-// and silence is never included: this is what a VAD consumer wants. "segments"
-// returns the cuts the transcriber uses in parakeet_capi_transcribe_path_json_vad:
-// pieces of at most max_segment seconds cut at pauses, pieces without speech
-// dropped, and audio of at most max_segment seconds returned whole as one
-// segment even when it holds no speech.
+// min_pause merged, then padded). They are ordered and disjoint, for audio of
+// any length, and silence is never included: this is what a VAD consumer
+// wants. "segments" returns the cuts the transcriber uses in
+// parakeet_capi_transcribe_path_json_vad: pieces of at most max_segment seconds
+// cut at pauses, pieces without speech dropped, and audio of at most
+// max_segment seconds returned whole as one segment even when it holds no
+// speech. speech_pad does not apply to "segments".
 //
-// Backend: the same rules as the transcribe functions. The head runs on the
+// Backend: the same rules as the transcribe functions. The VAD head runs on the
 // context's compute backend (the pool of parakeet_capi_set_concurrency, when
-// set); a packed (ternary) Redux model is CPU only. Safe to call from several
+// set); a packed (ternary) Redux model is CPU only. A Silero context runs on the
+// process backend, which runs one graph at a time. Safe to call from several
 // threads, on one context or on several.
 char* parakeet_capi_vad_pcm_json(parakeet_ctx* ctx, const float* samples, int n_samples,
                                  int sample_rate, const char* options_json);
 char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_path,
                                   const char* options_json);
+
+// Like parakeet_capi_transcribe_path_json_vad, but the segmenter can take its
+// probabilities from a Silero VAD context, so any ASR model (also those without
+// a VAD head) can cut long audio. `ctx` is the ASR context. `vad_ctx` is a
+// Silero context, or NULL to use the ASR model's own head (then the result is
+// as parakeet_capi_transcribe_path_json_vad, with the options below). Options
+// are the JSON object of parakeet_capi_vad_pcm_json; only "threshold",
+// "min_pause", "min_speech" and "max_segment" are used here (the other keys are
+// accepted and ignored). NULL or "" gives the defaults of the VAD in use.
+// Audio of at most max_segment seconds (30 by default) is transcribed whole,
+// without running the VAD. Word and token times are relative to the whole file.
+// Returns the same document as parakeet_capi_transcribe_path_json. Errors set
+// ctx's last error.
+char* parakeet_capi_transcribe_path_json_vad_with(parakeet_ctx* ctx, parakeet_ctx* vad_ctx,
+                                                  const char* wav_path, int decoder,
+                                                  const char* options_json);
+
+// Streaming Silero VAD (additive; no ABI bump). One stream per audio stream;
+// the Silero context must outlive it and stay loaded. Use one stream from one
+// thread at a time; different streams may run on different threads.
+typedef struct parakeet_vad_stream parakeet_vad_stream;
+
+// `vad` is a Silero context; `sample_rate` is 16000 or 8000 (no resampling in a
+// stream). `options_json` as in parakeet_capi_vad_pcm_json, but "mode" must be
+// "speech" (the default). NULL on error (see vad's last error).
+parakeet_vad_stream* parakeet_capi_vad_stream_begin(parakeet_ctx* vad, int sample_rate,
+                                                    const char* options_json);
+
+// Feeds n_samples mono float PCM in [-1, 1] (any n_samples >= 0, also 0).
+// is_last != 0 zero-pads the buffered partial chunk and closes any open region;
+// after it, feed again only after parakeet_capi_vad_stream_reset. Returns a
+// malloc'd JSON document (free with parakeet_capi_free_string), or NULL on error:
+//   {"frame_sec":0.032,"first_frame":120,
+//    "events":[{"type":"start","time":3.456},{"type":"end","time":5.120}],
+//    "probabilities":[0.01,...]}        // only when begun with "probabilities":true
+// "events" lists the speech starts and ends that became known in this call, in
+// order. Times are seconds from the start of the stream (after the last reset),
+// padded by speech_pad. An event is known late: a start once the speech has
+// lasted min_speech, an end once the silence has lasted min_pause, so it can
+// describe a time before the audio of this call. "probabilities" holds the
+// chunks completed in this call; "first_frame" is the index of the first one
+// (frame i covers [i * 0.032, (i + 1) * 0.032) seconds). The events equal the
+// regions of mode "speech" for the whole audio (when speech_pad <= min_pause / 2).
+// Splitting the audio into calls of any size gives the same probabilities.
+char* parakeet_capi_vad_stream_feed_json(parakeet_vad_stream* s, const float* pcm,
+                                         int n_samples, int is_last);
+// Back to the initial state (empty buffers, time 0). 0 on success.
+int   parakeet_capi_vad_stream_reset(parakeet_vad_stream* s);
+void  parakeet_capi_vad_stream_free(parakeet_vad_stream* s);
 
 // Batched transcription with timestamps, returning ONE malloc'd JSON string that
 // is a JSON ARRAY of n_clips objects, each identical in shape to
@@ -636,6 +702,7 @@ const char* parakeet_capi_class_label(const parakeet_ctx* ctx, int index);
 #define PARAKEET_MODEL_KIND_DIARIZATION 2
 #define PARAKEET_MODEL_KIND_SOUND       3
 #define PARAKEET_MODEL_KIND_SPEAKER     4
+#define PARAKEET_MODEL_KIND_VAD         5   // Silero VAD (additive; no ABI bump)
 int parakeet_capi_model_kind(const parakeet_ctx* ctx);
 
 // --- Combined scene stream (ABI v8) -----------------------------------------

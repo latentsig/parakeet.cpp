@@ -393,10 +393,13 @@ namespace {
 // Slices the caller decodes: [first_sample, last_sample) of the 16 kHz PCM.
 struct Slice { std::vector<float> pcm; double start_sec; int start_frame; };
 
+// `ext` replaces the model's own VAD head: it returns one probability per
+// opts.frame_sec frame for the 16 kHz PCM. With `ext`, opts_in.frame_sec is the
+// frame period of those probabilities.
 std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
-                              const SegmenterOpts& opts_in) {
+                              const SegmenterOpts& opts_in, const Model::VadProbabilityFn* ext) {
     SegmenterOpts opts = opts_in;
-    opts.frame_sec = m.config().vad.frame_sec;
+    if (!ext) opts.frame_sec = m.config().vad.frame_sec;
     // Token frame offsets are in ENCODER frames (same formula as the JSON writer).
     const ParakeetConfig& cfg = m.config();
     const double enc_frame_sec =
@@ -404,7 +407,7 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
     if (!(enc_frame_sec > 0.0) || !std::isfinite(enc_frame_sec))
         throw std::runtime_error("invalid encoder frame size");
     const double total_sec = (double)pcm16k.size() / 16000.0;
-    const std::vector<float> p = m.vad_probabilities(pcm16k);
+    const std::vector<float> p = ext ? (*ext)(pcm16k) : m.vad_probabilities(pcm16k);
     const std::vector<VadSegment> segs = segment_by_vad(p, total_sec, opts);
     std::vector<Slice> out;
     const size_t n = pcm16k.size();
@@ -430,14 +433,15 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
 
 std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
                                       Decoder decoder, const std::string& target_lang,
-                                      const SegmenterOpts& opts) const {
+                                      const SegmenterOpts& opts,
+                                      const VadProbabilityFn* external_vad) const {
     PoolLease lease(pool_snapshot());
-    if (!loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
+    if (!external_vad && !loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
     const std::vector<float> pcm16k =
         sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
     if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
         return transcribe_16k(pcm16k, decoder, target_lang);
-    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
+    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts, external_vad);
     if (slices.empty()) return std::string();  // no speech found
     std::string text;
     for (const Slice& s : slices) {
@@ -451,14 +455,15 @@ std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_
 
 Transcription Model::transcribe_pcm_vad_with_timestamps(const std::vector<float>& pcm, int sample_rate,
                                                         Decoder decoder, const std::string& target_lang,
-                                                        const SegmenterOpts& opts) const {
+                                                        const SegmenterOpts& opts,
+                                      const VadProbabilityFn* external_vad) const {
     PoolLease lease(pool_snapshot());
-    if (!loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
+    if (!external_vad && !loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
     const std::vector<float> pcm16k =
         sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
     if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
         return transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
-    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts);
+    const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts, external_vad);
     if (slices.empty()) return Transcription();  // no speech found
     Transcription all;
     for (const Slice& s : slices) {

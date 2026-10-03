@@ -8,6 +8,7 @@
 #include "vad_head.hpp"
 #include "vad_segmenter.hpp"
 
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -141,14 +142,23 @@ public:
     // pauses and segments without speech are dropped, so audio with no speech
     // gives an empty transcript. Requires a model with a
     // VAD head (throws std::runtime_error("model has no VAD head") otherwise).
+    //
+    // `external_vad` (optional) replaces the model's own VAD head, so a model
+    // without a head can use another detector such as Silero: it maps 16 kHz mono
+    // PCM to one speech probability per opts.frame_sec seconds, and opts.frame_sec
+    // must then be set to that period. The segmenter, the 30 s cap and the decode
+    // of each segment are the same as with the head.
+    using VadProbabilityFn = std::function<std::vector<float>(const std::vector<float>&)>;
     std::string transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
                                    Decoder decoder = Decoder::kDefault,
                                    const std::string& target_lang = "",
-                                   const SegmenterOpts& opts = SegmenterOpts()) const;
+                                   const SegmenterOpts& opts = SegmenterOpts(),
+                                   const VadProbabilityFn* external_vad = nullptr) const;
     Transcription transcribe_pcm_vad_with_timestamps(
         const std::vector<float>& pcm, int sample_rate,
         Decoder decoder = Decoder::kDefault, const std::string& target_lang = "",
-        const SegmenterOpts& opts = SegmenterOpts()) const;
+        const SegmenterOpts& opts = SegmenterOpts(),
+        const VadProbabilityFn* external_vad = nullptr) const;
 
     // The underlying loaded GGUF. Exposed so the streaming C-API can build a
     // pk::StreamingSession (and a MelFrontend) over the same load-once model.
