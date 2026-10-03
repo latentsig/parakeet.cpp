@@ -60,8 +60,13 @@ load. A call that is already running finishes on the old pool.
   request. The library does not pin threads. Pin worker processes to disjoint
   cores yourself if you need that (for example `taskset`).
 - Per-request latency gets somewhat worse, because each request has fewer
-  threads. The gain is in aggregate throughput. Leave the pool off when you
+  threads. Any gain is in aggregate throughput, and it depends on model size
+  and core count (see "Measured throughput"). Leave the pool off when you
   serve one request at a time.
+- Try K greater than 1 only when `backends * threads_each` fits the physical
+  cores. Measure your own model and clips before you enable it, and compare
+  against one backend with all the threads. K = 1 stays the default because
+  the pool is not always faster.
 - Each backend keeps its own graph buffers, and they grow to the largest graph
   it has run. On the 110M Q8_0 model, two backends that had run 23 s clips and
   a batch of six clips held about 1.3 GB together, and four held about 2.5 GB.
@@ -103,8 +108,22 @@ default after it, so those two rows check that the default did not move.
 Load average at the start of each run: 12.1 to 13.0. The transcripts of every
 configuration were equal to the base binary's.
 
-Not measured on a quiet machine: the load average was above 5 (12 to 13) during
-these runs, so read the ratios as indicative and re-measure on an idle host. The
+Larger models behave differently. On 0.6B-class models (packed Redux and Ultra
+Q8_0) with 8 total threads, the pool was slower than one backend with 8
+threads. Median ratios against one backend, measured on two different hosts:
+
+| Configuration | Ratio vs 1 backend, 8 threads |
+|---|---|
+| K = 2 | 0.62x to 0.87x |
+| K = 4 | 0.73x to 0.91x |
+
+With 16 threads on a 16-core host, packed Redux gave 1.08x at K = 2 and 1.30x
+at K = 4. So the benefit depends on model size and core count: it appeared on
+the 110M model and on a 16-core host, and not on 0.6B models with 8 threads.
+
+Quiet-machine numbers are missing. All of these runs were on loaded machines
+(the 110M runs had a load average of 12 to 13), so read every ratio as
+indicative and re-measure on an idle host before you rely on it. The
 K = 2 and K = 4 minimums are above the K = 1 maximum, and the two K = 1 rows
 overlap, so the default did not move. An attempt on the 0.6B F16 model was
 abandoned: other jobs pushed the load above 40 and the numbers were useless.
