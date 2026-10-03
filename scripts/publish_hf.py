@@ -121,33 +121,134 @@ KNOWN_WER: dict = {
         "q8_0": {"wer": 0.0, "size_mb": None},
         "q4_k": {"wer": None, "size_mb": None},
     },
-    # Multilingual prompt-conditioned streaming model. WER measured offline
-    # (en/de/auto) by scripts/e2e_nemo_compare.py vs NeMo; all five variants are
-    # byte-for-byte (WER 0.0). prompt_kernel + LSTM + featurizer tensors stay F32.
+    # Multilingual prompt-conditioned streaming model. The WER is agreement with
+    # NeMo, not accuracy on a speech corpus. Recorded evidence (see docs/parity.md,
+    # scripts/e2e_nemo_compare.py, benchmarks/results/nemotron/bench.json):
+    #   * F32: 20 rows (speech.wav + clip.wav x en/de/es/ja-JP/auto x offline/stream), WER 0.
+    #   * Q8_0: speech.wav, en, offline, WER 0 (bench.json).
+    #   * F16: stated in docs/parity.md, no run artifact is kept in the repo.
+    #   * Q6_K, Q5_K, Q4_K: no measurement is recorded anywhere, so no WER is claimed.
+    # prompt_kernel + LSTM + featurizer tensors stay F32.
     "nvidia/nemotron-3.5-asr-streaming-0.6b": {
         "f16":  {"wer": 0.0, "size_mb": 1484.3},
         "q8_0": {"wer": 0.0, "size_mb": 983.7},
-        "q6_k": {"wer": 0.0, "size_mb": 855.7},
-        "q5_k": {"wer": 0.0, "size_mb": 784.8},
-        "q4_k": {"wer": 0.0, "size_mb": 718.1},
+        "q6_k": {"wer": None, "size_mb": 855.7},
+        "q5_k": {"wer": None, "size_mb": 784.8},
+        "q4_k": {"wer": None, "size_mb": 718.1},
     },
 }
 
-# Per-model SPDX license id + human label, used in the generated card frontmatter
-# and the License section. Defaults to CC-BY-4.0 (the NVIDIA NeMo Parakeet
-# checkpoints); nemotron-3.5-asr-streaming is released under OpenMDW-1.1.
-DEFAULT_LICENSE = ("cc-by-4.0", "CC-BY-4.0",
-                   "https://creativecommons.org/licenses/by/4.0/")
+# Per-model licence: (frontmatter license id, human label, licence url).
+#
+# Every model id that the script can publish MUST have an explicit entry here.
+# There is no default: an unknown id raises, so a new model can never silently
+# ship under the wrong licence. `--check-licences` and
+# tests/python/check_publish_hf_licences.py enforce this, and also check that
+# this table equals the table in docs/licenses.md.
+CC_BY_4_0 = ("cc-by-4.0", "CC-BY-4.0", "https://creativecommons.org/licenses/by/4.0/")
+OPENMDW_1_1 = ("other", "OpenMDW 1.1", "https://openmdw.ai/license/1-1/")
+NVIDIA_OML = (
+    "other", "NVIDIA Open Model License",
+    "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+)
+MIT_SILERO = ("mit", "MIT", "https://github.com/snakers4/silero-vad/blob/master/LICENSE")
+
 LICENSES: dict = {
-    "nvidia/nemotron-3.5-asr-streaming-0.6b": (
-        "other", "OpenMDW-1.1", "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b",
-    ),
+    "nvidia/parakeet-tdt_ctc-110m": CC_BY_4_0,
+    "nvidia/parakeet_realtime_eou_120m-v1": NVIDIA_OML,
+    "nvidia/nemotron-3.5-asr-streaming-0.6b": OPENMDW_1_1,
+    "nvidia/parakeet-ctc-0.6b": CC_BY_4_0,
+    "nvidia/parakeet-rnnt-0.6b": CC_BY_4_0,
+    "nvidia/parakeet-tdt-0.6b-v2": CC_BY_4_0,
+    "nvidia/parakeet-tdt-0.6b-v3": CC_BY_4_0,
+    "nvidia/parakeet-ctc-1.1b": CC_BY_4_0,
+    "nvidia/parakeet-rnnt-1.1b": CC_BY_4_0,
+    "nvidia/parakeet-tdt-1.1b": CC_BY_4_0,
+    "nvidia/parakeet-tdt_ctc-1.1b": CC_BY_4_0,
+    # Published by other tooling, but they have sections on the same card.
+    "nvidia/Nemotron-3-Diarization": OPENMDW_1_1,
+    "moondream/parakeet-ultra": CC_BY_4_0,
+    "moondream/parakeet-redux": CC_BY_4_0,
+    "snakers4/silero-vad": MIT_SILERO,
 }
+
+# Text the licence requires the redistributor to keep, shown on the card.
+LICENSE_NOTICES: dict = {
+    "nvidia/parakeet_realtime_eou_120m-v1":
+        "Licensed by NVIDIA Corporation under the NVIDIA Open Model License",
+    "snakers4/silero-vad":
+        "Copyright (c) 2020-present Silero Team. Released under the MIT license",
+}
+
+# Models and files on the card that this script does not convert. Their card
+# sections are static text in scripts/hf_card/, so a regenerated card keeps them.
+# Each entry is (model id or ids, section file).
+EXTERNAL_SECTIONS: list = [
+    (("nvidia/Nemotron-3-Diarization",), "diarization.md"),
+    (("moondream/parakeet-ultra", "moondream/parakeet-redux"), "moondream.md"),
+    (("snakers4/silero-vad",), "silero-vad.md"),
+]
+# Extra text that follows the table of a converted model (note + usage).
+MODEL_EXTRA_SECTIONS: dict = {
+    "nvidia/nemotron-3.5-asr-streaming-0.6b": "nemotron-3.5-note.md",
+}
+CARD_SECTIONS_DIR = SCRIPTS_DIR / "hf_card"
 
 
 def _license(model_id: str) -> tuple[str, str, str]:
-    """(frontmatter license id, human label, upstream/license url) for *model_id*."""
-    return LICENSES.get(model_id, DEFAULT_LICENSE)
+    """(frontmatter license id, human label, licence url) for *model_id*.
+
+    Raises KeyError for an id with no explicit entry: there is no default.
+    """
+    try:
+        return LICENSES[model_id]
+    except KeyError:
+        raise KeyError(
+            f"no explicit licence for {model_id!r}: add it to LICENSES in "
+            "scripts/publish_hf.py and to docs/licenses.md"
+        ) from None
+
+
+def _all_known_ids() -> List[str]:
+    ids = list(ALL_MODELS) + list(DERIVED_MODELS)
+    for group, _f in EXTERNAL_SECTIONS:
+        ids += list(group)
+    return sorted(set(ids))
+
+
+def check_licences() -> List[str]:
+    """Return a list of problems with the licence table (empty = fine)."""
+    problems: List[str] = []
+    for m in _all_known_ids():
+        if m not in LICENSES:
+            problems.append(f"{m}: no explicit licence entry")
+    for m in LICENSES:
+        if m not in _all_known_ids():
+            problems.append(f"{m}: licence entry for an id the script does not know")
+    for m in DERIVED_MODELS:
+        base = DERIVED_MODELS[m]["base"]
+        if m in LICENSES and base in LICENSES and LICENSES[m] != LICENSES[base]:
+            problems.append(f"{m}: licence differs from its base {base}")
+    for m in LICENSE_NOTICES:
+        if m not in LICENSES:
+            problems.append(f"{m}: notice for an id with no licence")
+    if "nvidia/parakeet_realtime_eou_120m-v1" in LICENSES and \
+            "Licensed by NVIDIA Corporation under the NVIDIA Open Model License" \
+            not in LICENSE_NOTICES.get("nvidia/parakeet_realtime_eou_120m-v1", ""):
+        problems.append("realtime_eou_120m-v1: missing the required NVIDIA notice")
+    files = [f for _g, f in EXTERNAL_SECTIONS] + list(MODEL_EXTRA_SECTIONS.values())
+    for f in files:
+        if not (CARD_SECTIONS_DIR / f).is_file():
+            problems.append(f"missing card section file scripts/hf_card/{f}")
+    return problems
+
+
+def _section_text(name: str) -> str:
+    return (CARD_SECTIONS_DIR / name).read_text(encoding="utf-8").rstrip("\n")
+
+
+def _file_glob(model_id: str) -> str:
+    return f"{_model_slug(model_id).lower()}-*"
 
 
 # Moondream's derivatives of NVIDIA parakeet-tdt-0.6b-v3. They are trained by
@@ -542,6 +643,9 @@ def build_model_card(
             f"released under the [{lic_label}]({lic_url}) license. "
             "The parakeet.cpp runtime is MIT-licensed."
         )
+        if model_id in LICENSE_NOTICES:
+            lines.append("")
+            lines.append(f"Notice: {LICENSE_NOTICES[model_id]}.")
     lines.append("")
 
     return "\n".join(lines)
@@ -649,44 +753,87 @@ def publish_model(
 # Single-repo collection: one repo, all models × variants as flat GGUFs
 # ---------------------------------------------------------------------------
 
+def _license_section_lines(models: List[str]) -> List[str]:
+    """The card's `## License` section: one bullet per file family, then credits."""
+    all_ids = list(models)
+    for group, _f in EXTERNAL_SECTIONS:
+        all_ids += [m for m in group if m not in all_ids]
+
+    # Group file families by licence, in first-seen order.
+    groups: dict = {}
+    for m in all_ids:
+        groups.setdefault(_license(m), []).append(m)
+
+    lines = [
+        "## License",
+        "",
+        "Licences differ by model, so the front matter says `license: other`. Each file "
+        "family follows the licence of the model it was converted from. The files are "
+        "converted, not trained here. The parakeet.cpp runtime itself is MIT-licensed.",
+        "",
+    ]
+    for (_id, label, url), ids in groups.items():
+        globs = ", ".join(f"`{_file_glob(m)}`" for m in ids)
+        lines.append(f"- {globs}: [{label}]({url}).")
+    lines.append("")
+
+    notices = [f"{LICENSE_NOTICES[m]}" for m in all_ids if m in LICENSE_NOTICES]
+    if notices:
+        lines.append("Notices that the licences require:")
+        lines.append("")
+        for m in all_ids:
+            if m in LICENSE_NOTICES:
+                lines.append(f"- `{_file_glob(m)}`: {LICENSE_NOTICES[m]}.")
+        lines.append("")
+
+    derived = [m for m in all_ids if m in DERIVED_MODELS]
+    if derived:
+        bases = sorted({DERIVED_MODELS[m]["base"] for m in derived})
+        lines.append(
+            "`ultra-*.gguf` and `redux-*.gguf` are converted from "
+            "[moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and "
+            "[moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) by "
+            "Moondream, which are derived from NVIDIA's "
+            + ", ".join(f"[{b.split('/')[-1]}](https://huggingface.co/{b})" for b in bases)
+            + ". Credit Moondream and NVIDIA when you use these files. They were converted "
+            "here, not trained, and the Redux F16 and Q8_0 files are dequantized from the "
+            "ternary weights."
+        )
+        lines.append("")
+    return lines
+
+
 def build_collection_card(
     models: List[str],
     variants: List[str],
     paths_by_model: dict[str, dict[str, Path]],
     repo_id: str,
 ) -> str:
-    """One combined model card for the whole collection repo."""
+    """One combined model card for the whole collection repo.
+
+    *models* are the models this script converted. Files published by other
+    tooling (diarization, Moondream, Silero VAD) get their sections from
+    scripts/hf_card/ so a regeneration keeps them.
+    """
     lines: List[str] = []
 
-    # YAML frontmatter — base_model accepts a list. Licenses can differ per model
-    # (most are CC-BY-4.0; nemotron is OpenMDW-1.1), so when the collection mixes
-    # licenses we declare `other` here and spell each one out in the License
-    # section / per-model rows below.
-    licenses = {_license(m) for m in models}
-    if len(licenses) == 1:
-        only_id, only_label, only_url = next(iter(licenses))
-        lines = ["---", f"license: {only_id}"]
-        if only_id == "other":
-            lines += [f"license_name: {only_label}", f"license_link: {only_url}"]
-        lines += ["library_name: parakeet.cpp", "tags:"]
-    else:
-        lines = [
-            "---", "license: other",
-            "license_name: mixed (see per-model licenses below)",
-            f"license_link: https://huggingface.co/{repo_id}",
-            "library_name: parakeet.cpp", "tags:",
-        ]
+    # YAML frontmatter. The card always mixes licences, so it declares `other`
+    # and spells each licence out in the License section.
+    lines = [
+        "---", "license: other",
+        "license_name: mixed-per-model-see-license-section",
+        f"license_link: https://huggingface.co/{repo_id}#license",
+        "library_name: parakeet.cpp", "tags:",
+    ]
     lines += [f"  - {t}" for t in (
         "automatic-speech-recognition", "asr", "parakeet",
-        "gguf", "ggml", "cpp-inference", "nemo",
+        "gguf", "ggml", "cpp-inference", "nemo", "speaker-diarization",
     )]
     lines.append("pipeline_tag: automatic-speech-recognition")
     lines.append("base_model:")
     bases = list(models)
-    for m in models:
-        b = DERIVED_MODELS.get(m, {}).get("base")
-        if b and b not in bases:
-            bases.append(b)
+    for group, _f in EXTERNAL_SECTIONS:
+        bases += [m for m in group if m not in bases]
     lines += [f"  - {m}" for m in bases]
     lines += ["---", ""]
 
@@ -705,10 +852,28 @@ def build_collection_card(
     )
     lines.append("")
 
-    # Per-model sections with a variant table each.
+    # Per-model sections with a variant table each. Models with their own extra
+    # text (nemotron) come after the shared WER note, as on the published card.
     lines.append("## Models")
     lines.append("")
-    for model_id in models:
+
+    def _wer_note() -> None:
+        lines.append(
+            "> WER (word error rate) is computed against the upstream NeMo reference on "
+            "`tests/fixtures/speech.wav` (LibriSpeech `2086-149220-0033`, ~7.4 s, English). "
+            "0.0 = byte-for-byte identical transcript. "
+            "See [parity.md](https://github.com/mudler/parakeet.cpp/blob/master/docs/parity.md) "
+            "and [quantization.md](https://github.com/mudler/parakeet.cpp/blob/master/docs/quantization.md)."
+        )
+        lines.append("")
+
+    ordered = [m for m in models if m not in MODEL_EXTRA_SECTIONS] + \
+              [m for m in models if m in MODEL_EXTRA_SECTIONS]
+    note_written = False
+    for model_id in ordered:
+        if model_id in MODEL_EXTRA_SECTIONS and not note_written:
+            _wer_note()
+            note_written = True
         slug = _model_slug(model_id)
         arch_desc, heads = _arch_info(model_id)
         wer_data = KNOWN_WER.get(model_id, {})
@@ -721,13 +886,8 @@ def build_collection_card(
             f"{arch_desc} · heads: {heads} · license: [{_lic_label}]({_lic_url})"
         )
         lines.append("")
-        if model_id in DERIVED_MODELS:
-            d = DERIVED_MODELS[model_id]
-            lines.append(
-                f"By [Moondream](https://huggingface.co/moondream), derived from NVIDIA's "
-                f"[{d['base']}](https://huggingface.co/{d['base']}). Converted, not trained here. "
-                f"{d['conversion']}"
-            )
+        if model_id in LICENSE_NOTICES:
+            lines.append(f"Notice: {LICENSE_NOTICES[model_id]}.")
             lines.append("")
         lines.append("| File | Variant | Size | WER vs NeMo |")
         lines.append("|---|---|---:|---:|")
@@ -740,15 +900,15 @@ def build_collection_card(
             rec = " ← **recommended**" if v == "f16" else ""
             lines.append(f"| `{fname}`{rec} | {v.upper()} | {size} | {wer} |")
         lines.append("")
+        if model_id in MODEL_EXTRA_SECTIONS:
+            lines.append(_section_text(MODEL_EXTRA_SECTIONS[model_id]))
+            lines.append("")
+    if not note_written:
+        _wer_note()
 
-    lines.append(
-        "> WER (word error rate) is computed against the upstream NeMo reference on "
-        "`tests/fixtures/speech.wav` (LibriSpeech `2086-149220-0033`, ~7.4 s, English). "
-        "0.0 = byte-for-byte identical transcript. "
-        "See [parity.md](https://github.com/mudler/parakeet.cpp/blob/main/docs/parity.md) "
-        "and [quantization.md](https://github.com/mudler/parakeet.cpp/blob/main/docs/quantization.md)."
-    )
-    lines.append("")
+    for _group, fname in EXTERNAL_SECTIONS:
+        lines.append(_section_text(fname))
+        lines.append("")
 
     # Quantization notes (shared).
     lines.append("## Quantization notes")
@@ -782,29 +942,7 @@ def build_collection_card(
     lines.append("```")
     lines.append("")
 
-    # License. Each GGUF inherits the license of its source checkpoint; list them
-    # explicitly because the collection can mix licenses (most CC-BY-4.0, nemotron
-    # OpenMDW-1.1).
-    lines.append("## License")
-    lines.append("")
-    lines.append(
-        "Each GGUF is derived from its upstream checkpoint and inherits that checkpoint's "
-        "license. The files are converted, not trained here. The parakeet.cpp runtime itself "
-        "is MIT-licensed."
-    )
-    lines.append("")
-    lines.append("| Source checkpoint | License |")
-    lines.append("|---|---|")
-    for model_id in models:
-        _lic_id, _lic_label, _lic_url = _license(model_id)
-        credit = ""
-        if model_id in DERIVED_MODELS:
-            b = DERIVED_MODELS[model_id]["base"]
-            credit = f" (Moondream, derived from NVIDIA [{b}](https://huggingface.co/{b}))"
-        lines.append(
-            f"| [{model_id}](https://huggingface.co/{model_id}){credit} | [{_lic_label}]({_lic_url}) |"
-        )
-    lines.append("")
+    lines += _license_section_lines(models)
 
     return "\n".join(lines)
 
@@ -1009,7 +1147,25 @@ def main() -> int:
             "resumable — pair with a watchdog that restarts on stall."
         ),
     )
+    parser.add_argument(
+        "--check-licences",
+        action="store_true",
+        help=(
+            "Check that every model id the script can publish has an explicit "
+            "licence entry, print the table and exit (0 = fine). No conversion, "
+            "no HuggingFace calls."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.check_licences:
+        problems = check_licences()
+        for m in _all_known_ids():
+            lic = LICENSES.get(m)
+            print(f"{m}: {lic[1] if lic else 'MISSING'}")
+        for p in problems:
+            print(f"error: {p}", file=sys.stderr)
+        return 1 if problems else 0
 
     # Resolve the model list ('all' → canonical set), de-duplicated, order-stable.
     raw_models = args.model or []
@@ -1018,6 +1174,15 @@ def main() -> int:
         for one in (ALL_MODELS if m == "all" else [m]):
             if one not in models:
                 models.append(one)
+
+    unlicensed = [m for m in models if m not in LICENSES]
+    if unlicensed:
+        print(
+            "error: no explicit licence for: " + ", ".join(unlicensed) + ". Add each id to "
+            "LICENSES in scripts/publish_hf.py (and docs/licenses.md) before publishing.",
+            file=sys.stderr,
+        )
+        return 2
 
     variants: List[str] = [v.strip() for v in args.variants.split(",") if v.strip()]
     output_dir = Path(args.output_dir)
