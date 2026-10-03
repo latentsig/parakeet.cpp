@@ -207,6 +207,15 @@ private:
         const std::vector<float>& pcm16k, Decoder decoder,
         const std::string& target_lang = "") const;
 
+    // VAD path: encode each 16 kHz clip on its own, decode them in groups of up
+    // to kVadDecodeGroup with the exact batched decode (TDT and RNNT; CTC decodes
+    // per item). Each result equals transcribe_16k / transcribe_16k_with_timestamps
+    // of that clip alone, bit for bit on CPU. `with_timestamps` false fills only
+    // `text`. Frame and time offsets are the caller's job.
+    std::vector<Transcription> transcribe_16k_grouped(
+        const std::vector<const std::vector<float>*>& pcms16k, Decoder decoder,
+        const std::string& target_lang, bool with_timestamps) const;
+
     std::vector<NBestTranscription> transcribe_16k_nbest(
         const std::vector<float>& pcm16k, int beam_size, int nbest,
         bool score_norm, const std::string& target_lang) const;
