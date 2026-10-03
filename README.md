@@ -46,7 +46,7 @@ Every model below is validated at WER 0 against NeMo and published as GGUF (f16,
 | [parakeet-redux](https://huggingface.co/moondream/parakeet-redux) | TDT | 0.6B | Moondream's ternary-encoder derivative of parakeet-tdt-0.6b-v3, with a VAD head. CPU only. CC-BY-4.0. Not NeMo-validated, see below | Moondream, from NVIDIA |
 
 
-### Moondream Ultra and Redux (not yet published)
+### Moondream Ultra and Redux
 
 [moondream/parakeet-ultra](https://huggingface.co/moondream/parakeet-ultra) and
 [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) are Moondream's
@@ -55,7 +55,10 @@ post-trained (Ultra, F16) and ternary-encoder (Redux) derivatives of NVIDIA's
 [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/). They are HF safetensors, converted with
 `scripts/convert_hf_parakeet_to_gguf.py`. They are not part of the NeMo-validated set above: there is
 no NeMo baseline for them, so parity is transcript-level against our own v3 path (see
-[`docs/parity.md`](docs/parity.md)), and no GGUFs are published yet.
+[`docs/parity.md`](docs/parity.md)), and the GGUFs are published in
+[mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf): `ultra-f16.gguf`, `ultra-q8_0.gguf`, `redux-packed.gguf`
+(packed ternary), `redux-f16.gguf` and `redux-q8_0.gguf` (dequantized). Sizes and SHA-256 sums are in
+[`models/MANIFEST.md`](models/MANIFEST.md).
 
 The models were trained by NVIDIA (the base) and Moondream (Ultra and Redux). parakeet.cpp only
 converts and quantizes the weights; nothing is trained or fine-tuned here. A dequantized Redux file
@@ -78,7 +81,7 @@ ternary ones.
   `parakeet_capi_vad_pcm_json` / `parakeet_capi_vad_path_json` from the C-API. They return speech
   segments (start and end in seconds) as JSON, and optionally the per-frame probabilities. A model
   without the head fails with `model has no VAD head`. See [`docs/vad.md`](docs/vad.md).
-- Silero VAD (MIT, 32 ms frames, 16 kHz and 8 kHz) runs from its own small GGUF through the same
+- Silero VAD (MIT, 32 ms frames, 16 kHz and 8 kHz) runs from its own small GGUF ([download](https://huggingface.co/mudler/parakeet-cpp-gguf)) through the same
   functions, as a stream (`parakeet_capi_vad_stream_*`), and as the cutter for any ASR model:
   `parakeet-cli transcribe --vad --vad-model silero.gguf`. See [`docs/vad.md`](docs/vad.md).
 ---
@@ -294,8 +297,9 @@ parakeet-cli vad --model ultra.gguf --input audio.wav
 
 # The same with a Silero VAD GGUF (frame_sec 0.032; defaults 250 ms min speech,
 # 100 ms min pause, 30 ms pad). Any ASR model can then cut long audio with it.
-# The Silero GGUF is not published yet; make it with scripts/convert_silero_vad_to_gguf.py
-# (see docs/vad.md and docs/conversion.md):
+# Download it from the collection repo (F16 is 1.3 MB, F32 is 2.2 MB). To make the
+# file yourself, see scripts/convert_silero_vad_to_gguf.py, docs/vad.md and docs/conversion.md.
+curl -LO https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/silero-vad-f16.gguf
 parakeet-cli vad --model silero-vad-f16.gguf --input audio.wav
 parakeet-cli transcribe --model tdt-0.6b-v3.gguf --input long.wav --vad --vad-model silero-vad-f16.gguf
 
