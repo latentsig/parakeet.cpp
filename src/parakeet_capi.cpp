@@ -95,12 +95,13 @@ private:
 };
 
 // The opaque context: a loaded model plus a buffer for the last error message.
-// Exactly one of `model` / `diar` / `tagger` / `speaker` / `silero` is non-null:
+// Exactly one of `model` / `vad_model` / `diar` / `tagger` / `speaker` / `silero` is non-null:
 // ASR models use `model`, diarization models (Sortformer) use `diar`, CED
 // sound-event taggers use `tagger`, voice-detect speaker encoders use `speaker`,
 // Silero VAD models use `silero`.
 struct parakeet_ctx {
     std::unique_ptr<pk::Model> model;
+    std::unique_ptr<pk::Model> vad_model;    // VAD-only slice (parakeet.arch "vad"): VAD calls only
     std::unique_ptr<pk::DiarizationModel> diar;
     std::unique_ptr<pk::CedTagger> tagger;
     std::unique_ptr<pk::SpeakerEncoder> speaker;
@@ -237,6 +238,14 @@ char* dup_to_c(const std::string& s) {
 
 } // namespace
 
+namespace {
+// Why a call that needs an ASR or diarization model found none.
+const char* no_model_msg(const parakeet_ctx* c) {
+    return c->vad_model ? "context holds a VAD-only model: only parakeet_capi_vad_* calls work with it"
+                        : "context has no loaded model";
+}
+}  // namespace
+
 extern "C" int parakeet_capi_abi_version(void) {
     return PARAKEET_CAPI_ABI_VERSION;
 }
@@ -261,6 +270,15 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
             std::string err;
             ctx->silero = pk::SileroVad::load(gguf_path, &err);
             if (ctx->silero) return ctx;
+            delete ctx;
+            return nullptr;
+        }
+
+        // A VAD-only slice of an Ultra or Redux model (parakeet.arch "vad"): only
+        // the VAD calls accept it.
+        if (pk::gguf_is_vad_only(gguf_path)) {
+            ctx->vad_model = pk::Model::load_vad_only(gguf_path);
+            if (ctx->vad_model) return ctx;
             delete ctx;
             return nullptr;
         }
@@ -312,7 +330,7 @@ extern "C" char* parakeet_capi_transcribe_path_lang(parakeet_ctx* ctx,
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return nullptr;
     }
     if (!wav_path)   { ctx->last_error = "wav_path is NULL"; return nullptr; }
@@ -347,7 +365,7 @@ extern "C" char* parakeet_capi_transcribe_pcm_lang(parakeet_ctx* ctx,
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return nullptr;
     }
     if (!samples || n_samples < 0) { ctx->last_error = "invalid samples buffer"; return nullptr; }
@@ -389,7 +407,7 @@ extern "C" int parakeet_capi_transcribe_pcm_logits(parakeet_ctx* ctx,
     *out_logits = nullptr;
     *out_T = 0;
     *out_vocab_plus_1 = 0;
-    if (!ctx->model) { ctx->last_error = "context has no loaded model"; return 1; }
+    if (!ctx->model) { ctx->last_error = no_model_msg(ctx); return 1; }
     if (!samples || n_samples < 0) { ctx->last_error = "invalid samples buffer"; return 1; }
     try {
         std::vector<float> pcm(samples, samples + n_samples);
@@ -429,7 +447,7 @@ extern "C" int parakeet_capi_transcribe_pcm_batch_lang(parakeet_ctx* ctx,
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return 1;
     }
     if (!samples || !n_samples || !out || n_clips < 0) {
@@ -491,7 +509,7 @@ extern "C" char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx,
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return nullptr;
     }
     if (!wav_path)   { ctx->last_error = "wav_path is NULL"; return nullptr; }
@@ -523,7 +541,7 @@ extern "C" char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx,
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return nullptr;
     }
     if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
@@ -561,14 +579,14 @@ char* vad_json_common(parakeet_ctx* ctx, const std::vector<float>& pcm, int rate
     const pk::VadKind kind = ctx->silero ? pk::VadKind::kSilero : pk::VadKind::kHead;
     if (!pk::parse_vad_options(options_json, req, err, kind)) { ctx->last_error = err; return nullptr; }
     std::string json = ctx->silero ? pk::silero_vad_to_json(*ctx->silero, pcm, rate, req)
-                                   : pk::vad_to_json(*ctx->model, pcm, req);
+                                   : pk::vad_to_json(ctx->model ? *ctx->model : *ctx->vad_model, pcm, req);
     ctx->last_error.clear();
     char* out = dup_to_c(json);
     if (!out) { ctx->last_error = "out of memory"; return nullptr; }
     return out;
 }
 bool vad_ctx_ok(parakeet_ctx* ctx) {
-    if (ctx->model || ctx->silero) return true;
+    if (ctx->model || ctx->vad_model || ctx->silero) return true;
     ctx->last_error = ctx->diar
         ? "context holds a diarization model; use parakeet_capi_diarize_*"
         : "context has no loaded model or VAD model";
@@ -629,7 +647,7 @@ extern "C" char* parakeet_capi_transcribe_path_json_vad_with(parakeet_ctx* ctx, 
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return nullptr;
     }
     if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
@@ -791,7 +809,7 @@ extern "C" char* parakeet_capi_transcribe_pcm_batch_json_lang(parakeet_ctx* ctx,
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return nullptr;
     }
     if (!samples_concat || !n_samples || n_clips < 0) {
@@ -844,7 +862,7 @@ extern "C" char* parakeet_capi_transcribe_path_nbest_json(
         int beam_size, int nbest, int score_norm, const char* target_lang) {
     if (!ctx) return nullptr;
     if (!ctx->model) {
-        ctx->last_error = "context has no loaded model";
+        ctx->last_error = no_model_msg(ctx);
         return nullptr;
     }
     if (!wav_path) {
@@ -884,7 +902,7 @@ extern "C" char* parakeet_capi_transcribe_pcm_nbest_json(
         int beam_size, int nbest, int score_norm, const char* target_lang) {
     if (!ctx) return nullptr;
     if (!ctx->model) {
-        ctx->last_error = "context has no loaded model";
+        ctx->last_error = no_model_msg(ctx);
         return nullptr;
     }
     if (!samples || n_samples < 0) {
@@ -1006,7 +1024,7 @@ extern "C" parakeet_stream* parakeet_capi_stream_begin_lang(parakeet_ctx* ctx,
     if (!ctx->model) {
         ctx->last_error = ctx->diar
             ? "context holds a diarization model; use parakeet_capi_diarize_*"
-            : "context has no loaded model";
+            : no_model_msg(ctx);
         return nullptr;
     }
     if (!ctx->model->config().streaming.present) {
@@ -1299,7 +1317,7 @@ bool require_diar(parakeet_ctx* ctx) {
         ctx->last_error = ctx->model  ? "context holds an ASR model; diarize_* needs a diarization model"
                          : ctx->tagger ? "context holds a CED sound model; diarize_* needs a diarization model"
                          : ctx->speaker ? "context holds a speaker model; diarize_* needs a diarization model"
-                                       : "context has no loaded model";
+                                       : no_model_msg(ctx);
         return false;
     }
     return true;
@@ -1311,7 +1329,7 @@ bool require_asr(parakeet_ctx* ctx) {
         ctx->last_error = ctx->diar   ? "context holds a diarization model; an ASR model is needed here"
                          : ctx->tagger ? "context holds a CED sound model; an ASR model is needed here"
                          : ctx->speaker ? "context holds a speaker model; an ASR model is needed here"
-                                       : "context has no loaded model";
+                                       : no_model_msg(ctx);
         return false;
     }
     return true;
@@ -1326,7 +1344,7 @@ bool require_tagger(parakeet_ctx* ctx) {
         ctx->last_error = ctx->model ? "context holds an ASR model; a CED sound model is needed here"
                         : ctx->diar  ? "context holds a diarization model; a CED sound model is needed here"
                         : ctx->speaker ? "context holds a speaker model; a CED sound model is needed here"
-                                     : "context has no loaded model";
+                                     : no_model_msg(ctx);
         return false;
     }
     return true;
@@ -1341,7 +1359,7 @@ bool require_speaker(parakeet_ctx* ctx) {
         ctx->last_error = ctx->model  ? "context holds an ASR model; a speaker model is needed here"
                         : ctx->diar   ? "context holds a diarization model; a speaker model is needed here"
                         : ctx->tagger ? "context holds a CED sound model; a speaker model is needed here"
-                                      : "context has no loaded model";
+                                      : no_model_msg(ctx);
         return false;
     }
     return true;

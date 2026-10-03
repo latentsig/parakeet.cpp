@@ -136,6 +136,33 @@ mode (frame period 0.032 s) and the same decode of each segment as the head
 path. Audio of at most 30 s is transcribed whole and the VAD does not run.
 Passing NULL as the second argument uses the model's own head.
 
+## VAD-only slice
+
+The VAD head of Ultra and Redux reads only the log-mel front end, the subsampler
+and the head, which is about 10 MB of the 213 MB to 1.4 GB file. `scripts/slice_vad_gguf.py`
+copies exactly those tensors, byte for byte, into a small GGUF:
+
+    python scripts/slice_vad_gguf.py ultra-q8_0.gguf ultra-vad.gguf
+
+Nothing is requantized, so the VAD output is the same as the parent's. The slice
+copies the `parakeet.encoder.*`, `parakeet.preprocessor.*` and `parakeet.vad.*`
+keys. It sets `parakeet.arch` to `vad` (`general.architecture` stays `parakeet`),
+and it records the parent in `parakeet.vad_only.parent_name`, `parent_file`,
+`parent_sha256`, `parent_bytes` and `parent_arch`.
+
+The `vad` marker is what the loader needs: a normal file has an encoder,
+a decoder and a vocabulary, and the slice has none of them. `parakeet-cli vad`
+and the `parakeet_capi_vad_*` functions accept the file (`Model::load_vad_only`).
+`Model::load` refuses it with a log message, so every other call (transcribe,
+diarize, stream) fails with "context holds a VAD-only model" or a load error.
+Files that are not slices load exactly as before.
+
+The two Redux parents (packed ternary and dequantized F16) give slices with the same
+tensors: the subsampler and the head are not ternary. The Ultra Q8_0 parent has a
+Q8_0 final subsampler projection, so its slice is 6.0 MB; the F16 parents give
+9.9 MB. A slice from a Q8_0 parent and a slice from an F16 parent give different
+probabilities because their weights differ, not because of the slicing.
+
 ## ABI
 
 All of this is additive. `parakeet_capi_abi_version` stays 10. A new symbol set

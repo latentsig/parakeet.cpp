@@ -42,7 +42,14 @@ struct NBestTranscription {
 class Model {
 public:
     // Loads the GGUF at `gguf_path`. Returns nullptr on failure (no throw).
+    // A VAD-only slice (parakeet.arch "vad") is refused here with a log message:
+    // it holds no encoder blocks or decoder. Use load_vad_only().
     static std::unique_ptr<Model> load(const std::string& gguf_path);
+
+    // Loads a VAD-only slice made by scripts/slice_vad_gguf.py. Returns nullptr
+    // on failure or when the file is not a slice. The result serves
+    // vad_probabilities() and config() only; every other call is invalid.
+    static std::unique_ptr<Model> load_vad_only(const std::string& gguf_path);
 
     // Transcribe raw mono float PCM. If `sample_rate != 16000` the audio is
     // linearly resampled to 16 kHz (via pk::resample_linear) before inference.

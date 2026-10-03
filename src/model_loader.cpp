@@ -278,7 +278,8 @@ bool ModelLoader::load(const std::string& path){
     const int64_t nt = gguf_get_n_tensors(gguf_);
     for(int64_t i=0;i<nt;++i){ const char* nm = gguf_get_tensor_name(gguf_,i);
         ggml_tensor* t = ggml_get_tensor(ctx_, nm); if(t) tensors_[nm]=t; }
-    return cfg_.d_model>0 && (cfg_.vocab_size>0 || cfg_.arch=="diarization");
+    // A VAD-only slice (arch "vad", see scripts/slice_vad_gguf.py) has no vocabulary.
+    return cfg_.d_model>0 && (cfg_.vocab_size>0 || cfg_.arch=="diarization" || cfg_.arch=="vad");
 }
 ggml_tensor* ModelLoader::tensor(const std::string& n) const {
     auto it = tensors_.find(n); return it==tensors_.end()? nullptr : it->second;

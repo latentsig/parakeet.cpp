@@ -189,4 +189,15 @@ bool gguf_is_silero(const std::string& path) {
     return ok;
 }
 
+bool gguf_is_vad_only(const std::string& path) {
+    gguf_init_params ip{/*no_alloc=*/true, /*ctx=*/nullptr};
+    gguf_context* g = gguf_init_from_file(path.c_str(), ip);
+    if (!g) return false;
+    const int64_t id = gguf_find_key(g, "parakeet.arch");
+    const bool ok = id >= 0 && gguf_get_kv_type(g, id) == GGUF_TYPE_STRING &&
+                    std::string(gguf_get_val_str(g, id)) == "vad";
+    gguf_free(g);
+    return ok;
+}
+
 }  // namespace pk
