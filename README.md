@@ -293,7 +293,9 @@ parakeet-cli transcribe --model ultra.gguf --input long.wav --vad
 parakeet-cli vad --model ultra.gguf --input audio.wav
 
 # The same with a Silero VAD GGUF (frame_sec 0.032; defaults 250 ms min speech,
-# 100 ms min pause, 30 ms pad). Any ASR model can then cut long audio with it:
+# 100 ms min pause, 30 ms pad). Any ASR model can then cut long audio with it.
+# The Silero GGUF is not published yet; make it with scripts/convert_silero_vad_to_gguf.py
+# (see docs/vad.md and docs/conversion.md):
 parakeet-cli vad --model silero-vad-f16.gguf --input audio.wav
 parakeet-cli transcribe --model tdt-0.6b-v3.gguf --input long.wav --vad --vad-model silero-vad-f16.gguf
 
