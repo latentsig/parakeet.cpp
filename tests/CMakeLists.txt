@@ -55,6 +55,7 @@ pk_add_test(test_transducer_core)
 pk_add_test(test_tdt_greedy)
 pk_add_test(test_tdt_beam)
 pk_add_test(test_transducer_greedy_batch)
+pk_add_test(test_exact_batch)
 pk_add_test(test_transducer_greedy_batch_rnnt)
 pk_add_test(test_timestamps_tokens)
 pk_add_test(test_timestamps)
@@ -171,7 +172,7 @@ set_tests_properties(test_model_loader test_mel test_mel_gpu test_subsampling te
                      test_prediction_step test_prediction_step_batch
                      test_joint test_joint_step_batch test_prompt_kernel test_transducer_core test_tdt_greedy
                      test_tdt_beam
-                     test_transducer_greedy_batch test_transducer_greedy_batch_rnnt
+                     test_transducer_greedy_batch test_transducer_greedy_batch_rnnt test_exact_batch
                      test_timestamps_tokens test_timestamps test_transcribe_batch_ts test_tokenizer test_transcribe
                      test_transcribe_speech test_transcribe_tiled test_transcribe_tdt test_transcribe_0_6b
                      test_transcribe_ctc test_transcribe_rnnt test_transcribe_eou test_transcribe_nemotron
@@ -188,7 +189,7 @@ set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_bat
                      test_joint test_joint_step_batch test_prompt_kernel
                      test_transducer_core test_tdt_greedy
                      test_tdt_beam
-                     test_transducer_greedy_batch test_transducer_greedy_batch_rnnt
+                     test_transducer_greedy_batch test_transducer_greedy_batch_rnnt test_exact_batch
                      test_timestamps_tokens
                      test_timestamps test_transcribe_batch_ts
                      test_tokenizer test_transcribe
