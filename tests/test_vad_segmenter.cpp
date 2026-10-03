@@ -354,6 +354,159 @@ static void test_speech_regions() {
     CHECK(r.size() == 1 && near(r[0].end, 0.8));
 }
 
+
+// ---- Silero (32 ms frames) ----------------------------------------------
+
+static void test_kind_defaults() {
+    const SegmenterOpts h = default_segmenter_opts(VadKind::kHead);
+    const SegmenterOpts d;
+    CHECK(near(h.frame_sec, 0.08) && h.threshold == d.threshold && near(h.min_pause_sec, d.min_pause_sec) &&
+          near(h.min_speech_sec, d.min_speech_sec) && near(h.bridge_sec, d.bridge_sec) &&
+          near(h.max_seg_sec, d.max_seg_sec) && near(h.min_seg_sec, d.min_seg_sec) && h.pad_sec == 0.0);
+    const SegmenterOpts s = default_segmenter_opts(VadKind::kSilero);
+    CHECK(near(s.frame_sec, 0.032) && s.threshold == 0.5f);
+    CHECK(near(s.min_speech_sec, 0.25) && near(s.min_pause_sec, 0.1) && near(s.bridge_sec, 0.1) && near(s.pad_sec, 0.03));
+    CHECK(near(s.max_seg_sec, 30.0) && near(s.min_seg_sec, 1.0));
+}
+
+// Frames of 32 ms: boundaries are whole frames, a pause is found, caps hold.
+static void test_segmenter_32ms() {
+    SegmenterOpts o = default_segmenter_opts(VadKind::kSilero);
+    const double fs = 0.032;
+    // 50 s: speech, a 0.5 s pause at 20 s, speech to the end.
+    const int n = (int)std::ceil(50.0 / fs);
+    std::vector<float> p((size_t)n, 0.9f);
+    const int a = (int)std::llround(20.0 / fs), b = a + 16;
+    for (int i = a; i < b; ++i) p[(size_t)i] = 0.01f;
+    const auto s = segment_by_vad(p, 50.0, o);
+    CHECK(s.size() == 2);
+    if (s.size() == 2) {
+        CHECK(near(s[0].start, 0.0) && near(s[1].end, 50.0));
+        CHECK(near(s[0].end, s[1].start));
+        const double mid = (double)((a + b) / 2) * fs;
+        CHECK(near(s[0].end, mid));
+        const double q = s[0].end / fs;
+        CHECK(std::fabs(q - std::round(q)) < 1e-6);
+    }
+    check_ordered(s, 50.0, o.max_seg_sec);
+    // All speech: hard cuts at max_seg_sec rounded down to whole frames (937 frames).
+    const auto h = segment_by_vad(std::vector<float>((size_t)n, 0.9f), 50.0, o);
+    CHECK(h.size() == 2 && near(h[0].end, 937 * fs));
+    // The same options at 80 ms give the head's result: frame_sec only sets the grid.
+    SegmenterOpts o8;
+    const auto r8 = segment_by_vad(make_p(750, {{300, 310}}), 60.0, o8);
+    SegmenterOpts o8b = default_segmenter_opts(VadKind::kHead);
+    const auto r8b = segment_by_vad(make_p(750, {{300, 310}}), 60.0, o8b);
+    CHECK(r8.size() == r8b.size());
+    for (size_t i = 0; i < r8.size() && i < r8b.size(); ++i) CHECK(r8[i].start == r8b[i].start && r8[i].end == r8b[i].end);
+}
+
+static void test_silero_speech_regions_and_pad() {
+    SegmenterOpts o = default_segmenter_opts(VadKind::kSilero);
+    const double fs = 0.032;
+    // 3 s: speech frames [20, 60) = 1.28 s, a 0.256 s pause, speech [68, 80) = 0.384 s.
+    std::vector<float> p(94, 0.01f);
+    for (int i = 20; i < 60; ++i) p[(size_t)i] = 0.9f;
+    for (int i = 68; i < 80; ++i) p[(size_t)i] = 0.9f;
+    auto r = speech_regions(p, 3.0, o);
+    CHECK(r.size() == 2);
+    if (r.size() == 2) {
+        CHECK(near(r[0].start, 20 * fs - 0.03) && near(r[0].end, 60 * fs + 0.03));
+        CHECK(near(r[1].start, 68 * fs - 0.03) && near(r[1].end, 80 * fs + 0.03));
+    }
+    // A run shorter than 250 ms (7 frames = 224 ms) is dropped, 8 frames (256 ms) kept.
+    std::vector<float> q(60, 0.01f);
+    for (int i = 5; i < 12; ++i) q[(size_t)i] = 0.9f;
+    for (int i = 30; i < 38; ++i) q[(size_t)i] = 0.9f;
+    r = speech_regions(q, 60 * fs, o);
+    CHECK(r.size() == 1 && near(r[0].start, 30 * fs - 0.03));
+    // A gap shorter than 100 ms (3 frames) is bridged, 4 frames (128 ms) is not.
+    std::vector<float> g(60, 0.01f);
+    for (int i = 5; i < 20; ++i) g[(size_t)i] = 0.9f;
+    for (int i = 23; i < 40; ++i) g[(size_t)i] = 0.9f;  // gap of 3 frames
+    CHECK(speech_regions(g, 60 * fs, o).size() == 1);
+    for (int i = 20; i < 24; ++i) g[(size_t)i] = 0.01f; // gap of 4 frames
+    CHECK(speech_regions(g, 60 * fs, o).size() == 2);
+    // Pad is clamped to [0, total] and neighbours meet in the middle of a small gap.
+    std::vector<float> e(20, 0.9f);
+    r = speech_regions(e, 20 * fs, o);
+    CHECK(r.size() == 1 && near(r[0].start, 0.0) && near(r[0].end, 20 * fs));
+    SegmenterOpts w = o;
+    w.pad_sec = 0.2;   // gap of 4 frames = 0.128 s < 2 * pad
+    r = speech_regions(g, 60 * fs, w);
+    CHECK(r.size() == 2);
+    if (r.size() == 2) CHECK(near(r[0].end, r[1].start) && near(r[0].end, 20 * fs + 0.064));
+    // No pad keeps the plain regions, and a bad pad is degenerate.
+    w.pad_sec = 0.0;
+    r = speech_regions(g, 60 * fs, w);
+    CHECK(r.size() == 2 && near(r[0].start, 5 * fs) && near(r[0].end, 20 * fs));
+    w.pad_sec = -1.0;
+    r = speech_regions(g, 60 * fs, w);
+    CHECK(r.size() == 1 && near(r[0].start, 0.0) && near(r[0].end, 60 * fs));
+}
+
+// The online tracker gives the regions of speech_regions on random input.
+static void test_event_tracker_matches_offline() {
+    std::mt19937 rng(7);
+    int cases = 0;
+    for (int kind = 0; kind < 2; ++kind) {
+        for (int iter = 0; iter < 400; ++iter) {
+            SegmenterOpts o = default_segmenter_opts(kind ? VadKind::kSilero : VadKind::kHead);
+            if (iter % 3 == 1) o.min_pause_sec = 0.05 + 0.01 * (double)(rng() % 40);
+            if (iter % 5 == 2) o.min_speech_sec = 0.02 + 0.01 * (double)(rng() % 60);
+            if (iter % 4 == 3) o.bridge_sec = 0.01 * (double)(rng() % 30);
+            if (iter % 2 == 0) o.pad_sec = std::min(o.min_pause_sec / 2.0, 0.01 * (double)(rng() % 8));
+            const int n = 1 + (int)(rng() % 300);
+            // Runs of random length with random value.
+            std::vector<float> p;
+            bool sp = rng() & 1;
+            while ((int)p.size() < n) {
+                const int len = 1 + (int)(rng() % 14);
+                for (int i = 0; i < len && (int)p.size() < n; ++i) p.push_back(sp ? 0.9f : 0.05f);
+                sp = !sp;
+            }
+            const double total = (double)n * o.frame_sec - (double)(rng() % 100) / 100.0 * o.frame_sec * 0.9;
+            const auto want = speech_regions(p, total, o);
+            VadEventTracker t(o);
+            std::vector<VadEvent> ev;
+            for (float v : p) t.push(v, &ev);
+            t.finish(total, &ev);
+            CHECK(ev.size() == want.size() * 2);
+            bool ok = ev.size() == want.size() * 2;
+            for (size_t i = 0; ok && i < want.size(); ++i) {
+                ok = ev[2 * i].start && !ev[2 * i + 1].start && near(ev[2 * i].time, want[i].start) &&
+                     near(ev[2 * i + 1].time, want[i].end);
+            }
+            if (!ok) std::fprintf(stderr, "tracker mismatch kind %d iter %d (%zu events, %zu regions) pause %.3f speech %.3f bridge %.3f pad %.3f\n", kind, iter, ev.size(), want.size(), o.min_pause_sec, o.min_speech_sec, o.bridge_sec, o.pad_sec);
+            CHECK(ok);
+            ++cases;
+        }
+    }
+    CHECK(cases == 800);
+    // Events arrive as they become known: the end of a region comes only after
+    // min_pause of silence, a start only after min_speech of speech.
+    SegmenterOpts o = default_segmenter_opts(VadKind::kSilero);
+    VadEventTracker t(o);
+    std::vector<VadEvent> ev;
+    for (int i = 0; i < 6; ++i) t.push(0.9f, &ev);   // 192 ms < 250 ms
+    CHECK(ev.empty());
+    t.push(0.9f, &ev); t.push(0.9f, &ev);            // 256 ms
+    CHECK(ev.size() == 1 && ev[0].start && near(ev[0].time, 0.0));
+    for (int i = 0; i < 3; ++i) t.push(0.01f, &ev);  // 96 ms: not yet a pause
+    CHECK(ev.size() == 1);
+    t.push(0.01f, &ev);                              // 128 ms
+    CHECK(ev.size() == 2 && !ev[1].start && near(ev[1].time, 8 * 0.032 + 0.03));
+    // reset() starts a fresh stream; the degenerate option set gives one region.
+    t.reset();
+    ev.clear();
+    CHECK(t.frames() == 0);
+    SegmenterOpts bad;
+    bad.frame_sec = 0.0;
+    VadEventTracker tb(bad);
+    tb.push(0.9f, &ev); tb.push(0.0f, &ev); tb.finish(0.5, &ev);
+    CHECK(ev.size() == 2 && ev[0].start && near(ev[1].time, 0.5));
+}
+
 int main() {
     test_defaults();
     test_nonfinite_and_huge_opts();
@@ -373,6 +526,10 @@ int main() {
     test_all_silence();
     test_speech_regions();
     test_random_property();
+    test_kind_defaults();
+    test_segmenter_32ms();
+    test_silero_speech_regions_and_pad();
+    test_event_tracker_matches_offline();
     if (failures) return 1;
     std::puts("test_vad_segmenter: OK");
     return 0;
