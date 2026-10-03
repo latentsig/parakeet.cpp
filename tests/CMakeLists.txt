@@ -199,6 +199,11 @@ set_tests_properties(test_mel test_mel_gpu test_subsampling test_subsampling_bat
                      test_combined_offline test_streaming_diarization test_diarization_accuracy test_ternary_model test_ternary_long test_transcribe_vad test_decoder_reuse
                      PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+# ctest runs the stress test in its short form (it is heavy on a loaded machine
+# and under sanitizers). Run the binary directly, without
+# PARAKEET_STRESS_QUICK, for the full matrix.
+set_tests_properties(test_pool_stress PROPERTIES ENVIRONMENT "PARAKEET_STRESS_QUICK=1" TIMEOUT 900)
+
 # Python converter check (skips with exit 77 when the venv/model are absent).
 find_program(PARAKEET_PY NAMES python3 HINTS ${CMAKE_SOURCE_DIR}/.venv/bin)
 if(PARAKEET_PY)

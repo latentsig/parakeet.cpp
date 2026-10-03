@@ -343,6 +343,12 @@ To batch from code, use the batched entry points (single-clip B=1 is just N=1):
 
 ---
 
+## Concurrent requests
+
+One loaded model runs one request at a time by default. To serve several requests in parallel, give the model a pool of CPU backends: `parakeet_capi_set_concurrency(ctx, backends, threads_each)`, `pk::Model::set_concurrency`, or `--concurrency K` on `parakeet-server` and `parakeet-cli bench`. Results are identical to the single-backend run, aggregate throughput goes up (about 1.2x to 1.3x measured with 8 cores, see [`docs/concurrency.md`](docs/concurrency.md)), and each request gets somewhat slower because it has fewer threads. Keep `backends x threads_each` at or below the physical cores. The default is one backend and behaves as before.
+
+---
+
 ## Sound events
 
 parakeet.cpp can also tag everyday sounds (dog bark, glass breaking, applause,

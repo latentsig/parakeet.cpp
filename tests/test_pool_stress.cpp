@@ -5,7 +5,8 @@
 // Models: PARAKEET_TEST_GGUF, PARAKEET_TEST_GGUF_ULTRA,
 // PARAKEET_TEST_GGUF_REDUX_KEEP (each one that is set is tested).
 // Skips (77) when none is set. PARAKEET_STRESS_QUICK=1 shortens the clips,
-// rounds and configurations (for slow builds such as ThreadSanitizer). Run it under ThreadSanitizer too (see
+// rounds and configurations (for slow builds such as ThreadSanitizer); ctest
+// sets it. Run the binary directly for the full matrix. Run it under ThreadSanitizer too (see
 // docs/concurrency.md).
 //
 // LABEL model
