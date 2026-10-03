@@ -222,3 +222,7 @@ if(PARAKEET_PY)
 endif()
 
 pk_add_test(test_speaker_profiles)
+add_executable(silero_vad_probe silero_vad_probe.cpp)
+target_link_libraries(silero_vad_probe PRIVATE parakeet)
+target_include_directories(silero_vad_probe PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/third_party)
+pk_add_test(test_silero_vad)
