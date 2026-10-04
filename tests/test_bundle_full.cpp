@@ -2,8 +2,8 @@
 // built from: every component gives the same output as its standalone file.
 //   ASR transcript, diarization JSON, CED class scores (bitwise), speaker embedding
 //   (bitwise) and identity, Silero probabilities (bitwise), named diarization with
-//   bundle components. Also: partial loading, selection rules, and the temporary-file
-//   fallback of the ced and voice loaders (no file is left behind).
+//   bundle components. Also: partial loading, selection rules, and that loading a ced or
+//   voice component makes no temporary file, memory file or descriptor.
 //
 // LABEL model; run from the project root (fixtures are relative).
 // Env (skip 77 unless all are set):
@@ -16,12 +16,12 @@
 #include <vector>
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "audio_io.hpp"
 #include "bundle.hpp"
-#include "bundle_extract.hpp"
 #include "ced_tagger.hpp"
 #include "model.hpp"
 #include "parakeet_capi.h"
@@ -40,6 +40,29 @@ static unsigned long long bytes_read() {
         if (std::string(k) == "rchar:") r = v;
     std::fclose(f);
     return r;
+}
+static unsigned long long storage_read_bytes() {   // bytes this process made the kernel read from storage, mapped files included
+    std::FILE* f = std::fopen("/proc/self/io", "r");
+    if (!f) return 0;
+    char k[64];
+    unsigned long long v = 0, r = 0;
+    while (std::fscanf(f, "%63s %llu", k, &v) == 2)
+        if (std::string(k) == "read_bytes:") r = v;
+    std::fclose(f);
+    return r;
+}
+static void drop_page_cache(const char* path) {   // clean pages of one file only; no privilege needed
+    const int fd = ::open(path, O_RDONLY);
+    if (fd >= 0) { ::posix_fadvise(fd, 0, 0, POSIX_FADV_DONTNEED); ::close(fd); }
+}
+static bool maps_contain(const std::string& needle) {   // any mapping or file name in /proc/self/maps
+    std::FILE* f = std::fopen("/proc/self/maps", "r");
+    if (!f) return false;
+    char line[4096];
+    bool hit = false;
+    while (!hit && std::fgets(line, sizeof line, f)) hit = std::strstr(line, needle.c_str()) != nullptr;
+    std::fclose(f);
+    return hit;
 }
 static std::string take(char* p) {
     std::string s = p ? p : "";
@@ -156,23 +179,15 @@ int main() {
     CHECK(!solo.named_json.empty() && solo.id.rfind("sha256:", 0) == 0);
     std::printf("transcript: %s\ndiarization: %s\n", solo.transcript.c_str(), solo.diar_json.c_str());
 
-    // ---- the same through the bundle, with the in-memory file and with the temporary-file fallback ----
+    // ---- the same through the bundle. The temporary directory is read-only, so a load that tried
+    // to make a temporary file would fail; no descriptor, memory file or leftover may remain. ----
     char tmpl[] = "/tmp/pk_bundle_full_XXXXXX";
     const std::string tmpdir = ::mkdtemp(tmpl) ? tmpl : "";
     CHECK(!tmpdir.empty());
-    for (int pass = 0; pass < 2; ++pass) {
-        if (pass == 1) {
-            ::setenv("PARAKEET_BUNDLE_NO_MEMFD", "1", 1);
-            ::setenv("TMPDIR", tmpdir.c_str(), 1);
-        }
-        std::printf("-- pass %d (%s)\n", pass, pass ? "temporary file" : "memfd");
-        {
-            auto cf = pk::ComponentFile::create(bundle, "ced", &err);
-            CHECK(cf && cf->in_memory() == (pass == 0));
-            if (cf && pass == 1) CHECK(count_entries(tmpdir) == 1);
-        }
-        CHECK(count_entries(tmpdir) == 0);   // the temporary file is gone once the object is
-
+    ::chmod(tmpdir.c_str(), 0500);
+    ::setenv("TMPDIR", tmpdir.c_str(), 1);
+    const int cwd0 = count_entries(".");   // nothing is created in the working directory either
+    {
         auto m = pk::Model::load(bundle, "asr");
         CHECK(m != nullptr);
         if (m) CHECK(m->transcribe_path(speech) == solo.transcript);
@@ -181,31 +196,47 @@ int main() {
         CHECK(d != nullptr);
         if (d) CHECK(take(parakeet_capi_diarize_path(d, two.c_str())) == solo.diar_json);
 
-        const unsigned long long r0 = bytes_read();
+        const int fd0 = count_entries("/proc/self/fd");
+        drop_page_cache(bundle);
+        const unsigned long long r0 = bytes_read(), f0 = storage_read_bytes();
         std::string le;
         auto t = pk::CedTagger::load(bundle, "ced", &le);
-        const unsigned long long r1 = bytes_read();
+        const unsigned long long r1 = bytes_read(), f1 = storage_read_bytes();
         CHECK(t != nullptr);
+        CHECK(count_entries("/proc/self/fd") == fd0);   // the loaded tagger holds no descriptor
         const pk::BundleComponent* cc = info.find("ced");
         if (t) {
             std::vector<float> p;
             pk::SoundScorer sc = t->scorer();
             CHECK(sc(a_speech.samples.data(), (int)a_speech.samples.size(), p) && same_bits(p, solo.ced));
-            if (r1 > r0 && cc) {
-                std::printf("ced: read %.1f MB (component %.1f MB, bundle %.1f MB)\n", (double)(r1 - r0) / 1e6,
-                            (double)cc->n_bytes / 1e6, (double)st.st_size / 1e6);
-                CHECK(r1 - r0 < 3 * cc->n_bytes + (8u << 20));   // copy into the file, then the loader reads it
-                CHECK(r1 - r0 < (unsigned long long)st.st_size / 2);
+            // The bundle is mapped, not read(): only read() calls count in rchar (the header), and
+            // the pages touched through the map count as storage reads once the page cache of the
+            // file is dropped. Loading must read about the component (plus read-ahead), never the
+            // other components, which are over half of the bundle. The storage figure is 0 on a
+            // file system without block I/O accounting; the check is skipped then.
+            if (cc) {
+                const unsigned long long f = f1 - f0;
+                std::printf("ced: %.1f MB read(), %.1f MB read from storage (component %.1f MB, bundle %.1f MB)\n",
+                            (double)(r1 - r0) / 1e6, (double)f / 1e6, (double)cc->n_bytes / 1e6, (double)st.st_size / 1e6);
+                CHECK(r1 - r0 < (8u << 20));
+                CHECK(f < 2 * cc->n_bytes + (8u << 20));
+                CHECK(f < (unsigned long long)st.st_size / 2);
             }
         }
-        const unsigned long long q0 = bytes_read();
+        const unsigned long long q0 = bytes_read(), g0 = storage_read_bytes();
         auto e = pk::SpeakerEncoder::load(bundle, "voice", &le);
-        const unsigned long long q1 = bytes_read();
+        const unsigned long long q1 = bytes_read(), g1 = storage_read_bytes();
         CHECK(e != nullptr);
+        CHECK(count_entries("/proc/self/fd") == fd0);   // nor does the encoder
         if (e) {
             std::vector<float> v;
             CHECK(e->embed(a_speech.samples.data(), (int)a_speech.samples.size(), v) && same_bits(v, solo.emb));
-            if (q1 > q0 && vc) CHECK(q1 - q0 < 3 * vc->n_bytes + (8u << 20));
+            if (vc) {
+                std::printf("voice: %.1f MB read(), %.1f MB read from storage (component %.1f MB)\n", (double)(q1 - q0) / 1e6,
+                            (double)(g1 - g0) / 1e6, (double)vc->n_bytes / 1e6);
+                CHECK(q1 - q0 < (8u << 20));
+                CHECK(g1 - g0 < 2 * vc->n_bytes + (8u << 20));
+            }
         }
         parakeet_ctx* sp = parakeet_capi_load_component(bundle, "voice");
         CHECK(sp != nullptr);
@@ -224,9 +255,12 @@ int main() {
         parakeet_ctx* tg = parakeet_capi_load_component(bundle, "ced");
         CHECK(tg && parakeet_capi_num_classes(tg) > 0 && parakeet_capi_class_label(tg, 0));
         parakeet_capi_free(tg); parakeet_capi_free(d); parakeet_capi_free(sp);
+        // No temporary file, memory file or descriptor is left by any of the loads above.
         CHECK(count_entries(tmpdir) == 0);
+        CHECK(count_entries(".") == cwd0);
+        CHECK(!maps_contain("memfd:") && !maps_contain("parakeet-component") && !maps_contain(tmpdir));
     }
-    ::unsetenv("PARAKEET_BUNDLE_NO_MEMFD");
+    ::chmod(tmpdir.c_str(), 0700);
     ::rmdir(tmpdir.c_str());
 
     if (failures) return 1;
