@@ -203,6 +203,8 @@ docs/
   diarization.md    , speaker diarization + speaker-attributed ASR: parity, C-API, speed
   sound.md          , sound-event detection (CED) and the combined scene stream
   speaker.md        , speaker identification: enroll, scene naming, C-API v9 and v10, measured numbers
+  vad.md, vad-benchmarks.md, ultra-redux.md, batching.md, performance.md, cli.md, capi.md, docker.md, licenses.md, tdt-nbest.md
+                      , see the documentation table in README.md
 .github/workflows/
   ci.yml            , build job (per-push) + closed-loop job (pull_request + dispatch)
 ```
@@ -223,7 +225,7 @@ cmake -B build -DPARAKEET_BUILD_TESTS=ON -DGGML_NATIVE=ON && cmake --build build
 | `PARAKEET_GGML_CUDA`     | OFF     | Forward GGML_CUDA to the submodule         |
 | `PARAKEET_GGML_METAL`    | OFF     | Forward GGML_METAL to the submodule        |
 | `PARAKEET_GGML_VULKAN`   | OFF     | Forward GGML_VULKAN to the submodule       |
-| `PARAKEET_GGML_HIPBLAS`  | OFF     | Forward GGML_HIPBLAS to the submodule      |
+| `PARAKEET_GGML_HIP`      | OFF     | Forward GGML_HIP (ROCm) to the submodule   |
 | `PARAKEET_WITH_CED`      | ON      | Sound-event detection through ced.cpp      |
 | `PARAKEET_WITH_VOICEDETECT` | ON   | Speaker identification through voice-detect.cpp |
 
