@@ -14,8 +14,10 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <unistd.h>
 
 #include "bundle.hpp"
+#include "bundle_extract.hpp"
 #include "ggml.h"
 #include "gguf.h"
 #include "model.hpp"
@@ -380,6 +382,56 @@ int main() {
         }
         CHECK(!pk::gguf_is_bundle(Bbad));
         CHECK(!pk::read_bundle_info(Bbad, info, &err));
+    }
+
+    // --- ComponentFile: a component as a standalone GGUF (for path-only third-party loaders) ---
+    {
+        char tmpl[] = "test_bundle_tmpdir_XXXXXX";
+        const std::string tmpdir = ::mkdtemp(tmpl) ? tmpl : "";
+        CHECK(!tmpdir.empty());
+        for (int pass = 0; pass < 2; ++pass) {
+            if (pass == 1) { ::setenv("PARAKEET_BUNDLE_NO_MEMFD", "1", 1); ::setenv("TMPDIR", tmpdir.c_str(), 1); }
+            for (const char* comp : {"asr", "vad"}) {
+                const std::string& plain = std::string(comp) == "asr" ? plain_asr : plain_sil;
+                std::string cerr;
+                std::string path;
+                {
+                    std::unique_ptr<pk::ComponentFile> cf = pk::ComponentFile::create(B, comp, &cerr);
+                    CHECK(cf != nullptr);
+                    if (!cf) continue;
+                    CHECK(cf->in_memory() == (pass == 0));
+                    path = cf->path();
+                    // Same keys, same types and the same tensor bytes as the single-model file.
+                    ggml_context *c1 = nullptr, *c2 = nullptr;
+                    gguf_context* g1 = gguf_init_from_file(plain.c_str(), {false, &c1});
+                    gguf_context* g2 = gguf_init_from_file(path.c_str(), {false, &c2});
+                    CHECK(g1 && g2);
+                    if (g1 && g2) {
+                        CHECK(gguf_get_n_kv(g1) == gguf_get_n_kv(g2) && gguf_get_n_tensors(g1) == gguf_get_n_tensors(g2));
+                        for (int64_t i = 0; i < gguf_get_n_kv(g1); ++i) {
+                            const int64_t j = gguf_find_key(g2, gguf_get_key(g1, i));
+                            CHECK(j >= 0 && gguf_get_kv_type(g1, i) == gguf_get_kv_type(g2, j));
+                        }
+                        for (ggml_tensor* t = ggml_get_first_tensor(c1); t; t = ggml_get_next_tensor(c1, t)) {
+                            ggml_tensor* u = ggml_get_tensor(c2, t->name);
+                            CHECK(u && u->type == t->type && ggml_nbytes(u) == ggml_nbytes(t) &&
+                                  std::memcmp(u->data, t->data, ggml_nbytes(t)) == 0);
+                        }
+                    }
+                    if (g1) gguf_free(g1);
+                    if (g2) gguf_free(g2);
+                    if (c1) ggml_free(c1);
+                    if (c2) ggml_free(c2);
+                }
+                if (pass == 1) CHECK(access(path.c_str(), F_OK) != 0);   // the temporary file is removed
+            }
+            std::string cerr;
+            CHECK(pk::ComponentFile::create(B, "nope", &cerr) == nullptr && !cerr.empty());
+            CHECK(pk::ComponentFile::create("test_bundle.does-not-exist", "asr", &cerr) == nullptr);
+        }
+        ::unsetenv("PARAKEET_BUNDLE_NO_MEMFD");
+        ::rmdir(tmpdir.c_str());   // fails if a temporary file was left behind
+        CHECK(access(tmpdir.c_str(), F_OK) != 0);
     }
 
     // --- a VAD-only slice as a "vad" component (interplay with the standalone slice file) ---
