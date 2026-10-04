@@ -1,0 +1,14 @@
+redux corr(D, median logit) 0.80 ; corr(D, FA) 0.45
+   D in [-2,-1.5): n= 10 FA mean   0.0%  median logit -5.68
+   D in [-1.5,-1): n= 28 FA mean   0.0%  median logit -6.59
+   D in [-1,-0.5): n= 55 FA mean   0.8%  median logit -4.64
+   D in [-0.5,0): n= 32 FA mean   1.5%  median logit -2.16
+   D in [0,0.5): n= 31 FA mean  14.1%  median logit -0.95
+   D in [0.5,9): n= 12 FA mean  21.9%  median logit -0.51
+ultra corr(D, median logit) 0.84 ; corr(D, FA) 0.64
+   D in [-2,-1.5): n= 10 FA mean   0.0%  median logit -5.27
+   D in [-1.5,-1): n= 28 FA mean   1.6%  median logit -4.67
+   D in [-1,-0.5): n= 55 FA mean   6.2%  median logit -3.91
+   D in [-0.5,0): n= 32 FA mean  19.2%  median logit -1.79
+   D in [0,0.5): n= 31 FA mean  46.9%  median logit -0.16
+   D in [0.5,9): n= 12 FA mean  83.1%  median logit +1.17

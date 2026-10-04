@@ -85,6 +85,14 @@ ternary ones.
   functions, as a stream (`parakeet_capi_vad_stream_*`), and as the cutter for any ASR model:
   `parakeet-cli transcribe --vad --vad-model silero.gguf`. See [`docs/vad.md`](docs/vad.md).
 - VAD-only slices of Ultra and Redux (6 to 10 MB, `redux-vad.gguf` and `ultra-vad-q8_0.gguf` in the same repo) hold just the head and its front end. They run `vad` and the `parakeet_capi_vad_*` calls and cannot transcribe. See [`docs/vad.md`](docs/vad.md).
+- The head alone gives false alarms on audio without speech: on speech-free noise it calls about
+  99 percent of the frames speech (Ultra 99.4, Redux 97.8), and over a 30 s noise stretch inside a
+  file with speech the false-alarm frame rate was 17.7 percent for Ultra and 55 percent for Redux,
+  against 0 percent for Silero (synthetic LibriSpeech with added noise). Prefer Silero as the
+  always-on gate or when the audio can have long non-speech stretches; use the head on audio known
+  to be mostly speech, or where its higher recall matters. An offline experiment that lets Silero
+  decide and the head move the edges (not implemented here) is in
+  [`docs/vad-benchmarks.md`](docs/vad-benchmarks.md#fusing-silero-and-the-head-offline-experiment).
 - Accuracy, speed and size of both detectors, with the method and the scripts to repeat
   them: [`docs/vad-benchmarks.md`](docs/vad-benchmarks.md).
 ---

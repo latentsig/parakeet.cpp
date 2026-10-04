@@ -1,7 +1,8 @@
 #include "speaker_encoder.hpp"
 
+#include "bundle.hpp"
+#include "bundle_extract.hpp"
 #include "speaker_model_identity.hpp"
-
 #include "gguf.h"
 
 #include <stdexcept>
@@ -52,26 +53,62 @@ std::string speaker_encoder_family(const std::string& path, int dim_fallback) {
 
 bool SpeakerEncoder::available() { return true; }
 
-std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string& path) {
+// The weights identity of a standalone file is the sha256 of its bytes, taken on both
+// sides of the load: a file replaced while loading is refused. Model files must stay
+// immutable in service. The identity of a bundle component is the sha256 of the
+// single-model file it was built from, recorded in the bundle header, so an encoder
+// enrolled from the standalone file matches the same encoder inside a bundle.
+std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string& path, const std::string& component,
+                                                     std::string* err) {
+    std::string weights;
+    std::unique_ptr<ComponentFile> cf;
+    std::string load_path = path;
     try {
-        // The weights hash is taken on both sides of the load: a file replaced
-        // while loading is refused. Model files must stay immutable in service.
-        const std::string weights = speaker_model_identity(path);
-        std::unique_ptr<SpeakerEncoder> e = load_unchecked(path, weights);
-        if (e && speaker_model_identity(path) != weights) return nullptr;
-        return e;
+        if (component.empty()) {
+            weights = speaker_model_identity(path);
+        } else {
+            BundleInfo info;
+            std::string e;
+            if (!read_bundle_info(path, info, &e)) { if (err) *err = e; return nullptr; }
+            const BundleComponent* c = info.find(component);
+            if (!c) { if (err) *err = "the bundle has no component \"" + component + "\""; return nullptr; }
+            const std::string& h = c->source_sha256;
+            bool hex = h.size() == 64;
+            for (char ch : h) hex = hex && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+            if (!hex) {
+                if (err) *err = "voice component \"" + component + "\" has no valid source_sha256 in the bundle "
+                                "header, which is its speaker model identity";
+                return nullptr;
+            }
+            weights = "sha256:" + h;
+            cf = ComponentFile::create(path, component, &e);
+            if (!cf) { if (err) *err = e; return nullptr; }
+            load_path = cf->path();   // the file is removed when cf goes out of scope
+        }
+        std::unique_ptr<SpeakerEncoder> enc = load_unchecked(load_path, weights, err);
+        if (enc && component.empty() && speaker_model_identity(path) != weights) {
+            if (err) *err = "the speaker model changed during load";
+            return nullptr;
+        }
+        return enc;
     } catch (...) {
+        if (err && err->empty()) *err = "cannot read the speaker model " + (component.empty() ? path : component);
         return nullptr;
     }
 }
 
 std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load_unchecked(const std::string& path,
-                                                                const std::string& weights) {
+                                                                const std::string& weights,
+                                                                std::string* err) {
     voicedetect_ctx* c = voicedetect_capi_load(path.c_str());
-    if (!c) return nullptr;
+    if (!c) {
+        if (err && err->empty()) *err = "cannot load the speaker model";
+        return nullptr;
+    }
     const int dim = voicedetect_capi_embedding_dim(c);
     if (dim <= 0) {   // an analyze-only model has no speaker embedding
         voicedetect_capi_free(c);
+        if (err) *err = "the speaker model has no speaker embedding (an analysis model?)";
         return nullptr;
     }
     std::unique_ptr<SpeakerEncoder> e(new SpeakerEncoder());
@@ -107,7 +144,10 @@ bool SpeakerEncoder::embed(const float* pcm, int n, std::vector<float>& emb) {
 #else  // PARAKEET_WITH_VOICEDETECT
 
 bool SpeakerEncoder::available() { return false; }
-std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string&) { return nullptr; }
+std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string&, const std::string&, std::string* err) {
+    if (err) *err = "this build has no speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)";
+    return nullptr;
+}
 SpeakerEncoder::~SpeakerEncoder() = default;
 bool SpeakerEncoder::embed(const float*, int, std::vector<float>&) {
     last_error_ = "built without speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)";

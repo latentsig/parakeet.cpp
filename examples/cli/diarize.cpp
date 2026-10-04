@@ -1,15 +1,18 @@
 // Standalone diarize tool: loads a diarization GGUF and diarizes a WAV.
-// Usage: diarize <gguf> <wav> [--stream [model|low|very_low|ultra_low]]
+// Usage: diarize <gguf> <wav> [--stream [model|low|very_low|ultra_low]] [--component NAME]
+// <gguf> may be a bundle GGUF: its only "diar" component is used, or the one named by --component.
 // Prints {"speakers":N,"segments":[{"speaker","start","end"}, ...]}.
 // --stream feeds the audio through the streaming C-API in 100 ms pieces (NeMo
 // cache-aware streaming) instead of the whole-file path, optionally in one of
 // the model card's latency modes (default: the checkpoint's configuration).
 #include "parakeet_capi.h"
 #include "audio_io.hpp"
+#include "bundle.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 static int diarize_stream(parakeet_ctx* ctx, const char* wav, int latency) {
@@ -56,9 +59,12 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "usage: %s <gguf> <wav> [--stream [model|low|very_low|ultra_low]]\n", argv[0]);
         return 1;
     }
+    std::string component;
+    for (int i = 3; i + 1 < argc; ++i)
+        if (std::strcmp(argv[i], "--component") == 0) { component = argv[i + 1]; break; }
     const bool stream = argc > 3 && std::strcmp(argv[3], "--stream") == 0;
     int latency = PARAKEET_DIAR_LATENCY_MODEL;
-    if (stream && argc > 4) {
+    if (stream && argc > 4 && std::strcmp(argv[4], "--component") != 0) {
         const char* names[] = {"model", "low", "very_low", "ultra_low"};
         latency = -1;
         for (int i = 0; i < 4; ++i)
@@ -68,9 +74,28 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    parakeet_ctx* ctx = parakeet_capi_load(argv[1]);
+    if (component.empty() && pk::gguf_is_bundle(argv[1])) {
+        pk::BundleInfo info;
+        std::string err;
+        if (!pk::read_bundle_info(argv[1], info, &err)) { std::fprintf(stderr, "%s\n", err.c_str()); return 1; }
+        int n = 0;
+        for (const pk::BundleComponent& c : info.components)
+            if (c.kind == pk::kBundleKindDiar) { component = c.name; ++n; }
+        if (n != 1) {
+            std::fprintf(stderr, "bundle has %s diarization component; name one with --component (components: %s)\n",
+                         n == 0 ? "no" : "several", pk::bundle_component_names(info).c_str());
+            return 1;
+        }
+    }
+    parakeet_ctx* ctx = component.empty() ? parakeet_capi_load(argv[1])
+                                          : parakeet_capi_load_component(argv[1], component.c_str());
     if (!ctx) {
-        std::fprintf(stderr, "failed to load %s\n", argv[1]);
+        std::fprintf(stderr, "failed to load %s: %s\n", argv[1], parakeet_capi_load_error());
+        return 1;
+    }
+    if (parakeet_capi_model_kind(ctx) != PARAKEET_MODEL_KIND_DIARIZATION) {
+        std::fprintf(stderr, "%s is not a diarization model\n", argv[1]);
+        parakeet_capi_free(ctx);
         return 1;
     }
     int rc = 0;

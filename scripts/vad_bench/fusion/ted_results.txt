@@ -1,0 +1,16 @@
+## TED talk 600 s, head=ultra: speech fraction and agreement (F1/kappa) with Silero and with the head
+| Silero .5 | 77.5% | vs Silero 100.0/1.000 | vs head 95.6/0.777 |
+| ultra head .5 | 83.4% | vs Silero 95.6/0.777 | vs head 100.0/1.000 |
+| OR | 84.1% | vs Silero 95.9/0.788 | vs head 99.6/0.975 |
+| AND | 76.5% | vs Silero 99.4/0.973 | vs head 95.7/0.785 |
+| mean .5 | 79.7% | vs Silero 98.2/0.915 | vs head 97.3/0.855 |
+| two-stage .5/.5/160/160/300 | 83.8% | vs Silero 96.1/0.799 | vs head 99.4/0.964 |
+| LR+ctx @.5 (fit on synthetic) | 90.5% | vs Silero 92.2/0.531 | vs head 95.6/0.664 |
+## TED talk 600 s, head=redux: speech fraction and agreement (F1/kappa) with Silero and with the head
+| Silero .5 | 77.5% | vs Silero 100.0/1.000 | vs head 95.5/0.769 |
+| redux head .5 | 84.3% | vs Silero 95.5/0.769 | vs head 100.0/1.000 |
+| OR | 84.5% | vs Silero 95.6/0.772 | vs head 99.9/0.991 |
+| AND | 77.2% | vs Silero 99.8/0.991 | vs head 95.6/0.772 |
+| mean .5 | 80.8% | vs Silero 97.7/0.888 | vs head 97.8/0.876 |
+| two-stage .5/.5/160/160/300 | 84.1% | vs Silero 95.9/0.787 | vs head 99.6/0.976 |
+| LR+ctx @.5 (fit on synthetic) | 90.2% | vs Silero 92.4/0.543 | vs head 96.3/0.710 |

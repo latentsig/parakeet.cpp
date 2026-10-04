@@ -44,12 +44,12 @@ bool arch_prefers_tdt(const std::string& arch) {
 }
 } // namespace
 
-std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
+std::unique_ptr<Model> Model::load(const std::string& gguf_path, const std::string& component) {
     // unique_ptr<Model> via private ctor: construct then load. We avoid
     // std::make_unique (private ctor) and never throw out of here.
     std::unique_ptr<Model> m(new (std::nothrow) Model());
     if (!m) return nullptr;
-    if (!m->loader_.load(gguf_path)) {
+    if (!(component.empty() ? m->loader_.load(gguf_path) : m->loader_.load_component(gguf_path, component))) {
         return nullptr;
     }
     if (m->loader_.config().arch == "vad") {
@@ -95,10 +95,11 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     return m;
 }
 
-std::unique_ptr<Model> Model::load_vad_only(const std::string& gguf_path) {
+std::unique_ptr<Model> Model::load_vad_only(const std::string& gguf_path, const std::string& component) {
     std::unique_ptr<Model> m(new (std::nothrow) Model());
     if (!m) return nullptr;
-    if (!m->loader_.load(gguf_path)) return nullptr;
+    if (!(component.empty() ? m->loader_.load(gguf_path) : m->loader_.load_component(gguf_path, component)))
+        return nullptr;
     const ParakeetConfig& c = m->loader_.config();
     if (c.arch != "vad") {
         PK_LOG("%s is not a VAD-only file (parakeet.arch is \"%s\")", gguf_path.c_str(), c.arch.c_str());

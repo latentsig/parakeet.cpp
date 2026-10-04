@@ -1,0 +1,12 @@
+
+redux: variant (proj act, ctx act, ctx residual) | clean speech F1 % | speech frames in noise-only -23 dBFS % | -40 dBFS % | embedded 5/0 dB stretch FP %
+  (silu,silu,res=False) | F1 95.3 | 97 | 94 | 57
+  (relu,relu,res=False) | F1 95.3 | 97 | 94 | 57
+  (silu,silu,res=True) | F1 95.7 | 97 | 95 | 98
+  (relu,relu,res=True) | F1 95.7 | 97 | 95 | 98
+
+ultra: variant (proj act, ctx act, ctx residual) | clean speech F1 % | speech frames in noise-only -23 dBFS % | -40 dBFS % | embedded 5/0 dB stretch FP %
+  (silu,silu,res=False) | F1 95.0 | 99 | 98 | 4
+  (relu,relu,res=False) | F1 95.0 | 99 | 98 | 4
+  (silu,silu,res=True) | F1 81.0 | 57 | 59 | 68
+  (relu,relu,res=True) | F1 81.0 | 57 | 59 | 68

@@ -1,0 +1,27 @@
+Embedded-stretch false-alarm frame % at threshold 0.5 ; rows=type, cols=SNR re speech (dB) ; 6 clips per cell
+
+redux:
+| type | -10 dB | 0 dB | 10 dB | 20 dB | 30 dB | 40 dB |
+|---|---|---|---|---|---|---|
+| white | 93 | 68 | 79 | 53 | 0 | 0 |
+| pink | 93 | 61 | 63 | 33 | 0 | 0 |
+| brown | 0 | 0 | 0 | 0 | 0 | 0 |
+| speech-shaped | 99 | 89 | 48 | 43 | 1 | 0 |
+| hum 50 Hz | 0 | 0 | 0 | 0 | 0 | 0 |
+| sine 1 kHz | 0 | 0 | 0 | 0 | 0 | 0 |
+| clicks 3/s | 2 | 1 | 1 | 1 | 0 | 0 |
+| clicks 10/s | 15 | 14 | 16 | 9 | 0 | 0 |
+| music-like | 30 | 23 | 16 | 10 | 1 | 0 |
+
+ultra:
+| type | -10 dB | 0 dB | 10 dB | 20 dB | 30 dB | 40 dB |
+|---|---|---|---|---|---|---|
+| white | 97 | 44 | 0 | 0 | 0 | 0 |
+| pink | 96 | 55 | 0 | 0 | 0 | 0 |
+| brown | 0 | 0 | 0 | 0 | 0 | 0 |
+| speech-shaped | 100 | 99 | 46 | 0 | 0 | 0 |
+| hum 50 Hz | 0 | 0 | 0 | 0 | 0 | 0 |
+| sine 1 kHz | 0 | 0 | 0 | 0 | 0 | 0 |
+| clicks 3/s | 46 | 38 | 26 | 9 | 0 | 0 |
+| clicks 10/s | 90 | 84 | 64 | 22 | 1 | 0 |
+| music-like | 55 | 53 | 44 | 8 | 0 | 0 |

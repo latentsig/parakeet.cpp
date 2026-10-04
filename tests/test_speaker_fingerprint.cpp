@@ -6,6 +6,11 @@
 //                              both 192). Adds the real model-swap case.
 //   PARAKEET_TEST_DIAR_GGUF    optional diarization GGUF; adds the diarize_named and
 //                              scene paths
+//   PARAKEET_TEST_VD_BUNDLE    optional: a bundle (docs/bundle.md) whose voice component was
+//                              built from PARAKEET_TEST_VD_GGUF, unchanged. Checks that the
+//                              same encoder gives the same family and weights identity from
+//                              the standalone file and from the bundle component (name in
+//                              PARAKEET_TEST_VD_BUNDLE_COMPONENT, default "voice").
 //
 // Without a second encoder the swap is simulated: a copy of the first GGUF with a
 // changed general.name has the same size and the same weights but another family.
@@ -197,6 +202,36 @@ int main() {
         parakeet_capi_speaker_registry_free(old);
         parakeet_capi_speaker_registry_free(plain);
         std::filesystem::remove(v1);
+    }
+
+    // The same encoder inside a bundle: same family, same weights identity (the bundle's
+    // recorded source hash), so a registry enrolled with the standalone file is used with
+    // the bundle component with no warning, and the other way round.
+    if (const char* bundle = std::getenv("PARAKEET_TEST_VD_BUNDLE")) {
+        const char* comp = std::getenv("PARAKEET_TEST_VD_BUNDLE_COMPONENT");
+        parakeet_ctx* c = parakeet_capi_load_component(bundle, comp ? comp : "voice");
+        CHECK(c != nullptr);
+        if (c) {
+            CHECK(fam_a == parakeet_capi_speaker_encoder_family(c));
+            CHECK(std::strcmp(parakeet_capi_speaker_identity(a), parakeet_capi_speaker_identity(c)) == 0);
+            char* jb = parakeet_capi_speaker_identify_pcm_json(loaded, c, probe.data(), (int)probe.size(), 16000);
+            CHECK(jb && contains(jb, "\"name\":\"speaker_a\""));
+            parakeet_capi_free_string(jb);
+            CHECK(std::strlen(parakeet_capi_speaker_last_warning(c)) == 0);
+            // Enrolled with the bundle component, used with the standalone file.
+            parakeet_speaker_registry* rb = parakeet_capi_speaker_registry_new();
+            CHECK(parakeet_capi_speaker_enroll(rb, c, "speaker_a", a0.data(), (int)a0.size(), 16000) == 0);
+            CHECK(std::strcmp(parakeet_capi_speaker_registry_encoder_weights(rb),
+                              parakeet_capi_speaker_registry_encoder_weights(loaded)) == 0);
+            jb = parakeet_capi_speaker_identify_pcm_json(rb, a, probe.data(), (int)probe.size(), 16000);
+            CHECK(jb != nullptr);
+            parakeet_capi_free_string(jb);
+            CHECK(std::strlen(parakeet_capi_speaker_last_warning(a)) == 0);
+            parakeet_capi_speaker_registry_free(rb);
+            parakeet_capi_free(c);
+        }
+    } else {
+        std::printf("note: no PARAKEET_TEST_VD_BUNDLE, bundle identity case skipped\n");
     }
 
     // The same check guards the diarization and scene entry points.
