@@ -18,23 +18,22 @@ A C++17/[ggml](https://github.com/ggml-org/ggml) port of NVIDIA's [NeMo](https:/
 
 ## What is new
 
-The latest tagged release is **v0.5.0** (2026-08-01). Rows marked **master** are merged on `master` and are not in a tagged release yet: build from source (see [Build](#build)) or use the `:latest` [Docker images](docs/docker.md) to get them.
+Latest tagged release: **v0.5.0** (2026-08-01). Entries dated after it are on master, not in a release yet: build from source (see [Build](#build)) or use the `:latest` [Docker images](docs/docker.md).
 
-| Feature | In short | Where | Release |
-| ------- | -------- | ----- | ------- |
-| **Moondream Parakeet Ultra and Redux** | Moondream's derivatives of parakeet-tdt-0.6b-v3. Redux has a ternary encoder: a 213 MB file that runs on CPU with a packed kernel. | [ultra-redux.md](docs/ultra-redux.md), [ternary.md](docs/ternary.md) | master |
-| **Standalone VAD** | Voice activity detection from the Ultra/Redux head or from Silero. Streaming API. `transcribe --vad` cuts long audio at pauses; `--vad-model` lets any ASR model use Silero. | [vad.md](docs/vad.md) | master |
-| **VAD-only files** | 6 to 10 MB slices of the Ultra and Redux VAD head. They cannot transcribe. | [vad.md](docs/vad.md) | master |
-| **Bundle GGUF** | ASR, VAD, diarization, sound events and speaker voice models in one file, with per-component licences. Three bundles are published. | [bundle.md](docs/bundle.md) | master |
-| **Speaker identification** | Name the speakers in a diarized scene. Enroll people from short clips. The registry records an encoder fingerprint and refuses a model mismatch. | [speaker.md](docs/speaker.md) | master |
-| **Diarization and the scene stream** | Who spoke when (Nemotron-3-Diarization), speaker-attributed ASR, and one time-ordered feed of words, speakers and sounds. | [diarization.md](docs/diarization.md), [sound.md](docs/sound.md) | master |
-| **Sound-event tagging** | 527 AudioSet classes with CED, through ced.cpp. | [sound.md](docs/sound.md) | master |
-| **Exact batched decode** | On CPU, batched transducer decode gives the same tokens as decoding each clip alone. Up to about 12x throughput on a GPU at batch 16. | [batching.md](docs/batching.md) | master (batched decode itself: v0.5.0) |
-| **Concurrent requests** | Opt-in pool of CPU backends so several requests run at once on one loaded model. Off by default. | [concurrency.md](docs/concurrency.md) | master |
-| **GPU backends** | CUDA, Metal and Vulkan are supported and ship in the release binaries. ROCm (HIP) has a build option that we have not tested. | [Build](#build) | v0.5.0 |
-| **Nemotron 3.5 streaming** | Multilingual (40+ locales), prompt-conditioned, offline and cache-aware streaming. | [parity.md](docs/parity.md) | v0.5.0 |
-| **Published GGUFs** | Every model and quantization, plus the VAD, diarization and bundle files, in one Hugging Face repo. | [mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf) | n/a |
-| **LocalAI** | LocalAI embeds parakeet.cpp as the `parakeet-cpp` backend and adds a model gallery, concurrency and the full OpenAI API. | [localai.io](https://localai.io) | n/a |
+- 🔏 **Speaker fingerprint** (2026-10-04): the speaker registry records which encoder made each voice print and refuses a model mismatch before naming. [docs](docs/diarization.md)
+- 📦 **Bundle GGUF** (2026-10-04): ASR, VAD, diarization, sound events and speaker voice models in one file, with one licence per component; three bundles are published. [docs](docs/bundle.md)
+- ✂️ **VAD-only files** (2026-10-04): 6 to 10 MB slices of the Ultra and Redux VAD head that run `vad` and cannot transcribe. [docs](docs/vad.md)
+- 🗣️ **Standalone VAD** (2026-10-04): voice activity detection from the Ultra/Redux head or Silero, with a streaming API, and `transcribe --vad` to cut long audio at pauses. [docs](docs/vad.md)
+- 🧮 **Exact batched decode** (2026-10-03): on CPU, batched transducer decode gives the same tokens as decoding each clip alone. [docs](docs/batching.md)
+- 🧵 **Concurrent requests** (2026-10-03): an opt-in pool of CPU backends lets several requests run at once on one loaded model. [docs](docs/concurrency.md)
+- 🪶 **Moondream Parakeet Ultra and Redux** (2026-10-03): Moondream's derivatives of parakeet-tdt-0.6b-v3, including a ternary Redux encoder with a packed CPU kernel in a 213 MB file. [docs](docs/ultra-redux.md)
+- 🪪 **Speaker identification** (2026-09-30): enroll people from short clips and name the speakers in a diarized scene. [docs](docs/speaker.md)
+- 🔔 **Sound events and the scene stream** (2026-09-29): CED tags 527 sound classes, and one time-ordered feed carries words, speakers and sounds. [docs](docs/sound.md)
+- 👥 **Diarization** (2026-09-28): Nemotron-3-Diarization answers who spoke when, and speaker-attributed ASR says who said what. [docs](docs/diarization.md)
+- 🌍 **Nemotron 3.5 streaming** (2026-06-06, in v0.5.0): multilingual (40+ locales), prompt-conditioned, offline and cache-aware streaming. [docs](docs/parity.md)
+- 🍎 **Apple Metal** (2026-06-02, in v0.5.0): the encoder runs on Apple GPUs; CUDA and Vulkan are also supported (see [Build](#build)). [docs](benchmarks/BENCHMARK.md#apple-metal-m4)
+
+The models are in [mudler/parakeet-cpp-gguf](https://huggingface.co/mudler/parakeet-cpp-gguf), and [LocalAI](https://localai.io) runs parakeet.cpp as its `parakeet-cpp` backend. The other docs are listed in the [Documentation](#documentation) table.
 
 ---
 
