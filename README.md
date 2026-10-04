@@ -63,9 +63,6 @@ https://github.com/user-attachments/assets/02c29d27-ce26-46f2-8677-661c59686323
 Serial against batched decode of 16 clips, with identical output ([MP4](benchmarks/media/batch_decode_race.mp4)). Details: [batching.md](docs/batching.md).
 
 
-https://github.com/user-attachments/assets/9a541488-b03f-4c68-8d59-2a6a9e631cc1
-
-
 
 </td>
 </tr>
@@ -78,14 +75,10 @@ https://github.com/user-attachments/assets/9a541488-b03f-4c68-8d59-2a6a9e631cc1
 
 Same model, same CPU, identical output ([MP4](benchmarks/media/nemotron_streaming_race.mp4)).
 
-
-https://github.com/user-attachments/assets/3811082d-5c5e-42d5-bbd8-fd6412c8775c
-
-
 </td>
 <td width="50%" valign="top">
 
-**More races**
+**More benchmarks**
 
 - [parakeet.cpp against NeMo on CPU](benchmarks/media/cpu_nemo_duel.mp4) (about 1.5x faster, same output)
 - [against whisper.cpp turbo on GPU](benchmarks/media/gpu_whisper_duel.mp4) (about 12x faster)
