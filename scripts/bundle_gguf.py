@@ -190,15 +190,18 @@ def check_input(name, kind, reader, meta):
         if arch != "parakeet" or "parakeet.arch" not in reader.fields:
             raise BundleError(f"component {name}: kind asr needs a parakeet ASR GGUF "
                               f"(general.architecture is '{arch}')")
+        if str_field(reader, "parakeet.arch") == "vad":
+            raise BundleError(f"component {name}: input is a VAD-only slice, not an ASR model; use kind vad")
         if str_field(reader, "parakeet.arch") == "diarization":
             raise BundleError(f"component {name}: input is a diarization model, not ASR (a later phase)")
         for k in ("parakeet.encoder.d_model", "parakeet.vocab_size"):
             if k not in reader.fields:
                 raise BundleError(f"component {name}: input lacks the key {k}")
     elif kind == "vad":
-        if arch != "silero_vad" or "silero_vad.sample_rates" not in reader.fields:
-            raise BundleError(f"component {name}: kind vad needs a Silero VAD GGUF "
-                              f"(general.architecture is '{arch}')")
+        is_slice = arch == "parakeet" and str_field(reader, "parakeet.arch") == "vad"
+        if not is_slice and (arch != "silero_vad" or "silero_vad.sample_rates" not in reader.fields):
+            raise BundleError(f"component {name}: kind vad needs a Silero VAD GGUF or a VAD-only slice "
+                              f"(scripts/slice_vad_gguf.py); general.architecture is '{arch}'")
     declared = str_field(reader, "general.license")
     if declared is not None and norm_license(declared) != norm_license(meta["license"]):
         raise BundleError(f"component {name}: the input file declares general.license '{declared}' but the manifest "

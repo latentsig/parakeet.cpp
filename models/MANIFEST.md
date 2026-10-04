@@ -129,6 +129,13 @@ or AVX-512 VNNI and aarch64 with dotprod get SIMD kernels for the packed file. T
 original packed tensors resident next to the repacked planes, so its memory use is more than 213 MB.
 Ultra Q8_0 is measured in `docs/ternary.md`.
 
+VAD-only slices (made with `scripts/slice_vad_gguf.py`, cut from the Ultra and Redux files above, not retrained; CC-BY-4.0, credit Moondream and NVIDIA). They run VAD only and cannot transcribe:
+
+| File | Parent | Size (bytes) | SHA-256 |
+|---|---|---:|---|
+| [`redux-vad.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-vad.gguf) | redux | 9,939,488 | `588e1d6e2ee5b6cdfd9ec5ea98dc0993d5bea498d9cc4ec8d6077041eef8a34f` |
+| [`ultra-vad-q8_0.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/ultra-vad-q8_0.gguf) | ultra, `--dtype q8_0` | 6,007,328 | `8b891a4435e97438104ca07c72530d0c5fe62b986baee48b2dd4e1500c1d4758` |
+
 Both carry the `parakeet.vad.*` KVs and `vad_head.*` tensors unless converted
 with `--vad drop`.
 

@@ -57,6 +57,20 @@ def write_asr(path, arch="parakeet", parakeet_arch="tdt", license=None, extra_ke
     w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
 
 
+def write_slice(path, license="CC-BY-4.0"):
+    """A VAD-only slice of an ASR model (scripts/slice_vad_gguf.py): parakeet.arch is "vad"."""
+    w = GGUFWriter(path, "parakeet")
+    w.add_string("general.name", "stand-in/vad-head")
+    if license:
+        w.add_string("general.license", license)
+    w.add_string("parakeet.arch", "vad")
+    w.add_bool("parakeet.vad.present", True)
+    w.add_uint32("parakeet.vad.d_in", 16)
+    rng = np.random.default_rng(3)
+    w.add_tensor("vad.w", rng.standard_normal((4, 16)).astype(np.float32))
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+
+
 def write_vad(path, license="MIT"):
     w = GGUFWriter(path, "silero_vad")
     w.add_string("general.name", "silero-vad")
@@ -126,6 +140,18 @@ def main():
         check(rc == 0 and "CC-BY-4.0" in out and "Copyright (c) 2020-present Silero Team" in out and "NVIDIA" in out,
               "notice text lacks a licence or credit")
         check(sha("asr.gguf") in out, "notice lacks the input sha256")
+
+        # --- a VAD-only slice is a valid "vad" component, and not an "asr" one ---
+        write_slice("slice.gguf")
+        SLICE_META = dict(ASR_META, kind="vad")
+        manifest("ms.json", [comp("asr", "asr.gguf", ASR_META), comp("vadh", "slice.gguf", SLICE_META)])
+        rc, out, err = run("--out", "bs.gguf", "--manifest", "ms.json")
+        check(rc == 0, f"a slice as kind vad must build: {err}")
+        rc, out, err = run("--verify", "bs.gguf", "--source", "asr=asr.gguf", "--source", "vadh=slice.gguf")
+        check(rc == 0, f"verify of a bundle with a slice failed: {err}")
+        manifest("ms2.json", [comp("vadh", "slice.gguf", ASR_META)])
+        rc, out, err = run("--out", "bs2.gguf", "--manifest", "ms2.json")
+        check(rc != 0 and "VAD-only slice" in err, "a slice as kind asr must be refused")
 
         # --- a tampered bundle fails verify ---
         data = bytearray(open("b1.gguf", "rb").read())

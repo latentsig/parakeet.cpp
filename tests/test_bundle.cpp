@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -17,6 +18,7 @@
 #include "bundle.hpp"
 #include "ggml.h"
 #include "gguf.h"
+#include "model.hpp"
 #include "model_loader.hpp"
 #include "parakeet_capi.h"
 #include "silero_vad.hpp"
@@ -41,6 +43,8 @@ struct Builder {
     }
     void str(const std::string& k, const std::string& v) { gguf_set_val_str(g, (pre + k).c_str(), v.c_str()); }
     void u32(const std::string& k, uint32_t v) { gguf_set_val_u32(g, (pre + k).c_str(), v); }
+    void boolean(const std::string& k, bool v) { gguf_set_val_bool(g, (pre + k).c_str(), v); }
+    void f32(const std::string& k, float v) { gguf_set_val_f32(g, (pre + k).c_str(), v); }
     void i32s(const std::string& k, const std::vector<int32_t>& v) {
         gguf_set_arr_data(g, (pre + k).c_str(), GGUF_TYPE_INT32, v.data(), v.size());
     }
@@ -111,6 +115,23 @@ void asr_content(Builder& b, uint32_t seed, int64_t big_floats) {
     b.tensor("encoder.big", {big_floats}, rng, 1.0f);
 }
 
+// A stand-in VAD-only slice (parakeet.arch "vad", scripts/slice_vad_gguf.py): the
+// keys ModelLoader checks and one tensor.
+void slice_content(Builder& b, uint32_t seed) {
+    std::mt19937 rng(seed);
+    b.str("general.architecture", "parakeet");
+    b.str("parakeet.arch", "vad");
+    b.u32("parakeet.encoder.d_model", 16);
+    b.u32("parakeet.encoder.subsampling_factor", 8);
+    b.u32("parakeet.preprocessor.hop_length", 160);
+    b.boolean("parakeet.vad.present", true);
+    b.u32("parakeet.vad.d_in", 16);
+    b.u32("parakeet.vad.hidden", 8);
+    b.u32("parakeet.vad.kernel", 3);
+    b.f32("parakeet.vad.frame_sec", 0.08f);
+    b.tensor("vad.w", {16, 8}, rng, 1.0f);
+}
+
 struct Comp {
     std::string name, kind;
     bool omit_tensors = false;
@@ -129,7 +150,8 @@ bool write_bundle(const std::string& path, const std::vector<Comp>& defs, uint32
     uint32_t seed = 1;
     for (const Comp& c : defs) {
         const std::string pk = "parakeet.bundle." + c.name + ".";
-        b.str(pk + "kind", c.kind);
+        const bool slice = c.kind == "vadslice";   // kind "vad" with a VAD-only slice inside
+        b.str(pk + "kind", slice ? "vad" : c.kind);
         b.str(pk + "license", c.kind == "vad" ? "MIT" : "CC-BY-4.0");
         b.str(pk + "license_url", "https://example.org/license");
         b.str(pk + "source", "example/" + c.name);
@@ -138,6 +160,7 @@ bool write_bundle(const std::string& path, const std::vector<Comp>& defs, uint32
         if (c.omit_tensors) continue;
         b.pre = c.name + ".";
         if (c.kind == "vad") silero_content(b, 7);
+        else if (slice) slice_content(b, 9);
         else asr_content(b, seed++, big_floats);
         b.pre.clear();
     }
@@ -357,6 +380,45 @@ int main() {
         }
         CHECK(!pk::gguf_is_bundle(Bbad));
         CHECK(!pk::read_bundle_info(Bbad, info, &err));
+    }
+
+    // --- a VAD-only slice as a "vad" component (interplay with the standalone slice file) ---
+    {
+        const std::string plain_slice = dir + "slice.gguf", Bs = dir + "bs.gguf", Bs2 = dir + "bs2.gguf";
+        { Builder s; slice_content(s, 9); CHECK(s.write(plain_slice)); }
+        CHECK(write_bundle(Bs, {{"asr", "asr"}, {"vadh", "vadslice"}}));
+        CHECK(write_bundle(Bs2, {{"asr", "asr"}, {"vadh", "vadslice"}, {"sil", "vad"}}));
+        CHECK(pk::bundle_vad_is_slice(Bs, "vadh") && !pk::bundle_vad_is_slice(Bs, "asr"));
+        CHECK(!pk::bundle_vad_is_slice(Bs, "nope") && !pk::bundle_vad_is_slice(B, "vad"));
+        // Same model as the standalone slice file.
+        std::unique_ptr<pk::Model> sa = pk::Model::load_vad_only(plain_slice);
+        std::unique_ptr<pk::Model> sb = pk::Model::load_vad_only(Bs, "vadh");
+        CHECK(sa && sb);
+        if (sa && sb) {
+            CHECK(sa->config().vad.hidden == sb->config().vad.hidden && sb->config().vad.present);
+            CHECK(sa->config().arch == "vad" && sb->config().arch == "vad");
+        }
+        CHECK(pk::Model::load(Bs, "vadh") == nullptr);          // the ASR loader refuses a slice
+        CHECK(pk::Model::load_vad_only(Bs, "asr") == nullptr);  // and the slice loader an ASR component
+        // C-API: the context is a VAD-only context, like the plain slice file.
+        parakeet_ctx* ps = parakeet_capi_load(plain_slice.c_str());
+        parakeet_ctx* cs = parakeet_capi_load_component(Bs.c_str(), "vadh");
+        CHECK(ps && cs);
+        if (ps && cs) {
+            CHECK(parakeet_capi_model_kind(ps) == parakeet_capi_model_kind(cs));
+            CHECK(parakeet_capi_transcribe_path(cs, "x.wav", 0) == nullptr);
+            const char* e = parakeet_capi_last_error(cs);
+            CHECK(e && std::strstr(e, "VAD-only"));
+        }
+        parakeet_capi_free(ps); parakeet_capi_free(cs);
+        // Default selection: ASR wins; a slice and a Silero component with no ASR is ambiguous.
+        parakeet_ctx* da = parakeet_capi_load(Bs.c_str());
+        CHECK(da && parakeet_capi_model_kind(da) == PARAKEET_MODEL_KIND_ASR);
+        parakeet_capi_free(da);
+        pk::BundleInfo si;
+        std::string serr, spick;
+        CHECK(pk::read_bundle_info(Bs2, si, &serr) && pk::select_default_component(si, spick, &serr) && spick == "asr");
+        for (const std::string& f : {plain_slice, Bs, Bs2}) std::remove(f.c_str());
     }
 
     // --- C-API ---

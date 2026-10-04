@@ -351,7 +351,8 @@ bool ModelLoader::parse_config(const KvView& kv){
         if(strncmp(nm, kv.prefix.c_str(), kv.prefix.size())!=0) continue;
         nm += kv.prefix.size();
         ggml_tensor* t = ggml_get_tensor(ctx_, nm); if(t) tensors_[nm]=t; }
-    return cfg_.d_model>0 && (cfg_.vocab_size>0 || cfg_.arch=="diarization");
+    // A VAD-only slice (arch "vad", see scripts/slice_vad_gguf.py) has no vocabulary.
+    return cfg_.d_model>0 && (cfg_.vocab_size>0 || cfg_.arch=="diarization" || cfg_.arch=="vad");
 }
 ggml_tensor* ModelLoader::tensor(const std::string& n) const {
     auto it = tensors_.find(n); return it==tensors_.end()? nullptr : it->second;

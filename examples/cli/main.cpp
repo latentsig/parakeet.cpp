@@ -143,7 +143,7 @@ static int cmd_info(int argc, char** argv) {
             return 1;
         }
         std::printf("component: %s (kind %s, licence %s)\n", bc->name.c_str(), bc->kind.c_str(), bc->license.c_str());
-        if (bc->kind == pk::kBundleKindVad) {
+        if (bc->kind == pk::kBundleKindVad && !pk::bundle_vad_is_slice(path, component)) {
             std::string err2;
             std::unique_ptr<pk::SileroVad> sv = pk::SileroVad::load(path, &err2, component);
             if (!sv) { std::fprintf(stderr, "parakeet-cli: %s\n", err2.c_str()); return 1; }
@@ -348,11 +348,12 @@ static int cmd_transcribe_vad(const std::string& model, const std::string& input
             if (!vad_component.empty()) {
                 const pk::BundleComponent* c = info.find(vad_component);
                 if (!c) { std::fprintf(stderr, "parakeet-cli: bundle has no component '%s'; components: %s\n", vad_component.c_str(), pk::bundle_component_names(info).c_str()); return 1; }
+                if (c->kind == pk::kBundleKindVad && pk::bundle_vad_is_slice(model, vad_component)) { std::fprintf(stderr, "parakeet-cli: --vad-component %s is a VAD-only slice; transcribe --vad takes a Silero component or the ASR head (use `parakeet-cli vad` for a slice)\n", vad_component.c_str()); return 1; }
                 if (c->kind == pk::kBundleKindVad) { silero_path = model; silero_comp = vad_component; }
                 else if (vad_component != g_asr_component) { std::fprintf(stderr, "parakeet-cli: --vad-component %s is not a VAD component\n", vad_component.c_str()); return 1; }
             } else {
                 for (const pk::BundleComponent& c : info.components)
-                    if (c.kind == pk::kBundleKindVad) { silero_path = model; silero_comp = c.name; break; }
+                    if (c.kind == pk::kBundleKindVad && !pk::bundle_vad_is_slice(model, c.name)) { silero_path = model; silero_comp = c.name; break; }
             }
         } else if (!vad_model.empty() && !vad_component.empty()) {
             silero_comp = vad_component;
@@ -2038,7 +2039,7 @@ static int cmd_vad_probe(int argc, char** argv) {
 //   [--min-pause SEC] [--min-speech SEC] [--speech-pad SEC] [--max-segment SEC=30]
 //   [--mode speech|segments] [--probabilities] [--threads N]
 // Prints the same JSON as parakeet_capi_vad_path_json. The model is an ASR GGUF
-// with a VAD head (Ultra, Redux) or a Silero VAD GGUF. Unset options keep the
+// with a VAD head (Ultra, Redux), a VAD-only slice of one, or a Silero VAD GGUF. Unset options keep the
 // defaults of that model kind.
 static int cmd_vad(int argc, char** argv) {
     std::string model, input, component;
@@ -2121,7 +2122,7 @@ static int cmd_vad(int argc, char** argv) {
                 comp = pick->name;
             }
             const pk::BundleComponent* chosen = info.find(comp);
-            is_silero = chosen && chosen->kind == pk::kBundleKindVad;
+            is_silero = chosen && chosen->kind == pk::kBundleKindVad && !pk::bundle_vad_is_slice(model, comp);
             if (chosen && chosen->kind != pk::kBundleKindVad && chosen->kind != pk::kBundleKindAsr) {
                 std::fprintf(stderr, "parakeet-cli: component '%s' (kind %s) is not a VAD source\n", comp.c_str(), chosen->kind.c_str());
                 return 1;
@@ -2143,7 +2144,10 @@ static int cmd_vad(int argc, char** argv) {
             std::printf("%s\n", pk::silero_vad_to_json(*sv, audio.samples, 16000, req).c_str());
             return 0;
         }
-        std::unique_ptr<pk::Model> m = pk::Model::load(model, comp);
+        std::unique_ptr<pk::Model> m =
+            (comp.empty() ? pk::gguf_is_vad_only(model) : pk::bundle_vad_is_slice(model, comp))
+                ? pk::Model::load_vad_only(model, comp)
+                : pk::Model::load(model, comp);
         if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
         std::printf("%s\n", pk::vad_to_json(*m, audio.samples, req).c_str());
     } catch (const std::exception& e) {

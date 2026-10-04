@@ -17,7 +17,7 @@ constexpr uint32_t kBundleVersion = 1;   // highest format version this reader k
 // Component kinds understood in phase 1. A bundle may hold other kinds (for
 // example from a newer writer); a reader skips them.
 constexpr const char* kBundleKindAsr = "asr";
-constexpr const char* kBundleKindVad = "vad";   // Silero VAD
+constexpr const char* kBundleKindVad = "vad";   // Silero VAD, or a VAD-only slice of an ASR model (scripts/slice_vad_gguf.py)
 
 struct BundleComponent {
     std::string name;
@@ -58,6 +58,11 @@ bool select_default_component(const BundleInfo& info, std::string& name, std::st
 // JSON array: [{"name","kind","license","license_url","source","attribution",
 // "changes","source_sha256","content_sha256","tensors","bytes"}]
 std::string bundle_components_json(const BundleInfo& info);
+
+// True when the bundle component `component` (kind "vad") is a VAD-only slice
+// (its parakeet.arch is "vad") and not a Silero model. Reads the header only.
+// False for a missing component or a Silero one.
+bool bundle_vad_is_slice(const std::string& path, const std::string& component);
 
 // "<name> (<kind>), ..." for messages.
 std::string bundle_component_names(const BundleInfo& info);

@@ -95,7 +95,21 @@ damaged file without the source files.
 | Kind | Content | Loaded by |
 |---|---|---|
 | `asr` | A parakeet ASR GGUF (`general.architecture` `parakeet`, any family that `Model::load` accepts). If it has a VAD head (Ultra, Redux), the head is part of the component | `ModelLoader::load_component`, `Model::load(path, name)` |
-| `vad` | A Silero VAD GGUF (`general.architecture` `silero_vad`) | `SileroVad::load(path, &err, name)` |
+| `vad` | A Silero VAD GGUF (`general.architecture` `silero_vad`), or a VAD-only slice of an Ultra or Redux model (`general.architecture` `parakeet`, `parakeet.arch` `vad`, made by `scripts/slice_vad_gguf.py`) | Silero: `SileroVad::load(path, &err, name)`; slice: `Model::load_vad_only(path, name)` |
+
+A `vad` component that holds a slice is told apart from a Silero one by its
+`parakeet.arch` key. `parakeet_capi_load_component` gives a VAD-only context for a
+slice, the same as `parakeet_capi_load` on the standalone slice file: only the
+`parakeet_capi_vad_*` calls work with it. `bundle_gguf.py` accepts a slice only
+as kind `vad` and refuses it as kind `asr`. An `asr` component that carries its
+own VAD head needs no slice: the head is part of the component. Two cases are
+worth knowing:
+
+* `parakeet-cli vad --model bundle.gguf` without `--component` uses the first
+  `vad` component, slice or Silero.
+* `transcribe --vad` on a bundle looks for a Silero component, else uses the head
+  of the ASR component. It does not use a slice component (the ASR component
+  already has the head), and `--vad-component` that names a slice is an error.
 
 The names `diarization`, `sound` and `voice` are reserved for later phases. A
 reader skips components of a kind it does not know: they are listed, but it does

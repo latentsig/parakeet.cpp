@@ -115,6 +115,7 @@ scripts/             Python tooling
                        convert_parakeet_to_gguf.py, .nemo/.hf -> GGUF (--dtype f32|f16|q8_0)
                        bundle_gguf.py              , merge GGUFs into one bundle; --list/--verify/--notice (docs/bundle.md)
                        convert_hf_parakeet_to_gguf.py, HF safetensors (moondream/parakeet-ultra, -redux) to GGUF (--template, --ternary keep|dequant, --vad keep|drop)
+                       slice_vad_gguf.py          , cut a VAD-only GGUF (parakeet.arch "vad") out of an Ultra or Redux GGUF
                        gen_nemo_baseline.py        , NeMo intermediates -> baseline.gguf
                        gen_stream_baseline.py      , NeMo cache-aware streaming encode+decode -> stream baseline.gguf
                        gen_diar_baseline.py        , NeMo offline + streaming diarization -> diar baseline.gguf
@@ -155,6 +156,7 @@ tests/               ctest targets
                        test_vad_head.cpp       , VAD head probabilities (PARAKEET_TEST_GGUF_ULTRA)
                        test_vad_segmenter.cpp  , segmenter cut rules, 32 ms grid, Silero defaults, event tracker (model-independent)
                        test_vad_options.cpp    , VAD option parser, NULL and bad-file C-API paths (model-independent)
+                       test_vad_only.cpp       , VAD-only slice: C-API VAD equals the parent, other calls refuse it (PARAKEET_TEST_VAD_ONLY_GGUF, PARAKEET_TEST_GGUF_ULTRA)
                        test_capi_vad_silero.cpp, Silero via the C-API: JSON, options, threads, stream (PARAKEET_TEST_SILERO_GGUF)
                        test_transcribe_vad_silero.cpp, transcribe with Silero segments on a model without a head (PARAKEET_TEST_SILERO_GGUF, PARAKEET_TEST_GGUF)
                        test_transcribe_vad.cpp , --vad path vs plain pass on long audio (PARAKEET_TEST_GGUF_ULTRA, PARAKEET_TEST_GGUF)

@@ -74,6 +74,16 @@ bool gguf_is_bundle(const std::string& path) {
     return get_str(f.g, "general.architecture", arch) && arch == kBundleArch;
 }
 
+bool bundle_vad_is_slice(const std::string& path, const std::string& component) {
+    gguf_init_params ip{/*no_alloc=*/true, /*ctx=*/nullptr};
+    Gguf f;
+    f.g = gguf_init_from_file(path.c_str(), ip);
+    if (!f.g) return false;
+    std::string kind, arch;
+    return get_str(f.g, "parakeet.bundle." + component + ".kind", kind) && kind == kBundleKindVad &&
+           get_str(f.g, component + ".parakeet.arch", arch) && arch == "vad";
+}
+
 bool read_bundle_info(const std::string& path, BundleInfo& out, std::string* err) {
     out = BundleInfo();
     gguf_init_params ip{/*no_alloc=*/true, /*ctx=*/nullptr};
