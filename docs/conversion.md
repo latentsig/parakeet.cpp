@@ -332,3 +332,38 @@ only makes the file smaller; it does not change the compute path.
 
 The LSTM gate order is the PyTorch one: input, forget, cell, output. The
 encoder stride pattern reduces the 4 STFT frames of one chunk to one vector.
+
+## Setting up Python and converting a model
+
+You need this once, for model conversion and validation. It's not needed for inference:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+.venv/bin/pip install -r scripts/requirements.txt   # nemo_toolkit[asr] + gguf
+```
+
+NeMo 2.7.3 is the validated version. The anchor checkpoint `nvidia/parakeet-tdt_ctc-110m` (about 440 MB) is downloaded automatically by NeMo on first use.
+
+---
+
+## Converting a model
+
+Convert a HuggingFace or local `.nemo` checkpoint to GGUF:
+
+```sh
+# Default (F32), lossless and largest
+.venv/bin/python scripts/convert_parakeet_to_gguf.py \
+    --model nvidia/parakeet-tdt_ctc-110m \
+    --output m.gguf
+
+# F16, about 0.58x the size, WER 0 vs NeMo
+.venv/bin/python scripts/convert_parakeet_to_gguf.py \
+    --model nvidia/parakeet-tdt_ctc-110m --dtype f16 --output m.gguf
+
+# Q8_0, about 0.39x the size, WER 0 vs NeMo
+.venv/bin/python scripts/convert_parakeet_to_gguf.py \
+    --model nvidia/parakeet-tdt_ctc-110m --dtype q8_0 --output m.gguf
+```
+
+Supported `--dtype`: `f32` (default), `f16`, `q8_0`.
