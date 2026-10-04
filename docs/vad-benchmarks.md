@@ -28,8 +28,11 @@ Accuracy is the frame level F1 (percent) against a coarse reference, see
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Silero (matched settings) | 94.1 | 91.7 | 91.8 | about 660x on 1 thread, `parakeet-cli vad`, includes process start and model load | 60 MB (`parakeet-cli vad`, F32 and F16) | 2.2 MB (F32), 1.3 MB (F16) |
 | Silero (its own defaults) | 94.4 | 91.9 | 92.1 | not timed separately | same as above | same as above |
-| Ultra Q8_0 head | 95.0 | 93.4 | 93.8 | 216x, 8 threads | pending, see below | 941.5 MB (the whole ASR model) |
-| Redux packed head | 95.4 | 94.3 | 94.2 | 221x, 8 threads | pending, see below | 213.3 MB (the whole ASR model) |
+| Ultra Q8_0 head, full ASR GGUF | 95.0 | 93.4 | 93.8 | 216x, 8 threads (older run); 91.6x on 1 thread and 266.6x on 8 threads in the slice run, busy machine | 905 MiB loaded, 1134 MiB after a 33 s clip | 941.5 MB |
+| Ultra Q8_0 head, slice file (PR 87, not released) | same as the full file (see below) | same | same | 91.8x on 1 thread, 257.8x on 8 threads, busy machine | 12 MiB loaded, 241 MiB after a 33 s clip | 6.0 MB |
+| Redux packed head, full ASR GGUF | 95.4 | 94.3 | 94.2 | 221x, 8 threads (older run); 94.9x on 1 thread and 267.1x on 8 threads in the slice run, busy machine | 372 MiB loaded, 603 MiB after a 33 s clip | 213.3 MB |
+| Redux packed head, slice file (PR 87, not released) | same as the full file | same | same | 95.1x on 1 thread, 266.7x on 8 threads, busy machine | 16 MiB loaded, 246 MiB after a 33 s clip | 9.9 MB |
+| Silero F16, same build as the slice run | see Silero rows | | | 736x on 1 thread, 485x on 8 threads, busy machine | 9 MiB loaded, 13 MiB after a 33 s clip | 1.3 MB |
 | whisper.cpp Silero | 94.1 | not run | not run | in process: 686x on 1 thread | 36 MB (test harness) | 0.9 MB |
 | ONNX Silero (onnxruntime) | 94.0 | not run | not run | in process: 449x on 1 thread, Python loop | 104 MB | 2.3 MB |
 
@@ -44,17 +47,20 @@ How to read it:
 - "Matched settings" means Silero ran with the same segmentation settings as the
   heads (threshold 0.5, minimum speech 100 ms, minimum silence 200 ms, no padding).
   See [Metrics](#metrics).
-- The head speed is the speed of a whole encoder pass on 8 threads, because the head
-  reads the encoder output. The four head builds that were timed (Ultra Q8_0 216x,
-  Ultra F16 218x, Redux packed 221x, Redux dequantized F16 222x) are within 3% of
-  each other. This is a different job from the one Silero does, so the speed columns
-  of Silero and the heads are not a like for like comparison of the models. They show
-  the cost of using each one as a stand alone gate.
-- Memory of the head as a stand alone VAD is **pending**: it needs a measurement of
-  the head without the rest of the ASR model, see
-  [Slice only head](#slice-only-head-pending).
-- File size of the heads is the size of the whole ASR GGUF the head lives in. A
-  stand alone head file is part of the pending measurement.
+- Head speeds on 8 threads come from two separate runs on a busy machine (see the
+  caveats of each section): the older run (216x to 222x for four head builds, a Python
+  wrapper, load average about 6) and the slice run (255x to 268x, one build of the
+  C++ harness, load average up to 17 at the start of some rounds). They differ by about
+  20%, which is the size of the noise on this machine for 8 threads, not a
+  difference between methods. The 1 thread rounds of the slice run were within about 5% of each other,
+  except for two outlier rounds (69.8x and 84.7x).
+- The speed columns of Silero and the heads are not a like for like comparison of the
+  models. They show the cost of using each one as a stand alone gate.
+- The heads need the ASR GGUF unless you use a slice file. A slice is a GGUF with only
+  the head path, made by the code of PR 87 (open, not in a release). Its VAD output is
+  byte for byte the same as the parent file on three clips, so the accuracy columns
+  apply to the slice unchanged. See [Slice only head](#slice-only-head).
+- All memory and load numbers for the heads are in the slice section.
 
 ### Machine and build
 
@@ -433,21 +439,90 @@ One run of `tests/silero_vad_probe` on one CPU thread measured about 40 us per c
 for F32 and F16 at both rates. That is one run on one machine. It is not a benchmark
 and is not used above.
 
-## Slice only head (pending)
+## Slice only head
 
-Running the head needs the whole ASR GGUF today. A measurement of a head file that
-holds only the head and the encoder part it needs ("slice") is being made by another
-piece of work. It will give the load time, the peak memory and the speed of the head
-as a stand alone detector.
+A "slice" is a GGUF that holds only the tensors the VAD path of an Ultra or Redux
+file reads. The code that makes it and loads it is PR 87
+(`feat/vad-only-gguf`, open, not in a release). This section compares each full ASR
+GGUF with its slice, and with Silero F16, built from the same source tree.
 
-| Quantity | Value |
-| --- | --- |
-| Peak memory, head alone | pending |
-| Load time, head alone | pending |
-| Speed, head alone | pending |
-| File size, head alone | pending |
+### Setup
 
-No number is given here until that measurement is published with its method.
+- One build of the PR 87 code, one machine (see the table above), the first 300 s of
+  the talk used elsewhere on this page for speed (`ted300`), and a 33 s clean synthetic
+  clip for memory. The harness is `scripts/vad_bench/vad_slice_bench.cpp` (a small
+  program built inside the PR 87 tree, since it uses internal headers) and the driver is
+  `scripts/vad_bench/slice_bench.py`.
+- **Speed:** one timed VAD run after a warm-up run, 5 rounds with the 9 configurations
+  interleaved, the best of the 5 reported (the median is in the result file), on 1
+  thread and on 8 threads. The 8 thread runs were pinned to the 8 idlest cores at the time.
+  Each round waited for the gate: mean number of other runnable tasks under 4 or the
+  1-minute load average under 5.
+- **Load time:** the model load alone, median of 10. Warm means the file is in the
+  page cache (the first load, which warms it, is dropped). Cold means the page cache
+  for the file was evicted before each load.
+- **Peak memory:** peak resident set size from `/usr/bin/time -v`, once per
+  configuration: loading only, and `parakeet-cli vad` on the 33 s clip with 8 threads.
+- **Same output:** `parakeet-cli vad --probabilities` was run with each slice and
+  with its parent file on three clips (the 33 s clip, a noisy clip, the 600 s talk).
+  All four slices gave byte-identical JSON on all three clips (12 of 12 pairs).
+
+### Results
+
+| Model | Full file | Slice file | Load, warm / cold, full (ms) | Load, warm / cold, slice (ms) | Peak RSS loaded, full / slice (MiB) | Peak RSS after the 33 s clip, full / slice (MiB) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Ultra Q8_0 | 941.5 MB | 6.0 MB | 276 / 424 | 0.2 / 2.1 | 905 / 12 | 1134 / 241 |
+| Ultra F16 | 1441.9 MB | 9.9 MB | 429 / 666 | 0.4 / 3.5 | 1382 / 15 | 1613 / 246 |
+| Redux packed | 213.3 MB | 9.9 MB | 92 / 128 | 0.5 / 3.7 | 372 / 16 | 603 / 246 |
+| Redux dequantized F16 | 1441.9 MB | 9.9 MB | 434 / 669 | 0.2 / 3.8 | 1382 / 16 | 1613 / 246 |
+| Silero F16 | 1.3 MB | not applicable | 0.4 / 1.5 | not applicable | 9 / not applicable | 13 / not applicable |
+
+Speed on the 300 s clip, x real time, best of 5 (1 thread / 8 threads):
+
+| Model | Full file | Slice file |
+| --- | ---: | ---: |
+| Ultra Q8_0 | 91.6 / 266.6 | 91.8 / 257.8 |
+| Ultra F16 | 94.5 / 255.5 | 94.6 / 265.3 |
+| Redux packed | 94.9 / 267.1 | 95.1 / 266.7 |
+| Redux dequantized F16 | 95.1 / 265.3 | 94.8 / 268.1 |
+| Silero F16 | 736.3 / 485.4 | not applicable |
+
+Medians of the 5 rounds (1 thread / 8 threads) are lower: Ultra Q8_0 full 91.4 / 250.5,
+slice 91.5 / 227.8; Redux packed full 93.1 / 252.8, slice 92.4 / 236.3; Silero F16
+702.1 / 473.9. The slice files are 6,007,328 bytes (Ultra Q8_0) and 9,939,488 bytes (the other
+three). The SHA-256 of the four slice files is in
+[`slice_sha256.txt`](../scripts/vad_bench/results/slice_sha256.txt).
+
+What this supports:
+
+- A slice is 6 to 10 MB, loads in under 4 ms, and needs about 12 to 16 MiB loaded and
+  about 240 to 250 MiB for a 33 s clip. The full file needs 372 MiB to 1.4 GiB just to
+  load.
+- Slice and full file run at the same speed. The differences between them on 1 thread (best of 5) are
+  0.1% to 0.3%, far inside the spread of the 5 rounds.
+- Silero F16 is smaller (1.3 MB, 13 MiB after the clip), loads in about 0.4 ms, and was
+  about 7.7 to 8 times faster than the heads on 1 thread (736x against 92x to 95x).
+
+### Caveats
+
+- The 8 thread numbers are noisy. The machine was busy: the gate lines of the speed
+  rounds in `slice_gate.log` show a 1-minute load average from 4.2 to 17.3 at the start
+  of the rounds, and some rounds ran at 9 to 17 (the gate also accepts a low runnable
+  count when the load average is high). The best of 5 on 8 threads is within the noise
+  of the other values (the 8 thread rounds of one configuration ranged by up to 30%, for
+  example Ultra Q8_0 full from 185.0x to 266.6x). Do not read a ranking from the 8 thread
+  column. The 1 thread rounds of one configuration are within about 5% of each other,
+  except for two outlier rounds (Redux dequantized F16 full 69.8x, slice 84.7x).
+- Load times are medians of 10 and tiny for slices, so the warm slice values (0.2 to
+  0.5 ms) are close to the timer's resolution and the maximum was up to 2.2 ms.
+- Peak memory was measured for a 33 s clip only. The peak memory for a 600 s clip was
+  not measured, and the memory after the clip grows with the clip length.
+- The slice code is in PR 87, which is open and not in a release. GPU backends and the
+  streaming VAD were not tested with slices.
+- These numbers come from one run of the harness. They were not repeated.
+- The same output check shows that the probabilities are identical, so the accuracy
+  tables of this page apply to the slices. It was run on three clips, not on the whole
+  corpus.
 
 ## Timing re-run
 
@@ -458,9 +533,13 @@ The machine was shared with other jobs. The load average was checked 19 times, f
 22:43 to 01:43, and was never below 5. The lowest value was 6.67 and the highest was
 82.37. The poll log is in
 [`timing_rerun_load_log.txt`](../scripts/vad_bench/results/timing_rerun_load_log.txt).
-No timing was run, and no timing number on this page is new. The speed numbers on this
-page are the old ones, taken under the loads that each section states, and they stay
-marked as such. The setup for the re-run (a build of `6165e3d`, the 300 s clip, the
+No timing was run for this page. The speed numbers of the slice section were taken
+separately, on a busy machine, as described there. They are not quiet-machine numbers
+either. The speed numbers on this
+page are the old ones, taken under the loads that each section states. Numbers taken
+on a busy machine: all speeds of the heads against Silero section, all Silero speed
+and memory numbers of the parity section, all slice section numbers, and the batched
+decode times (load average 2.5 to 18.0 at the start). The setup for the re-run (a build of `6165e3d`, the 300 s clip, the
 models and the driver) was ready, and `speed_silero.py` and `speed_heads.py` run it in
 one command each when the machine is quiet.
 
@@ -478,9 +557,15 @@ This is limited to what the numbers above support.
   model and its scores are close to Silero in the same tests: within about 1.5 F1 points
   on the synthetic clips at 5 dB and above (Ultra was 0.4 lower in white noise at 5 dB),
   2 to 2.5 points higher on the TED talks, and 1.7 to 2.6 points higher at 0 dB pink
-  noise. It has the higher recall and the lower precision. On these clips its start times are closer to the reference. It
-  is not a cheap stand alone detector today: it needs the encoder, its speed is about
-  220x on 8 threads, and its memory as a stand alone VAD is not yet measured.
+  noise. It has the higher recall and the lower precision. On these clips its start
+  times are closer to the reference.
+- **The Parakeet head as a stand alone detector.** With a slice file (PR 87, not in a
+  release) the head is a 6 to 10 MB file that loads in under 4 ms and needs about 240
+  to 250 MiB for a 33 s clip, with the same output as the full file. Without it, the head
+  needs the full ASR GGUF (213 MB to 1.4 GB). Silero is still smaller (1.3 MB), uses less
+  memory (13 MiB after the clip) and was about 8 times faster per core (736x against
+  92x to 95x on 1 thread, on a busy machine). Choose the head for its accuracy on the
+  tests above, Silero for size and speed.
 - **Silero from whisper.cpp or from parakeet.cpp.** On the 120 clips and the 600 s talk
   the two give the same segments (mask F1 99.92) and the same speed within the noise of
   a shared machine. Choose by the rest of your stack, not by quality or speed. The
@@ -497,11 +582,12 @@ lists the inputs, the commands and the Python packages. No audio and no model fi
 are committed. In short:
 
 1. Fetch the public audio: `fetch_data.py`, `fetch_ted_talks.py`.
-2. Heads against Silero: `compare_synthetic.py` then `analyze_synthetic.py`;
+2. Slice section: `vad_slice_bench.cpp` (build it inside the PR 87 tree) and `slice_bench.py`.
+3. Heads against Silero: `compare_synthetic.py` then `analyze_synthetic.py`;
    `ted_reference.py` then `compare_ted.py`; `speed_heads.py`.
-3. Silero parity: `make_clips.py`, build `wvad.cpp` against whisper.cpp,
+4. Silero parity: `make_clips.py`, build `wvad.cpp` against whisper.cpp,
    `silero_collect.py`, `silero_analyze.py`; speed with `speed_silero.py`.
-4. Long talks: `longform_b1.sh`.
+5. Long talks: `longform_b1.sh`.
 
 Small result files of the runs on this page (tables, per run timings and load logs)
 are in `scripts/vad_bench/results/`. The raw per clip predictions are not committed;

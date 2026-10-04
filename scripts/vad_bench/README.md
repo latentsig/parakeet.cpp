@@ -67,3 +67,9 @@ Timing scripts serialize on a lock file (`/tmp/pk-bench.lock`, `flock`), pin cor
 `taskset`, and record the load average at the start of every run. Run them only on a
 quiet machine, and keep the load log with the result. Do not quote a timing from a
 loaded machine as a benchmark.
+
+## Slice only head (PR 87)
+
+`vad_slice_bench.cpp` is built inside the PR 87 tree (it uses internal headers) and driven
+by `slice_bench.py speed|load|rss`; see its docstring for the environment variables.
+Results are in `results/slice_*`.
