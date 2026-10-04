@@ -243,10 +243,12 @@ protect a memory-mapped model from later writes either.
 An application must gate profile export and enrollment with its recognition
 permissions. Only after explicit user confirmation should it validate version,
 unavailable status, finite/nonzero vector, trusted identity and dimension, then
-call the existing raw-vector registration path. The native registry validates
-vectors/dimensions but does **not** store model identity: callers must enforce
-identity and avoid mixing same-dimension encoders. Profiles are not signed and
-are not proof of identity. Treat exported voice vectors as sensitive data.
+call the registration path. Pass the trusted encoder family and identity with
+the vector (`parakeet_capi_speaker_registry_add_embedding_fp`, see "Encoder
+fingerprint" below), so the registry records which encoder made it and every
+named call checks it. The plain `add_embedding` still works and records
+nothing. Profiles are not signed and are not proof of identity. Treat exported
+voice vectors as sensitive data.
 
 The native registry is **name-keyed and aggregating**:
 `parakeet_capi_speaker_registry_add_embedding` calls `SpeakerRegistry::enroll`,
@@ -263,3 +265,106 @@ application. This is a downstream application responsibility, not functionality
 implemented by this backend's profile export. Relabel only after registration
 succeeds. Profile export adds no persistence or automatic enrollment; it does not
 change an application's global, in-memory registry lifecycle.
+
+### Encoder fingerprint
+
+Equal embedding sizes do not mean the same embedding space: ECAPA and CAM++
+both give 192 values, and a registry enrolled with one names the wrong people
+when the other is used. A registry therefore records which encoder made its
+voices, and the encoder in use is checked against it before any name is
+assigned. Two strings make the fingerprint:
+
+- **Family**: `voicedetect:<voicedetect.arch>:<general.name>:<voicedetect.embedding_dim>`,
+  read from the encoder GGUF metadata, for example
+  `voicedetect:ecapa_tdnn:speechbrain/spkrec-ecapa-voxceleb:192`. It names the
+  embedding space. `parakeet_capi_speaker_encoder_family` returns it.
+- **Weights**: `sha256:<64 hex>` of the exact bytes of the encoder GGUF file,
+  the same string as `parakeet_capi_speaker_identity`. A GGUF has no recorded
+  source hash, so the file bytes are the definition. Another quantization of the
+  same encoder has the same family and another weights hash. (A `voice`
+  component of a bundle reports `sha256:` plus the `source_sha256` of its header,
+  the hash of the single-model GGUF it came from, so the two agree when the
+  component is an unchanged copy of that file.)
+
+What the check does, the same everywhere (`parakeet-cli scene`,
+`parakeet_capi_speaker_identify_pcm_json`, `parakeet_capi_diarize_named_pcm_json`,
+`parakeet_capi_diarize_profiles_pcm_json`,
+`parakeet_capi_transcribe_and_diarize_named_json`,
+`parakeet_capi_scene_stream_begin_speaker`), with the same message text:
+
+| Registry vs encoder | Result |
+|---|---|
+| Other embedding size | Error: `registry holds N-value embeddings, this model produces M`. |
+| Other family | Error naming both families. No name is assigned. |
+| Same family, other weights | Warning only: logged to stderr, kept in `parakeet_capi_speaker_last_warning`. Names are assigned. |
+| No fingerprint (a version 1 file, or embeddings added without one) | Accepted with a warning: the encoder is unverified. |
+| No fingerprint and strict mode (`parakeet_capi_speaker_registry_set_strict`, `parakeet-cli scene --strict-registry`) | Error. |
+| Empty registry | Nothing to check. |
+
+An error is reported like any other failure of that call: NULL (or nonzero)
+with the message on the speaker context, and a non-zero exit in the CLI.
+
+Enrolment records the fingerprint of the encoder that computed the voice:
+`parakeet-cli enroll`, `parakeet_capi_speaker_enroll` and
+`SpeakerIdentifier` enrolment do it themselves. An empty registry takes the
+fingerprint of its first voice. Enrolling with another family is refused. A
+registry that has voices but no fingerprint refuses a fingerprinted voice, and a
+fingerprinted registry refuses a voice with none: it is never stamped
+silently, because nothing can verify what made the old voices. A caller that
+builds registries from stored embeddings passes the family and identity it
+stored with them to `parakeet_capi_speaker_registry_add_embedding_fp`.
+
+To stamp a registry that has no fingerprint, say which encoder made it:
+
+```
+parakeet-cli registry reg.bin                                   # show the file
+parakeet-cli registry reg.bin --restamp --encoder speaker.gguf  # stamp a version 1 file
+```
+
+`registry` prints the format version, the embedding size, the family, the
+weights hash and the speaker names. `--restamp` only works on a registry with no
+fingerprint, checks the embedding size against the encoder, and trusts you for
+the rest: it cannot tell ECAPA from CAM++ when both give 192 values.
+
+#### Registry file format
+
+Little-endian. `PKSR` magic, then:
+
+```
+version 1 (no fingerprint; also what a registry without one is saved as)
+  offset  size  field
+  0       4     "PKSR"
+  4       4     u32 version = 1
+  8       4     i32 dim
+  12      4     u32 n, the number of speakers
+  16      ...   n speaker records
+
+version 2 (with a fingerprint)
+  0       4     "PKSR"
+  4       4     u32 version = 2
+  8       4     i32 dim
+  12      4     u32 n
+  16      4     u32 family length (at most 4096)
+  20      ...   family bytes (UTF-8, not terminated)
+  ...     4     u32 weights length (at most 4096)
+  ...     ...   weights bytes
+  ...     ...   n speaker records
+
+speaker record (both versions)
+  4     u32 name length (1 to 4096)
+  ...   name bytes
+  4     i32 count of enrolled clips (at least 1)
+  4*dim f32 sum of the L2-normalized embeddings
+```
+
+A version 2 file has at least one non-empty fingerprint string. Readers refuse
+an unknown version, a truncated file, trailing bytes and implausible lengths. A
+reader from before this change only knows version 1, so it refuses a version 2
+file with "unsupported version" instead of reading it wrong. A version 1 file
+loads unchanged.
+
+The C-API additions are `parakeet_capi_speaker_registry_add_embedding_fp`,
+`parakeet_capi_speaker_registry_encoder_family`, `..._encoder_weights`,
+`parakeet_capi_speaker_registry_set_strict`, `parakeet_capi_speaker_encoder_family`
+and `parakeet_capi_speaker_last_warning`. They are additive; the ABI version
+stays 10 and no signature changed.

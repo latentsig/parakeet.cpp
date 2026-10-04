@@ -192,7 +192,7 @@ int main() {
             CHECK(parakeet_capi_speaker_enroll(wrong, alt, "x", a0.data(), (int)a0.size(), 16000) == 0);
             // identify with the main model against the alt-sized registry
             CHECK(parakeet_capi_speaker_identify_pcm_json(wrong, spk, a0.data(), (int)a0.size(), 16000) == nullptr);
-            CHECK(std::strstr(parakeet_capi_last_error(spk), "expects") != nullptr);
+            CHECK(std::strstr(parakeet_capi_last_error(spk), "-value embeddings") != nullptr);
             // and a scene stream refuses it up front
             parakeet_scene_opts o;
             parakeet_capi_scene_opts_default(&o);

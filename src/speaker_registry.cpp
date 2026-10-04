@@ -10,7 +10,9 @@ namespace pk {
 namespace {
 
 constexpr char kMagic[4] = {'P', 'K', 'S', 'R'};
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 1;    // no fingerprint
+constexpr uint32_t kVersion2 = 2;   // with a fingerprint
+constexpr uint32_t kMaxFpLen = 4096;
 constexpr uint32_t kMaxSpeakers = 1u << 20;
 constexpr uint32_t kMaxNameLen = 4096;
 constexpr int kMaxDim = 1 << 16;
@@ -41,7 +43,51 @@ struct Reader {
     }
 };
 
+std::string shown(const std::string& s) { return s.empty() ? "unknown" : s; }
+
 }  // namespace
+
+FingerprintVerdict check_fingerprint(const EncoderFingerprint& reg, const EncoderFingerprint& enc,
+                                     bool strict) {
+    FingerprintVerdict v;
+    if (enc.family.empty()) return v;
+    if (reg.empty()) {
+        v.status = strict ? FingerprintStatus::Required : FingerprintStatus::Unfingerprinted;
+        v.message = strict
+            ? "speaker registry has no encoder fingerprint and strict mode is on; enroll again "
+              "with this encoder (" + enc.family + ") or re-stamp the registry"
+            : "speaker registry has no encoder fingerprint; its encoder is unverified, so names "
+              "may come from the wrong embedding space (current encoder: " + enc.family + ")";
+        return v;
+    }
+    if (!reg.family.empty() && reg.family != enc.family) {
+        v.status = FingerprintStatus::FamilyDiffer;
+        v.message = "speaker registry was made with encoder family " + shown(reg.family) +
+                    ", but the encoder in use is " + enc.family +
+                    "; the embeddings are not comparable, enroll again with this encoder";
+        return v;
+    }
+    if (!reg.weights.empty() && !enc.weights.empty() && reg.weights != enc.weights) {
+        v.status = FingerprintStatus::WeightsDiffer;
+        v.message = "speaker registry was made with other weights of encoder family " + enc.family +
+                    " (" + reg.weights + ", now " + enc.weights +
+                    "); a different quantization is expected to work, scores may shift slightly";
+    }
+    return v;
+}
+
+FingerprintVerdict check_registry_for_encoder(const SpeakerRegistry& reg, int enc_dim,
+                                              const EncoderFingerprint& enc, bool strict) {
+    if (reg.dim() != 0 && reg.dim() != enc_dim) {
+        FingerprintVerdict v;
+        v.status = FingerprintStatus::DimDiffer;
+        v.message = "registry holds " + std::to_string(reg.dim()) +
+                    "-value embeddings, this model produces " + std::to_string(enc_dim);
+        return v;
+    }
+    if (reg.size() == 0 && reg.fingerprint().empty()) return {};   // nothing enrolled, nothing to mix up
+    return check_fingerprint(reg.fingerprint(), enc, strict);
+}
 
 std::vector<std::string> SpeakerRegistry::names() const {
     std::vector<std::string> out;
@@ -51,6 +97,14 @@ std::vector<std::string> SpeakerRegistry::names() const {
 }
 
 void SpeakerRegistry::enroll(const std::string& name, const std::vector<float>& emb) {
+    if (!fp_.empty())
+        throw std::invalid_argument(
+            "speaker registry is fingerprinted (" + shown(fp_.family) +
+            "); the embedding came with no encoder fingerprint, so it is not added");
+    enroll_raw(name, emb);
+}
+
+void SpeakerRegistry::enroll_raw(const std::string& name, const std::vector<float>& emb) {
     if (name.empty()) throw std::invalid_argument("speaker name is empty");
     if (emb.empty()) throw std::invalid_argument("speaker embedding is empty");
     if (dim_ != 0 && (int)emb.size() != dim_)
@@ -66,6 +120,26 @@ void SpeakerRegistry::enroll(const std::string& name, const std::vector<float>& 
         return;
     }
     entries_.push_back({name, n, 1});
+}
+
+FingerprintVerdict SpeakerRegistry::enroll(const std::string& name, const std::vector<float>& emb,
+                                           const EncoderFingerprint& fp) {
+    FingerprintVerdict v;
+    if (fp.empty()) {
+        enroll(name, emb);
+        return v;
+    }
+    if (!fp_.empty()) {
+        v = check_fingerprint(fp_, fp, false);
+        if (v.is_error()) throw std::invalid_argument(v.message);
+    } else if (!entries_.empty()) {
+        throw std::invalid_argument(
+            "speaker registry has speakers but no encoder fingerprint; they are not stamped "
+            "silently. Re-stamp the registry with the encoder that made them, or enroll into a new registry");
+    }
+    enroll_raw(name, emb);   // throws before anything changes
+    if (fp_.empty()) fp_ = fp;
+    return v;
 }
 
 bool SpeakerRegistry::remove(const std::string& name) {
@@ -107,12 +181,19 @@ SpeakerMatch SpeakerRegistry::identify(const std::vector<float>& emb, float acce
 std::string SpeakerRegistry::serialize() const {
     std::string s;
     put(s, kMagic, 4);
-    const uint32_t ver = kVersion;
+    const uint32_t ver = fp_.empty() ? kVersion : kVersion2;
     put(s, &ver, 4);
     const int32_t dim = dim_;
     put(s, &dim, 4);
     const uint32_t n = (uint32_t)entries_.size();
     put(s, &n, 4);
+    if (ver == kVersion2) {
+        for (const std::string* f : {&fp_.family, &fp_.weights}) {
+            const uint32_t len = (uint32_t)f->size();
+            put(s, &len, 4);
+            put(s, f->data(), f->size());
+        }
+    }
     for (const Entry& e : entries_) {
         const uint32_t len = (uint32_t)e.name.size();
         put(s, &len, 4);
@@ -132,7 +213,7 @@ SpeakerRegistry SpeakerRegistry::deserialize(const std::string& blob) {
         throw std::runtime_error("speaker registry: bad magic");
     uint32_t ver = 0;
     r.get(&ver, 4);
-    if (ver != kVersion) throw std::runtime_error("speaker registry: unsupported version");
+    if (ver != kVersion && ver != kVersion2) throw std::runtime_error("speaker registry: unsupported version");
     int32_t dim = 0;
     r.get(&dim, 4);
     uint32_t n = 0;
@@ -140,6 +221,16 @@ SpeakerRegistry SpeakerRegistry::deserialize(const std::string& blob) {
     if (dim < 0 || dim > kMaxDim || n > kMaxSpeakers || (dim < 1 && n > 0))
         throw std::runtime_error("speaker registry: implausible header");
     SpeakerRegistry out(dim);
+    if (ver == kVersion2) {
+        for (std::string* f : {&out.fp_.family, &out.fp_.weights}) {
+            uint32_t len = 0;
+            r.get(&len, 4);
+            if (len > kMaxFpLen) throw std::runtime_error("speaker registry: bad fingerprint");
+            f->resize(len);
+            if (len) r.get(&(*f)[0], len);
+        }
+        if (out.fp_.empty()) throw std::runtime_error("speaker registry: bad fingerprint");
+    }
     for (uint32_t i = 0; i < n; ++i) {
         uint32_t len = 0;
         r.get(&len, 4);
