@@ -95,7 +95,7 @@ def write_ced(path):
     w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
 
 
-def write_voice(path, arch="voicedetect", embedding=True, name="Wespeaker/wespeaker-voxceleb-resnet34"):
+def write_voice(path, arch="voicedetect", embedding=True, name="Wespeaker/wespeaker-voxceleb-resnet34-LM"):
     w = GGUFWriter(path, arch)
     w.add_string("general.name", name)
     w.add_string("voicedetect.arch", "wespeaker_resnet34")
@@ -123,10 +123,10 @@ DIAR_META = {"kind": "diar", "license": "OpenMDW-1.1", "license_url": "https://o
              "source": "nvidia/Nemotron-3-Diarization", "attribution": "Nemotron 3 Diarization by NVIDIA",
              "changes": "Converted to GGUF and quantised to Q8_0"}
 CED_META = {"kind": "ced", "license": "Apache-2.0", "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
-            "source": "mispeech/ced-tiny", "attribution": "CED by Xiaomi (mispeech)", "changes": "Converted to GGUF"}
+            "source": "mispeech/ced-tiny", "attribution": "CED-small by Heinrich Dinkel et al., Xiaomi (mispeech)", "changes": "Converted to GGUF"}
 VOICE_META = {"kind": "voice", "license": "CC-BY-4.0", "license_url": "https://creativecommons.org/licenses/by/4.0/",
-              "source": "Wespeaker/wespeaker-voxceleb-resnet34", "attribution": "WeSpeaker ResNet34",
-              "changes": "Converted from ONNX to GGUF"}
+              "source": "Wespeaker/wespeaker-voxceleb-resnet34-LM",
+              "attribution": "WeSpeaker ResNet34-LM by the WeSpeaker project", "changes": "Converted from ONNX to GGUF"}
 ASR_META = {"kind": "asr", "license": "CC-BY-4.0", "license_url": "https://creativecommons.org/licenses/by/4.0/",
             "source": "nvidia/stand-in", "attribution": "Stand-in model by NVIDIA", "changes": "Converted to GGUF"}
 VAD_META = {"kind": "vad", "license": "MIT", "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
@@ -216,7 +216,8 @@ def main():
         # NOTICE: every component's credit and the full text of each distinct licence
         rc, out, err = run("--notice", "bf.gguf")
         check(rc == 0, f"notice failed: {err}")
-        for needle in ("Nemotron 3 Diarization by NVIDIA", "CED by Xiaomi (mispeech)", "WeSpeaker ResNet34",
+        for needle in ("Nemotron 3 Diarization by NVIDIA", "CED-small by Heinrich Dinkel et al., Xiaomi (mispeech)",
+                       "WeSpeaker ResNet34-LM by the WeSpeaker project",
                        "Copyright (c) 2020-present Silero Team", "NVIDIA", "OpenMDW License Agreement, version 1.1",
                        "Apache License", "Attribution 4.0 International", "Permission is hereby granted",
                        "you shall retain in your distribution"):
@@ -251,7 +252,7 @@ def main():
                 "must not be bundled")
         refuse2("diar with a wrong licence", [comp("diar", "diar.gguf", dict(DIAR_META, license="CC-BY-4.0"))], "is licensed OpenMDW-1.1")
         refuse2("ced with a wrong licence", [comp("ced", "ced.gguf", dict(CED_META, license="MIT"))], "is licensed Apache-2.0")
-        refuse2("wespeaker as Apache-2.0 (the stricter reading is required)",
+        refuse2("wespeaker as Apache-2.0 (CC-BY-4.0 is required)",
                 [comp("voice", "voice.gguf", dict(VOICE_META, license="Apache-2.0"))], "is licensed CC-BY-4.0")
 
         # --- a tampered bundle fails verify ---

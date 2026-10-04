@@ -55,8 +55,9 @@ SKIP_KEYS = {"general.alignment"}
 
 # Licence of each known source, as agreed for bundling. A manifest that names one of these
 # sources with another licence is refused, so a wrong or silent change cannot slip in.
-# WeSpeaker: Hugging Face says Apache-2.0 for the plain model and CC-BY-4.0 for the -LM
-# variant, and the voice-detect GGUF card says CC-BY-4.0. The stricter reading is used.
+# WeSpeaker: the converted file is voxceleb_resnet34_LM.onnx (Wespeaker/wespeaker-voxceleb-resnet34-LM,
+# CC-BY-4.0). The WeSpeaker project says its VoxCeleb models follow CC-BY-4.0 (docs/pretrained.md), although
+# the card of the plain model says Apache-2.0.
 KNOWN_SOURCES = (
     ("nemotron-3-diarization", "OpenMDW-1.1"),
     ("mispeech/ced", "Apache-2.0"),
@@ -472,8 +473,9 @@ def notice(path):
         "",
         f"{str_field(r, 'general.name')} is a single file that holds several machine-learning models.",
         "Each model keeps its own licence and attribution, listed below. They are also stored in the",
-        "file header under parakeet.bundle.<component>.*. The models were converted to GGUF and",
-        "merged without further changes to their weights, except where a component says otherwise.",
+        "file header under parakeet.bundle.<component>.*. Each component is copied byte for byte from",
+        "its converted single-model GGUF file. The Changes line of each component states any conversion",
+        "or quantisation of the weights.",
         "The full text of every licence used follows the component list. Ship this file with the bundle.",
         "",
     ]

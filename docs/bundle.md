@@ -310,14 +310,39 @@ is a collection, so it does not have one licence. Rules the tools apply:
 | diar | `nvidia/Nemotron-3-Diarization` | OpenMDW-1.1 | a copy of the agreement and the origin notices |
 | ced | `mispeech/ced-*` | Apache-2.0 | licence text and copyright notices |
 | voice, ECAPA | `speechbrain/spkrec-ecapa-voxceleb` | Apache-2.0 | licence text and notices |
-| voice, ERes2Net | 3D-Speaker | Apache-2.0 | licence text and notices |
-| voice, WeSpeaker ResNet34 | `Wespeaker/wespeaker-voxceleb-resnet34` | CC-BY-4.0 (see below) | credit, licence link, note of changes |
+| voice, ERes2Net | `iic/speech_eres2net_base_200k_sv_zh-cn_16k-common` (3D-Speaker, ModelScope) | Apache-2.0 | licence text and notices |
+| voice, WeSpeaker ResNet34 | `Wespeaker/wespeaker-voxceleb-resnet34-LM` | CC-BY-4.0 (see below) | credit to the WeSpeaker project, licence link, note of changes |
 | vad | `snakers4/silero-vad` | MIT | copyright notice and licence text |
 
-WeSpeaker: Hugging Face lists Apache-2.0 for the plain model and CC-BY-4.0 for the
-`-LM` variant, and the voice-detect GGUF card says CC-BY-4.0. The table in the
-script uses CC-BY-4.0, the stricter reading, until the upstream licence is
-confirmed. Not bundled: the audeering heads (CC-BY-NC-SA-4.0) and the EOU model.
+WeSpeaker: the voice-detect.cpp file is converted from `voxceleb_resnet34_LM.onnx` of
+`Wespeaker/wespeaker-voxceleb-resnet34-LM`, and that card says CC-BY-4.0. The card of the
+plain `Wespeaker/wespeaker-voxceleb-resnet34` says Apache-2.0, but the WeSpeaker project
+states in its `docs/pretrained.md` that its VoxCeleb-trained models follow CC-BY-4.0.
+The bundle uses CC-BY-4.0 and credits the WeSpeaker project.
+
+CED: the `mispeech/ced-*` cards say Apache-2.0, and the bundle follows them. The upstream
+GitHub code repository is GPL-3.0, and the original checkpoint records on Zenodo say
+CC-BY-4.0. The licence of the weights is therefore not consistent upstream. Confirm it with
+the authors before a public release. The CC-BY credit to Heinrich Dinkel and Xiaomi
+(mispeech) is kept in the meantime.
+
+Not bundled: the audeering heads (CC-BY-NC-SA-4.0) and the EOU model.
+
+### Training data
+
+The speaker models ECAPA and WeSpeaker are trained on VoxCeleb. They carry the terms that
+their authors state for the model (WeSpeaker: CC-BY-4.0). Whether a trained model is
+derived from its training data is a legal question that this project does not settle.
+
+### Credit strings
+
+Suggested `source`, `attribution` and `changes` values for the voice encoders:
+
+| Model | Source | Credit | Changes |
+|---|---|---|---|
+| WeSpeaker ResNet34-LM | `https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM` | WeSpeaker ResNet34-LM (large-margin fine-tuned, trained on VoxCeleb2 dev) by the WeSpeaker project (https://github.com/wenet-e2e/wespeaker), licensed under CC-BY-4.0 | Converted from the ONNX export to GGUF (voice-detect.cpp, F32); no other change |
+| ECAPA-TDNN | `https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb` | ECAPA-TDNN speaker encoder by the SpeechBrain authors (speechbrain/spkrec-ecapa-voxceleb), trained on VoxCeleb 1 and 2, licensed under Apache-2.0 | Converted from the SpeechBrain embedding model checkpoint to GGUF (voice-detect.cpp); no other change |
+| ERes2Net | `https://www.modelscope.cn/models/iic/speech_eres2net_base_200k_sv_zh-cn_16k-common` | ERes2Net-base (200k speakers, zh-cn) by the 3D-Speaker authors (https://github.com/modelscope/3D-Speaker), licensed under Apache-2.0 | Converted from the sherpa-onnx ONNX export to GGUF (voice-detect.cpp, F32); no other change |
 
 ## C-API and CLI
 
