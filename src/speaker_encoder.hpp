@@ -16,8 +16,14 @@ public:
     // False when parakeet was built with PARAKEET_WITH_VOICEDETECT=OFF.
     static bool available();
     // nullptr on failure, when unavailable, or when the GGUF has no speaker
-    // embedding (for example an age/gender/emotion model).
-    static std::unique_ptr<SpeakerEncoder> load(const std::string& gguf_path);
+    // embedding (for example an age/gender/emotion model). With a non-empty
+    // `component`, `gguf_path` is a bundle GGUF (docs/bundle.md) and the encoder is
+    // its component of kind "voice". voice-detect.cpp opens models by path only, so
+    // the component is first written as a standalone GGUF (an in-memory file on
+    // Linux, else a temporary file removed after the load; see bundle_extract.hpp).
+    // `err`, when given, receives the reason for a failure.
+    static std::unique_ptr<SpeakerEncoder> load(const std::string& gguf_path, const std::string& component = "",
+                                                std::string* err = nullptr);
     ~SpeakerEncoder();
     SpeakerEncoder(const SpeakerEncoder&) = delete;
     SpeakerEncoder& operator=(const SpeakerEncoder&) = delete;

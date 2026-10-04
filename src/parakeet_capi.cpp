@@ -284,6 +284,26 @@ parakeet_ctx* load_bundle_component(const char* path, const std::string& name) {
             g_load_error = "cannot load diarization component \"" + name + "\" (see the log for the reason)";
             return nullptr;
         }
+    } else if (c->kind == pk::kBundleKindCed) {
+        ctx->tagger = pk::CedTagger::load(path, name, &err);
+        if (!ctx->tagger) { g_load_error = "cannot load sound component \"" + name + "\": " + err; return nullptr; }
+    } else if (c->kind == pk::kBundleKindVoice) {
+        try {
+            ctx->speaker = pk::SpeakerEncoder::load(path, name, &err);
+        } catch (...) { ctx->speaker.reset(); }
+        if (!ctx->speaker) { g_load_error = "cannot load voice component \"" + name + "\": " + err; return nullptr; }
+        // Profiles are tied to the exact model. For a component the identity is the sha256
+        // of the single-model file it was built from, recorded in the bundle header, so a
+        // voice enrolled with the standalone file matches the same model inside a bundle.
+        const std::string& h = c->source_sha256;
+        bool hex = h.size() == 64;
+        for (char ch : h) hex = hex && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+        if (!hex) {
+            g_load_error = "voice component \"" + name + "\" has no valid source_sha256 in the bundle header, "
+                           "which is its speaker model identity";
+            return nullptr;
+        }
+        ctx->speaker_identity = "sha256:" + h;
     } else if (c->kind == pk::kBundleKindVad && pk::bundle_vad_is_slice(path, name)) {
         // A VAD-only slice: same context as a standalone slice file.
         ctx->vad_model = pk::Model::load_vad_only(path, name);

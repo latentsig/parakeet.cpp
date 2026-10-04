@@ -92,6 +92,49 @@ static bool resolve_asr_component(const std::string& model, const std::string& c
     return true;
 }
 
+// Component of `path` to open for a command that needs a model of `kind` (diar, ced,
+// voice or asr). A plain GGUF gives an empty `out` (and refuses a component name). On a
+// bundle, `component` names it (its kind must match); without a name the only component
+// of that kind is used. `what` and `flag` are for messages (e.g. "diarization", "--diar-component").
+static bool resolve_kind_component(const std::string& path, const std::string& kind, const std::string& component,
+                                   const char* what, const char* flag, std::string& out) {
+    out.clear();
+    if (!pk::gguf_is_bundle(path)) {
+        if (!component.empty()) {
+            std::fprintf(stderr, "parakeet-cli: %s is not a bundle GGUF, so %s does not apply\n", path.c_str(), flag);
+            return false;
+        }
+        return true;
+    }
+    pk::BundleInfo info;
+    std::string err;
+    if (!pk::read_bundle_info(path, info, &err)) { std::fprintf(stderr, "parakeet-cli: %s\n", err.c_str()); return false; }
+    if (!component.empty()) {
+        const pk::BundleComponent* c = info.find(component);
+        if (!c) {
+            std::fprintf(stderr, "parakeet-cli: bundle has no component '%s'; components: %s\n", component.c_str(),
+                         pk::bundle_component_names(info).c_str());
+            return false;
+        }
+        if (c->kind != kind) {
+            std::fprintf(stderr, "parakeet-cli: component '%s' has kind %s, not a %s model (kind %s)\n", component.c_str(),
+                         c->kind.c_str(), what, kind.c_str());
+            return false;
+        }
+        out = component;
+        return true;
+    }
+    int n = 0;
+    for (const pk::BundleComponent& c : info.components)
+        if (c.kind == kind) { out = c.name; ++n; }
+    if (n == 1) return true;
+    out.clear();
+    std::fprintf(stderr, "parakeet-cli: bundle %s has %s component of kind %s; components: %s%s\n", path.c_str(),
+                 n == 0 ? "no" : "several", kind.c_str(), pk::bundle_component_names(info).c_str(),
+                 n == 0 ? "" : (std::string(" (pick one with ") + flag + ")").c_str());
+    return false;
+}
+
 static std::unique_ptr<pk::Model> load_asr(const std::string& model) {
     return pk::Model::load(model, g_asr_component);
 }
@@ -143,6 +186,20 @@ static int cmd_info(int argc, char** argv) {
             return 1;
         }
         std::printf("component: %s (kind %s, licence %s)\n", bc->name.c_str(), bc->kind.c_str(), bc->license.c_str());
+        if (bc->kind == pk::kBundleKindCed) {
+            std::string err2;
+            std::unique_ptr<pk::CedTagger> t = pk::CedTagger::load(path, component, &err2);
+            if (!t) { std::fprintf(stderr, "parakeet-cli: %s\n", err2.c_str()); return 1; }
+            std::printf("  sound-event tagger (ced.cpp), %d classes\n", t->n_classes());
+            return 0;
+        }
+        if (bc->kind == pk::kBundleKindVoice) {
+            std::string err2;
+            std::unique_ptr<pk::SpeakerEncoder> e = pk::SpeakerEncoder::load(path, component, &err2);
+            if (!e) { std::fprintf(stderr, "parakeet-cli: %s\n", err2.c_str()); return 1; }
+            std::printf("  speaker encoder (voice-detect.cpp), %d-dim embedding\n", e->dim());
+            return 0;
+        }
         if (bc->kind == pk::kBundleKindVad && !pk::bundle_vad_is_slice(path, component)) {
             std::string err2;
             std::unique_ptr<pk::SileroVad> sv = pk::SileroVad::load(path, &err2, component);
@@ -1674,7 +1731,7 @@ static std::string registry_read_error(const std::string& path, int e) {
 }
 
 static const char* kEnrollUsage =
-    "usage: parakeet-cli enroll --model <speaker.gguf> --name <name> "
+    "usage: parakeet-cli enroll --model <speaker.gguf|bundle.gguf> [--component NAME] --name <name> "
     "--input <wav> [--input <wav> ...] --registry <file>\n";
 
 // parakeet-cli enroll --model <speaker.gguf> --name <name> --input <wav> [--input <wav> ...]
@@ -1682,10 +1739,11 @@ static const char* kEnrollUsage =
 // Embeds each input as one clip of <name> and adds it to the registry file
 // (created when missing). The file is written only after every clip embedded.
 static int cmd_enroll(int argc, char** argv) {
-    std::string model, name, registry_path;
+    std::string model, name, registry_path, component;
     std::vector<std::string> inputs;
     for (int i = 0; i < argc; ++i) {
         if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) model = argv[++i];
+        else if (std::strcmp(argv[i], "--component") == 0 && i + 1 < argc) component = argv[++i];
         else if (std::strcmp(argv[i], "--name") == 0 && i + 1 < argc) name = argv[++i];
         else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) inputs.push_back(argv[++i]);
         else if (std::strcmp(argv[i], "--registry") == 0 && i + 1 < argc) registry_path = argv[++i];
@@ -1699,9 +1757,12 @@ static int cmd_enroll(int argc, char** argv) {
         std::fprintf(stderr, "parakeet-cli: built without speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)\n");
         return 2;
     }
-    auto enc = pk::SpeakerEncoder::load(model);
+    std::string comp, lerr;
+    if (!resolve_kind_component(model, pk::kBundleKindVoice, component, "speaker", "--component", comp)) return 2;
+    auto enc = pk::SpeakerEncoder::load(model, comp, &lerr);
     if (!enc) {
-        std::fprintf(stderr, "parakeet-cli enroll: failed to load speaker model %s\n", model.c_str());
+        std::fprintf(stderr, "parakeet-cli enroll: failed to load speaker model %s%s%s\n", model.c_str(),
+                     lerr.empty() ? "" : ": ", lerr.c_str());
         return 1;
     }
     pk::SpeakerRegistry reg;
@@ -1758,6 +1819,8 @@ static const char* kSceneUsage =
     "[--speaker-threshold F]] --input <wav|-> "
     "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
     "[--show-speech] [--json]\n"
+    "  each model may be a bundle GGUF (the only component of the right kind is used); name another with\n"
+    "  --asr-component, --diar-component, --sound-component or --speakers-component\n"
     "  --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n";
 
 // parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>]
@@ -1773,6 +1836,7 @@ static const char* kSceneUsage =
 static int cmd_scene(int argc, char** argv) {
     std::string model, diar, sound, input, latency_str;
     std::string speakers, registry_path;
+    std::string asr_comp_arg, diar_comp_arg, sound_comp_arg, speakers_comp_arg;
     bool have_threshold = false;
     float speaker_threshold = 0.0f;
     bool json = false;
@@ -1781,6 +1845,14 @@ static int cmd_scene(int argc, char** argv) {
     for (int i = 0; i < argc; ++i) {
         if (std::strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
             model = argv[++i];
+        } else if (std::strcmp(argv[i], "--asr-component") == 0 && i + 1 < argc) {
+            asr_comp_arg = argv[++i];
+        } else if (std::strcmp(argv[i], "--diar-component") == 0 && i + 1 < argc) {
+            diar_comp_arg = argv[++i];
+        } else if (std::strcmp(argv[i], "--sound-component") == 0 && i + 1 < argc) {
+            sound_comp_arg = argv[++i];
+        } else if (std::strcmp(argv[i], "--speakers-component") == 0 && i + 1 < argc) {
+            speakers_comp_arg = argv[++i];
         } else if (std::strcmp(argv[i], "--diar") == 0 && i + 1 < argc) {
             diar = argv[++i];
         } else if (std::strcmp(argv[i], "--sound") == 0 && i + 1 < argc) {
@@ -1875,9 +1947,15 @@ static int cmd_scene(int argc, char** argv) {
         }
     }
 
+    std::string asr_comp, diar_comp, sound_comp, speakers_comp;
+    if (!model.empty() && !resolve_kind_component(model, pk::kBundleKindAsr, asr_comp_arg, "ASR", "--asr-component", asr_comp)) return 2;
+    if (!diar.empty() && !resolve_kind_component(diar, pk::kBundleKindDiar, diar_comp_arg, "diarization", "--diar-component", diar_comp)) return 2;
+    if (!sound.empty() && !resolve_kind_component(sound, pk::kBundleKindCed, sound_comp_arg, "sound", "--sound-component", sound_comp)) return 2;
+    if (!speakers.empty() && !resolve_kind_component(speakers, pk::kBundleKindVoice, speakers_comp_arg, "speaker", "--speakers-component", speakers_comp)) return 2;
+    std::string lerr;
     std::unique_ptr<pk::Model> asr_model;
     if (!model.empty()) {
-        asr_model = pk::Model::load(model);
+        asr_model = pk::Model::load(model, asr_comp);
         if (!asr_model) {
             std::fprintf(stderr, "parakeet-cli scene: failed to load model %s\n", model.c_str());
             return 1;
@@ -1885,7 +1963,7 @@ static int cmd_scene(int argc, char** argv) {
     }
     std::unique_ptr<pk::DiarizationModel> diar_model;
     if (!diar.empty()) {
-        diar_model = pk::DiarizationModel::load(diar);
+        diar_model = pk::DiarizationModel::load(diar, diar_comp);
         if (!diar_model) {
             std::fprintf(stderr, "parakeet-cli scene: failed to load diarization model %s\n",
                          diar.c_str());
@@ -1894,9 +1972,10 @@ static int cmd_scene(int argc, char** argv) {
     }
     std::unique_ptr<pk::CedTagger> tagger;
     if (!sound.empty()) {
-        tagger = pk::CedTagger::load(sound);
+        tagger = pk::CedTagger::load(sound, sound_comp, &lerr);
         if (!tagger) {
-            std::fprintf(stderr, "parakeet-cli scene: failed to load sound model %s\n", sound.c_str());
+            std::fprintf(stderr, "parakeet-cli scene: failed to load sound model %s%s%s\n", sound.c_str(),
+                         lerr.empty() ? "" : ": ", lerr.c_str());
             return 1;
         }
     }
@@ -1904,10 +1983,10 @@ static int cmd_scene(int argc, char** argv) {
     std::unique_ptr<pk::SpeakerEncoder> speaker_enc;
     pk::SpeakerRegistry registry;
     if (!speakers.empty()) {
-        speaker_enc = pk::SpeakerEncoder::load(speakers);
+        speaker_enc = pk::SpeakerEncoder::load(speakers, speakers_comp, &lerr);
         if (!speaker_enc) {
-            std::fprintf(stderr, "parakeet-cli scene: failed to load speaker model %s\n",
-                         speakers.c_str());
+            std::fprintf(stderr, "parakeet-cli scene: failed to load speaker model %s%s%s\n",
+                         speakers.c_str(), lerr.empty() ? "" : ": ", lerr.c_str());
             return 1;
         }
         std::string blob;
@@ -2211,7 +2290,8 @@ int main(int argc, char** argv) {
         "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
         "[--show-speech] [--json]\n"
         "      --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n"
-        "  parakeet-cli enroll --model <speaker.gguf> --name <name> "
+        "      each model may be a bundle (--asr-component, --diar-component, --sound-component, --speakers-component)\n"
+        "  parakeet-cli enroll --model <speaker.gguf|bundle.gguf> [--component NAME] --name <name> "
         "--input <wav> [--input <wav> ...] --registry <file>\n");
     return 2;
 }

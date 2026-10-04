@@ -1,5 +1,6 @@
 #include "speaker_encoder.hpp"
 
+#include "bundle_extract.hpp"
 #include "gguf.h"
 
 #ifdef PARAKEET_WITH_VOICEDETECT
@@ -23,12 +24,25 @@ bool gguf_is_voicedetect(const std::string& path) {
 
 bool SpeakerEncoder::available() { return true; }
 
-std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string& path) {
-    voicedetect_ctx* c = voicedetect_capi_load(path.c_str());
-    if (!c) return nullptr;
+std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string& path, const std::string& component,
+                                                     std::string* err) {
+    voicedetect_ctx* c = nullptr;
+    if (component.empty()) {
+        c = voicedetect_capi_load(path.c_str());
+    } else {
+        std::string e;
+        std::unique_ptr<ComponentFile> cf = ComponentFile::create(path, component, &e);
+        if (!cf) { if (err) *err = e; return nullptr; }
+        c = voicedetect_capi_load(cf->path().c_str());   // the file is removed when cf goes out of scope
+    }
+    if (!c) {
+        if (err && err->empty()) *err = "cannot load the speaker model " + (component.empty() ? path : component);
+        return nullptr;
+    }
     const int dim = voicedetect_capi_embedding_dim(c);
     if (dim <= 0) {   // an analyze-only model has no speaker embedding
         voicedetect_capi_free(c);
+        if (err) *err = "the speaker model has no speaker embedding (an analysis model?)";
         return nullptr;
     }
     std::unique_ptr<SpeakerEncoder> e(new SpeakerEncoder());
@@ -62,7 +76,10 @@ bool SpeakerEncoder::embed(const float* pcm, int n, std::vector<float>& emb) {
 #else  // PARAKEET_WITH_VOICEDETECT
 
 bool SpeakerEncoder::available() { return false; }
-std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string&) { return nullptr; }
+std::unique_ptr<SpeakerEncoder> SpeakerEncoder::load(const std::string&, const std::string&, std::string* err) {
+    if (err) *err = "this build has no speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)";
+    return nullptr;
+}
 SpeakerEncoder::~SpeakerEncoder() = default;
 bool SpeakerEncoder::embed(const float*, int, std::vector<float>&) {
     last_error_ = "built without speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)";

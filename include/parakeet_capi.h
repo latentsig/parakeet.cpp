@@ -87,8 +87,11 @@ int parakeet_capi_abi_version(void);
 parakeet_ctx* parakeet_capi_load(const char* gguf_path);
 
 // Additive (no ABI bump): open one named component of a bundle GGUF. The
-// context is of the kind the component declares: "asr" gives an ASR context,
-// "vad" a Silero VAD context (parakeet_capi_model_kind PARAKEET_MODEL_KIND_VAD).
+// context is of the kind the component declares: "asr" gives an ASR context
+// (PARAKEET_MODEL_KIND_ASR), "diar" a diarization context, "ced" a sound tagger,
+// "voice" a speaker encoder, "vad" a Silero VAD context (PARAKEET_MODEL_KIND_VAD)
+// or, for a VAD-only slice, a VAD-only context. The "ced" and "voice" components are
+// handed to ced.cpp and voice-detect.cpp as a standalone copy (docs/bundle.md).
 // Returns NULL, with a reason in parakeet_capi_load_error, when `gguf_path` is
 // not a bundle, has no such component, or has a component kind this build
 // cannot load. A NULL or empty `component` behaves like parakeet_capi_load.
