@@ -38,6 +38,10 @@ std::string silero_vad_to_json(const SileroVad& m, const std::vector<float>& pcm
 // True when the GGUF's general.architecture is "silero_vad". Reads only the header.
 bool gguf_is_silero(const std::string& gguf_path);
 
+// True when the GGUF's parakeet.arch is "vad": a VAD-only slice of an Ultra or
+// Redux model (scripts/slice_vad_gguf.py). Reads only the header.
+bool gguf_is_vad_only(const std::string& gguf_path);
+
 // Runs the VAD head over 16 kHz mono PCM and returns the JSON document
 // {"mode","duration","frame_sec","backend","segments":[{"start","end"}],
 //  "probabilities":[...]?}. Throws std::runtime_error("model has no VAD head")

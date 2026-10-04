@@ -136,6 +136,48 @@ mode (frame period 0.032 s) and the same decode of each segment as the head
 path. Audio of at most 30 s is transcribed whole and the VAD does not run.
 Passing NULL as the second argument uses the model's own head.
 
+## VAD-only slice
+
+The VAD head of Ultra and Redux reads only the log-mel front end, the subsampler
+and the head, which is about 10 MB of the 213 MB to 1.4 GB file. `scripts/slice_vad_gguf.py`
+copies exactly those tensors, byte for byte, into a small GGUF:
+
+    python scripts/slice_vad_gguf.py ultra-q8_0.gguf ultra-vad.gguf
+
+Nothing is requantized, so the VAD output is the same as the parent's. The slice
+copies the `parakeet.encoder.*`, `parakeet.preprocessor.*` and `parakeet.vad.*`
+keys. It sets `parakeet.arch` to `vad` (`general.architecture` stays `parakeet`),
+and it records the parent in `parakeet.vad_only.parent_name`, `parent_file`,
+`parent_sha256`, `parent_bytes` and `parent_arch`.
+
+The `vad` marker is what the loader needs: a normal file has an encoder,
+a decoder and a vocabulary, and the slice has none of them. `parakeet-cli vad`
+and the `parakeet_capi_vad_*` functions accept the file (`Model::load_vad_only`).
+`Model::load` refuses it with a log message, so every other call (transcribe,
+diarize, stream) fails with "context holds a VAD-only model" or a load error.
+Files that are not slices load exactly as before.
+
+### Published slices
+
+Two slices are published in [`mudler/parakeet-cpp-gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf).
+They are cut out of Moondream's models, not trained here, and carry the same
+CC-BY-4.0 license: credit Moondream and NVIDIA.
+
+| File | Parent | Size (bytes) | SHA-256 |
+|---|---|---:|---|
+| [`redux-vad.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-vad.gguf) | parakeet-redux | 9,939,488 | `588e1d6e2ee5b6cdfd9ec5ea98dc0993d5bea498d9cc4ec8d6077041eef8a34f` |
+| [`ultra-vad-q8_0.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/ultra-vad-q8_0.gguf) | parakeet-ultra, Q8_0 | 6,007,328 | `8b891a4435e97438104ca07c72530d0c5fe62b986baee48b2dd4e1500c1d4758` |
+
+    parakeet-cli vad --model redux-vad.gguf --input audio.wav
+
+A slice cannot transcribe, diarize or stream.
+
+The two Redux parents (packed ternary and dequantized F16) give slices with the same
+tensors: the subsampler and the head are not ternary. The Ultra Q8_0 parent has a
+Q8_0 final subsampler projection, so its slice is 6.0 MB; the F16 parents give
+9.9 MB. A slice from a Q8_0 parent and a slice from an F16 parent give different
+probabilities because their weights differ, not because of the slicing.
+
 ## ABI
 
 All of this is additive. `parakeet_capi_abi_version` stays 10. A new symbol set

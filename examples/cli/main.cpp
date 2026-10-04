@@ -1901,7 +1901,7 @@ static int cmd_vad_probe(int argc, char** argv) {
 //   [--min-pause SEC] [--min-speech SEC] [--speech-pad SEC] [--max-segment SEC=30]
 //   [--mode speech|segments] [--probabilities] [--threads N]
 // Prints the same JSON as parakeet_capi_vad_path_json. The model is an ASR GGUF
-// with a VAD head (Ultra, Redux) or a Silero VAD GGUF. Unset options keep the
+// with a VAD head (Ultra, Redux), a VAD-only slice of one, or a Silero VAD GGUF. Unset options keep the
 // defaults of that model kind.
 static int cmd_vad(int argc, char** argv) {
     std::string model, input;
@@ -1974,7 +1974,8 @@ static int cmd_vad(int argc, char** argv) {
             std::printf("%s\n", pk::silero_vad_to_json(*sv, audio.samples, 16000, req).c_str());
             return 0;
         }
-        std::unique_ptr<pk::Model> m = pk::Model::load(model);
+        std::unique_ptr<pk::Model> m =
+            pk::gguf_is_vad_only(model) ? pk::Model::load_vad_only(model) : pk::Model::load(model);
         if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
         std::printf("%s\n", pk::vad_to_json(*m, audio.samples, req).c_str());
     } catch (const std::exception& e) {

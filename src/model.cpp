@@ -52,6 +52,11 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     if (!m->loader_.load(gguf_path)) {
         return nullptr;
     }
+    if (m->loader_.config().arch == "vad") {
+        PK_LOG("%s is a VAD-only file: it has no encoder or decoder, so it cannot transcribe or diarize; "
+               "use it with `parakeet-cli vad` or the parakeet_capi_vad_* functions", gguf_path.c_str());
+        return nullptr;
+    }
     // Model is the ASR entry point — reject diarization models so the C-API
     // can fall through to DiarizationModel::load.
     if (m->loader_.config().arch == "diarization") {
@@ -86,6 +91,28 @@ std::unique_ptr<Model> Model::load(const std::string& gguf_path) {
     // Give the weights a CPU backend buffer ONCE so graphs reference them
     // directly as leaves (zero per-call copy). Done at load (vs. lazily on first
     // clone_weight) so the cost is paid up front, not per utterance.
+    ensure_weights_realized(m->loader_);
+    return m;
+}
+
+std::unique_ptr<Model> Model::load_vad_only(const std::string& gguf_path) {
+    std::unique_ptr<Model> m(new (std::nothrow) Model());
+    if (!m) return nullptr;
+    if (!m->loader_.load(gguf_path)) return nullptr;
+    const ParakeetConfig& c = m->loader_.config();
+    if (c.arch != "vad") {
+        PK_LOG("%s is not a VAD-only file (parakeet.arch is \"%s\")", gguf_path.c_str(), c.arch.c_str());
+        return nullptr;
+    }
+    if (!c.vad.present) {
+        PK_LOG("%s: VAD-only file without parakeet.vad.present", gguf_path.c_str());
+        return nullptr;
+    }
+    // The slice never carries packed ternary tensors (the slicer refuses them).
+    if (c.ternary.present || m->loader_.has_tensor_with_suffix(".weight_packed")) {
+        PK_LOG("%s: a VAD-only file cannot hold packed ternary tensors", gguf_path.c_str());
+        return nullptr;
+    }
     ensure_weights_realized(m->loader_);
     return m;
 }

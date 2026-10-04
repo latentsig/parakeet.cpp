@@ -3,6 +3,7 @@
 
 #include "audio_io.hpp"
 #include "backend.hpp"
+#include "common.hpp"
 #include "ggml_graph.hpp"
 
 #include <algorithm>
@@ -21,6 +22,8 @@ std::unique_ptr<DiarizationModel> DiarizationModel::load(const std::string& path
     const auto& cfg = m->loader_.config();
     if (cfg.arch != "diarization") {
         // Not a diarization model — caller should use Model for ASR.
+        if (cfg.arch == "vad")
+            PK_LOG("%s is a VAD-only file and cannot diarize", path.c_str());
         return nullptr;
     }
     if (!cfg.diarization.present) {

@@ -84,6 +84,7 @@ ternary ones.
 - Silero VAD (MIT, 32 ms frames, 16 kHz and 8 kHz) runs from its own small GGUF ([download](https://huggingface.co/mudler/parakeet-cpp-gguf)) through the same
   functions, as a stream (`parakeet_capi_vad_stream_*`), and as the cutter for any ASR model:
   `parakeet-cli transcribe --vad --vad-model silero.gguf`. See [`docs/vad.md`](docs/vad.md).
+- VAD-only slices of Ultra and Redux (6 to 10 MB, `redux-vad.gguf` and `ultra-vad-q8_0.gguf` in the same repo) hold just the head and its front end. They run `vad` and the `parakeet_capi_vad_*` calls and cannot transcribe. See [`docs/vad.md`](docs/vad.md).
 ---
 
 ## Performance
@@ -294,6 +295,11 @@ parakeet-cli transcribe --model ultra.gguf --input long.wav --vad
 # --mode segments gives the cuts that `transcribe --vad` uses; --probabilities adds p per 80 ms frame.
 # Tune with --threshold F (0.5), --min-pause SEC (0.2), --min-speech SEC (0.1), --max-segment SEC (30)
 parakeet-cli vad --model ultra.gguf --input audio.wav
+
+# Only the VAD head is needed? Use a 6 to 10 MB slice instead of the full model
+# (it cannot transcribe). Files and checksums: docs/vad.md.
+curl -LO https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-vad.gguf
+parakeet-cli vad --model redux-vad.gguf --input audio.wav
 
 # The same with a Silero VAD GGUF (frame_sec 0.032; defaults 250 ms min speech,
 # 100 ms min pause, 30 ms pad). Any ASR model can then cut long audio with it.
