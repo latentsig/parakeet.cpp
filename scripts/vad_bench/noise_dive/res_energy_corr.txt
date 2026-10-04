@@ -1,0 +1,8 @@
+('redux', 'speech frames (clean+noisy speech clips)') corr(rel energy, logit) 0.46 over 152550 frames
+('redux', 'non-speech frames in speech clips (gaps)') corr(rel energy, logit) 0.71 over 28764 frames
+('redux', 'noise-only files') corr(rel energy, logit) -0.02 over 36000 frames
+('redux', 'embedded noise stretch') corr(rel energy, logit) 0.31 over 37043 frames
+('ultra', 'speech frames (clean+noisy speech clips)') corr(rel energy, logit) 0.40 over 152550 frames
+('ultra', 'non-speech frames in speech clips (gaps)') corr(rel energy, logit) 0.43 over 28764 frames
+('ultra', 'noise-only files') corr(rel energy, logit) 0.05 over 36000 frames
+('ultra', 'embedded noise stretch') corr(rel energy, logit) 0.84 over 37043 frames

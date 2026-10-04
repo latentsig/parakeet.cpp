@@ -1,0 +1,15 @@
+talk 1168 s; Silero speech time 93.4%
+
+redux: speech time % | agreement with Silero (F1 of mask vs Silero mask) | frames removed vs head 0.5 (% of its speech frames)
+  head 0.5      97.0% | F1 vs Silero 98.0 (P 96.2 R 99.9) | removed 0.00%
+  head 0.7      95.9% | F1 vs Silero 98.4 (P 97.1 R 99.7) | removed 1.05%
+  head 0.9      94.1% | F1 vs Silero 98.5 (P 98.1 R 98.8) | removed 2.93%
+  runconf 2.5   96.7% | F1 vs Silero 98.1 (P 96.5 R 99.9) | removed 0.29%
+  runconf 3.5   96.5% | F1 vs Silero 98.1 (P 96.5 R 99.7) | removed 0.50%
+
+ultra: speech time % | agreement with Silero (F1 of mask vs Silero mask) | frames removed vs head 0.5 (% of its speech frames)
+  head 0.5      96.3% | F1 vs Silero 98.3 (P 96.8 R 99.8) | removed 0.00%
+  head 0.7      95.1% | F1 vs Silero 98.6 (P 97.7 R 99.5) | removed 1.24%
+  head 0.9      92.9% | F1 vs Silero 98.4 (P 98.6 R 98.1) | removed 3.57%
+  runconf 2.5   96.1% | F1 vs Silero 98.3 (P 97.0 R 99.8) | removed 0.22%
+  runconf 3.5   96.0% | F1 vs Silero 98.3 (P 97.0 R 99.7) | removed 0.28%
