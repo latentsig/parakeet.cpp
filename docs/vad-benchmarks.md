@@ -29,9 +29,9 @@ Accuracy is the frame level F1 (percent) against a coarse reference, see
 | Silero (matched settings) | 94.1 | 91.7 | 91.8 | about 660x on 1 thread, `parakeet-cli vad`, includes process start and model load | 60 MB (`parakeet-cli vad`, F32 and F16) | 2.2 MB (F32), 1.3 MB (F16) |
 | Silero (its own defaults) | 94.4 | 91.9 | 92.1 | not timed separately | same as above | same as above |
 | Ultra Q8_0 head, full ASR GGUF | 95.0 | 93.4 | 93.8 | 216x, 8 threads (older run); 91.6x on 1 thread and 266.6x on 8 threads in the slice run, busy machine | 905 MiB loaded, 1134 MiB after a 33 s clip | 941.5 MB |
-| Ultra Q8_0 head, slice file (PR 87, not released) | same as the full file (see below) | same | same | 91.8x on 1 thread, 257.8x on 8 threads, busy machine | 12 MiB loaded, 241 MiB after a 33 s clip | 6.0 MB |
+| Ultra Q8_0 head, slice file (PR 87, not in a release yet) | same as the full file (see below) | same | same | 91.8x on 1 thread, 257.8x on 8 threads, busy machine | 12 MiB loaded, 241 MiB after a 33 s clip | 6.0 MB |
 | Redux packed head, full ASR GGUF | 95.4 | 94.3 | 94.2 | 221x, 8 threads (older run); 94.9x on 1 thread and 267.1x on 8 threads in the slice run, busy machine | 372 MiB loaded, 603 MiB after a 33 s clip | 213.3 MB |
-| Redux packed head, slice file (PR 87, not released) | same as the full file | same | same | 95.1x on 1 thread, 266.7x on 8 threads, busy machine | 16 MiB loaded, 246 MiB after a 33 s clip | 9.9 MB |
+| Redux packed head, slice file (PR 87, not in a release yet) | same as the full file | same | same | 95.1x on 1 thread, 266.7x on 8 threads, busy machine | 16 MiB loaded, 246 MiB after a 33 s clip | 9.9 MB |
 | Silero F16, same build as the slice run | see Silero rows | | | 736x on 1 thread, 485x on 8 threads, busy machine | 9 MiB loaded, 13 MiB after a 33 s clip | 1.3 MB |
 | whisper.cpp Silero | 94.1 | not run | not run | in process: 686x on 1 thread | 36 MB (test harness) | 0.9 MB |
 | ONNX Silero (onnxruntime) | 94.0 | not run | not run | in process: 449x on 1 thread, Python loop | 104 MB | 2.3 MB |
@@ -57,9 +57,11 @@ How to read it:
 - The speed columns of Silero and the heads are not a like for like comparison of the
   models. They show the cost of using each one as a stand alone gate.
 - The heads need the ASR GGUF unless you use a slice file. A slice is a GGUF with only
-  the head path, made by the code of PR 87 (open, not in a release). Its VAD output is
+  the head path, made by `scripts/slice_vad_gguf.py` (PR 87, in master, not in a tagged release yet).
+  Its VAD output is
   byte for byte the same as the parent file on three clips, so the accuracy columns
-  apply to the slice unchanged. See [Slice only head](#slice-only-head).
+  apply to the slice unchanged. See [Slice only head](#slice-only-head). The published
+  slices are listed in [vad.md](vad.md#published-slices).
 - All memory and load numbers for the heads are in the slice section.
 
 ### Machine and build
@@ -442,8 +444,9 @@ and is not used above.
 ## Slice only head
 
 A "slice" is a GGUF that holds only the tensors the VAD path of an Ultra or Redux
-file reads. The code that makes it and loads it is PR 87
-(`feat/vad-only-gguf`, open, not in a release). This section compares each full ASR
+file reads. The code that makes it and loads it is PR 87 (merged to master as `e53a253`, not in a
+tagged release yet; the latest tag is v0.5.0). How to make and use a slice is in
+[vad.md](vad.md#vad-only-slice). This section compares each full ASR
 GGUF with its slice, and with Silero F16, built from the same source tree.
 
 ### Setup
@@ -451,7 +454,7 @@ GGUF with its slice, and with Silero F16, built from the same source tree.
 - One build of the PR 87 code, one machine (see the table above), the first 300 s of
   the talk used elsewhere on this page for speed (`ted300`), and a 33 s clean synthetic
   clip for memory. The harness is `scripts/vad_bench/vad_slice_bench.cpp` (a small
-  program built inside the PR 87 tree, since it uses internal headers) and the driver is
+  program built inside the source tree of PR 87, since it uses internal headers) and the driver is
   `scripts/vad_bench/slice_bench.py`.
 - **Speed:** one timed VAD run after a warm-up run, 5 rounds with the 9 configurations
   interleaved, the best of the 5 reported (the median is in the result file), on 1
@@ -517,7 +520,7 @@ What this supports:
   0.5 ms) are close to the timer's resolution and the maximum was up to 2.2 ms.
 - Peak memory was measured for a 33 s clip only. The peak memory for a 600 s clip was
   not measured, and the memory after the clip grows with the clip length.
-- The slice code is in PR 87, which is open and not in a release. GPU backends and the
+- The slice code is in master (PR 87) but not in a tagged release yet. GPU backends and the
   streaming VAD were not tested with slices.
 - These numbers come from one run of the harness. They were not repeated.
 - The same output check shows that the probabilities are identical, so the accuracy
@@ -559,8 +562,8 @@ This is limited to what the numbers above support.
   2 to 2.5 points higher on the TED talks, and 1.7 to 2.6 points higher at 0 dB pink
   noise. It has the higher recall and the lower precision. On these clips its start
   times are closer to the reference.
-- **The Parakeet head as a stand alone detector.** With a slice file (PR 87, not in a
-  release) the head is a 6 to 10 MB file that loads in under 4 ms and needs about 240
+- **The Parakeet head as a stand alone detector.** With a slice file (PR 87, in master, not in a
+  tagged release) the head is a 6 to 10 MB file that loads in under 4 ms and needs about 240
   to 250 MiB for a 33 s clip, with the same output as the full file. Without it, the head
   needs the full ASR GGUF (213 MB to 1.4 GB). Silero is still smaller (1.3 MB), uses less
   memory (13 MiB after the clip) and was about 8 times faster per core (736x against
