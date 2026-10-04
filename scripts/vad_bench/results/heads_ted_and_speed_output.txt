@@ -1,0 +1,8 @@
+(console output of ted.py, load 6 to 42 during the run, speed numbers there are NOT valid; see speed.py output in the report)
+silero_matched P 97.3 R 86.8 F1 91.8
+silero_default P 97.4 R 87.4 F1 92.1
+ultra_q8 P 97.1 R 90.7 F1 93.8
+redux_packed P 97.1 R 91.5 F1 94.2
+ref speech fraction 91.9%; speech fraction silero 82.0 / ultra 85.8 / redux 86.6
+agreement ultra-silero F1 97.0 kappa 0.813; redux-silero F1 96.9 kappa 0.801; ultra-redux F1 98.8 kappa 0.912
+speed.py (300 s of a talk, 4 reps, load 5.8-6.2): silero onnx 1 thr 393x; ultra_q8 216x; ultra_f16 218x; redux_packed 221x; redux_deq_f16 222x (8 threads)

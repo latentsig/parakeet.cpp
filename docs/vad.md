@@ -12,6 +12,9 @@ Both give one speech probability per frame. A shared segmenter
 transcription segments. The segmenter takes the frame period as a parameter
 (`SegmenterOpts::frame_sec`); only the option defaults differ per detector.
 
+Accuracy and speed numbers for both detectors, with the method and the scripts to
+repeat them, are in [vad-benchmarks.md](vad-benchmarks.md).
+
 ## Standalone VAD API
 
 One call returns the speech regions of a clip as JSON, for either detector. Load
@@ -242,7 +245,7 @@ onnxruntime 1.27.0 and the ONNX file of version 6.2.3:
 
 On one CPU thread, `tests/silero_vad_probe` measured about 40 us per chunk
 (F32 or F16, 16 kHz or 8 kHz) on the development machine. That is one run on one
-machine, not a benchmark.
+machine, not a benchmark. For benchmarks, see [vad-benchmarks.md](vad-benchmarks.md).
 
 ## Tests
 

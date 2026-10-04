@@ -1,0 +1,21 @@
+22:43:52 start;  22:43:52 up 12 days, 14:48,  1 user,  load average: 14.09, 12.73, 10.36
+22:43:52 not quiet:  22:43:52 up 12 days, 14:48,  1 user,  load average: 14.09, 12.73, 10.36
+22:53:52 not quiet:  22:53:52 up 12 days, 14:58,  1 user,  load average: 38.40, 20.11, 13.44
+23:03:52 not quiet:  23:03:52 up 12 days, 15:08,  1 user,  load average: 35.54, 39.78, 28.58
+23:13:52 not quiet:  23:13:52 up 12 days, 15:18,  1 user,  load average: 14.53, 19.83, 24.28
+23:23:52 not quiet:  23:23:52 up 12 days, 15:28,  1 user,  load average: 34.33, 20.83, 20.40
+23:33:52 not quiet:  23:33:52 up 12 days, 15:38,  1 user,  load average: 28.05, 17.41, 17.12
+23:43:52 not quiet:  23:43:52 up 12 days, 15:48,  1 user,  load average: 13.25, 12.11, 14.17
+23:53:52 not quiet:  23:53:52 up 12 days, 15:58,  1 user,  load average: 82.37, 71.82, 42.46
+00:03:52 not quiet:  00:03:52 up 12 days, 16:08,  1 user,  load average: 63.40, 50.75, 45.47
+00:13:52 not quiet:  00:13:52 up 12 days, 16:18,  1 user,  load average: 38.12, 53.97, 51.57
+00:23:52 not quiet:  00:23:52 up 12 days, 16:28,  1 user,  load average: 32.08, 33.62, 40.68
+00:33:52 not quiet:  00:33:52 up 12 days, 16:38,  1 user,  load average: 28.06, 40.43, 41.16
+00:43:52 not quiet:  00:43:52 up 12 days, 16:48,  1 user,  load average: 52.52, 43.53, 40.77
+00:53:52 not quiet:  00:53:52 up 12 days, 16:58,  1 user,  load average: 7.19, 28.83, 36.45
+01:03:52 not quiet:  01:03:52 up 12 days, 17:08,  1 user,  load average: 9.54, 18.41, 27.76
+01:13:52 not quiet:  01:13:52 up 12 days, 17:18,  1 user,  load average: 8.63, 17.05, 24.09
+01:23:52 not quiet:  01:23:52 up 12 days, 17:28,  1 user,  load average: 6.67, 15.13, 21.99
+01:33:52 not quiet:  01:33:52 up 12 days, 17:38,  1 user,  load average: 9.21, 10.77, 16.01
+01:43:52 not quiet:  01:43:52 up 12 days, 17:48,  1 user,  load average: 60.44, 35.70, 25.02
+GAVE UP: machine never quiet in 3 h

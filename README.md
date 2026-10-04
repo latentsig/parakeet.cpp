@@ -85,6 +85,8 @@ ternary ones.
   functions, as a stream (`parakeet_capi_vad_stream_*`), and as the cutter for any ASR model:
   `parakeet-cli transcribe --vad --vad-model silero.gguf`. See [`docs/vad.md`](docs/vad.md).
 - VAD-only slices of Ultra and Redux (6 to 10 MB, `redux-vad.gguf` and `ultra-vad-q8_0.gguf` in the same repo) hold just the head and its front end. They run `vad` and the `parakeet_capi_vad_*` calls and cannot transcribe. See [`docs/vad.md`](docs/vad.md).
+- Accuracy, speed and size of both detectors, with the method and the scripts to repeat
+  them: [`docs/vad-benchmarks.md`](docs/vad-benchmarks.md).
 ---
 
 ## Performance

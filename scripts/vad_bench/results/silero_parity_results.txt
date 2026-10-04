@@ -1,0 +1,50 @@
+PROBABILITY PARITY vs onnxruntime (v6.2.3 ONNX, official 64-sample context), all 120 clips + 600 s talk, per 32 ms chunk
+system | max abs diff | mean abs diff | frames > 0.05 off | decision agreement @0.5 | flipped frames
+wcpp_conv623 | 0.7373 | 0.00224 | 0.54% | 99.826% | 309
+wcpp_repo620 | 0.7373 | 0.00224 | 0.54% | 99.826% | 309
+pk_f32 | 0.0001 | 0.00002 | 0.00% | 99.999% | 2
+pk_f16 | 0.0036 | 0.00005 | 0.00% | 99.997% | 5
+pairwise (whisper.cpp converted v6.2.3 vs parakeet f32):
+wcpp_conv623 vs pk_f32 | 0.7373 | 0.00224 | 0.54% | 99.825% | 311
+wcpp_conv623 vs wcpp_repo620 | 0.0000 | 0.00000 | 0.00% | 100.000% | 0
+per-region parity vs onnx (mean abs diff) : first chunk of each clip / rest
+wcpp_conv623 first-chunk 0.00088 rest 0.00212
+wcpp_repo620 first-chunk 0.00088 rest 0.00212
+pk_f32 first-chunk 0.00002 rest 0.00002
+pk_f16 first-chunk 0.00005 rest 0.00005
+
+SEGMENT QUALITY, frame level on 10 ms grid vs synthetic reference (P/R/F1 %), 40 clips per condition
+matched post = thr 0.5 / neg 0.35 / min speech 100 ms / min silence 200 ms / pad 0 (same python code on every probability stream)
+system | clean | white10 | pink10 | all
+onnx [matched post] | 99.3/89.3/94.0 | 99.4/87.8/93.2 | 99.5/87.4/93.1 | 99.4/88.2/93.5
+wcpp_conv623 [matched post] | 99.3/89.4/94.1 | 99.4/87.8/93.3 | 99.5/87.4/93.0 | 99.4/88.2/93.5
+pk_f32 [matched post] | 99.3/89.3/94.0 | 99.4/87.8/93.2 | 99.5/87.4/93.1 | 99.4/88.2/93.5
+pk_f16 [matched post] | 99.3/89.3/94.0 | 99.4/87.8/93.2 | 99.5/87.4/93.1 | 99.4/88.2/93.5
+wcpp_conv623 [whisper.cpp own default] | 98.9/90.3/94.4 | 99.2/89.0/93.8 | 99.3/88.6/93.6 | 99.1/89.3/94.0
+wcpp_conv623 [whisper.cpp C++ post, matched params] | 99.3/89.4/94.1 | 99.4/87.8/93.3 | 99.5/87.4/93.0 | 99.4/88.2/93.5
+pk_f32 [parakeet own default] | 99.1/89.3/93.9 | 99.3/87.6/93.1 | 99.4/87.3/93.0 | 99.3/88.1/93.3
+
+BOUNDARY ERROR vs reference, all conditions pooled: start median/p90, end median/p90, miss%
+onnx [matched post] | start 241/553 | end 108/396 | miss 0.2%
+wcpp_conv623 [matched post] | start 241/553 | end 108/396 | miss 0.2%
+pk_f32 [matched post] | start 241/553 | end 108/396 | miss 0.2%
+pk_f16 [matched post] | start 241/553 | end 108/396 | miss 0.2%
+wcpp_conv623 [whisper.cpp own default] | start 209/521 | end 124/367 | miss 0.0%
+wcpp_conv623 [whisper.cpp C++ post, matched params] | start 237/551 | end 110/398 | miss 0.2%
+pk_f32 [parakeet own default] | start 211/523 | end 116/392 | miss 0.0%
+
+AGREEMENT of speech masks (matched post), all 120 clips pooled: F1 / kappa / IoU
+wcpp_conv623 vs pk_f32 | F1 99.92 | kappa 0.9969 | IoU 99.84
+wcpp_conv623 vs onnx | F1 99.92 | kappa 0.9969 | IoU 99.84
+pk_f32 vs onnx | F1 100.00 | kappa 1.0000 | IoU 100.00
+pk_f16 vs pk_f32 | F1 100.00 | kappa 0.9999 | IoU 100.00
+wcpp_conv623 vs wcpp_repo620 | F1 100.00 | kappa 1.0000 | IoU 100.00
+
+AGREEMENT on the 600 s TED talk (no reference): F1 / kappa, speech fraction
+onnx speech fraction 79.1%
+wcpp_conv623 speech fraction 78.8%
+pk_f32 speech fraction 79.1%
+wcpp_conv623 vs pk_f32 | F1 99.75 | kappa 0.9882
+wcpp_conv623 vs onnx | F1 99.75 | kappa 0.9882
+pk_f32 vs onnx | F1 100.00 | kappa 1.0000
+TED talk flipped frames @0.5 vs onnx: wcpp_conv623 57/18750, wcpp_repo620 57/18750, pk_f32 0/18750, pk_f16 1/18750
