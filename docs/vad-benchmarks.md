@@ -451,7 +451,20 @@ No number is given here until that measurement is published with its method.
 
 ## Timing re-run
 
-Not run yet when this text was written.
+A re-run of the timing parts on a quiet machine was tried and did not happen. The
+rule was: run only when the 1-minute load average is below 5, check before each run,
+poll every 10 minutes for up to 3 hours, serialize with a lock and pin cores.
+The machine was shared with other jobs. The load average was checked 19 times, from
+22:43 to 01:43, and was never below 5. The lowest value was 6.67 and the highest was
+82.37. The poll log is in
+[`timing_rerun_load_log.txt`](../scripts/vad_bench/results/timing_rerun_load_log.txt).
+No timing was run, and no timing number on this page is new. The speed numbers on this
+page are the old ones, taken under the loads that each section states, and they stay
+marked as such. The setup for the re-run (a build of `6165e3d`, the 300 s clip, the
+models and the driver) was ready, and `speed_silero.py` and `speed_heads.py` run it in
+one command each when the machine is quiet.
+
+The accuracy numbers do not depend on load and were not re-run.
 
 ## When to use which
 
