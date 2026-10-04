@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdint>
 #include <set>
 #include <string>
 #include <vector>
@@ -184,6 +186,7 @@ std::vector<Word> group_words(const std::vector<TokenInfo>& tokens,
                 w.start = (float)start[prev]      * frame_sec;
                 w.end   = (float)end[built.back()] * frame_sec;
                 w.conf  = min_conf(built);
+                w.tok_first = built.front(); w.tok_last = built.back();
                 words.push_back(std::move(w));
             }
             built.clear();
@@ -199,6 +202,7 @@ std::vector<Word> group_words(const std::vector<TokenInfo>& tokens,
             if (!lw.text.empty() && lw.text.back() == ' ') lw.text.pop_back();
             lw.text += ct;
             lw.conf = std::min(lw.conf, conf[i]);
+            lw.tok_last = i;
         } else if (curr_punct && !built.empty()) {
             // Punctuation closing an open word: drop a trailing delimiter token,
             // then append this token.
@@ -224,6 +228,7 @@ std::vector<Word> group_words(const std::vector<TokenInfo>& tokens,
             w.start = (float)start[prev]      * frame_sec;
             w.end   = (float)end[built.back()] * frame_sec;
             w.conf  = min_conf(built);
+            w.tok_first = built.front(); w.tok_last = built.back();
             words.push_back(std::move(w));
         }
     } else if (!built.empty()) {
@@ -232,10 +237,112 @@ std::vector<Word> group_words(const std::vector<TokenInfo>& tokens,
         w.start = (float)start[0]          * frame_sec;
         w.end   = (float)end[built.back()] * frame_sec;
         w.conf  = min_conf(built);
+        w.tok_first = built.front(); w.tok_last = built.back();
         words.push_back(std::move(w));
     }
 
     return words;
+}
+
+namespace {
+
+// True when the word has no letter or digit: only punctuation or spaces.
+// ASCII is classified directly. Other code points count as content except the
+// common punctuation blocks (General Punctuation, CJK symbols and punctuation,
+// and the Latin-1 marks used in Spanish and French).
+bool is_punct_only(const std::string& w) {
+    size_t i = 0;
+    while (i < w.size()) {
+        const unsigned char c = (unsigned char)w[i];
+        uint32_t cp = c;
+        size_t len = 1;
+        if (c >= 0xF0 && i + 3 < w.size()) { cp = ((c & 0x07u) << 18) | (((unsigned char)w[i + 1] & 0x3Fu) << 12) | (((unsigned char)w[i + 2] & 0x3Fu) << 6) | ((unsigned char)w[i + 3] & 0x3Fu); len = 4; }
+        else if (c >= 0xE0 && i + 2 < w.size()) { cp = ((c & 0x0Fu) << 12) | (((unsigned char)w[i + 1] & 0x3Fu) << 6) | ((unsigned char)w[i + 2] & 0x3Fu); len = 3; }
+        else if (c >= 0xC0 && i + 1 < w.size()) { cp = ((c & 0x1Fu) << 6) | ((unsigned char)w[i + 1] & 0x3Fu); len = 2; }
+        i += len;
+        if (cp < 0x80) {
+            if (std::isalnum((int)cp)) return false;
+            continue;
+        }
+        const bool punct = (cp >= 0x2000 && cp <= 0x206F) || (cp >= 0x3000 && cp <= 0x303F) ||
+                           cp == 0xA1 || cp == 0xA7 || cp == 0xAB || cp == 0xB6 || cp == 0xB7 ||
+                           cp == 0xBB || cp == 0xBF;
+        if (!punct) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+int apply_word_filter(Transcription& t, const WordFilter& f) {
+    if (!f.active() || t.words.empty()) return 0;
+    const size_t n = t.words.size();
+    std::vector<char> drop(n, 0);
+    size_t dropped = 0;
+    if (f.min_local_conf > 0.0f) {
+        // Mean confidence of the words that start within the radius of a word,
+        // the word itself included. Words are in time order, so the window of
+        // each word is a range that moves forward; fall back to a scan when a
+        // caller passes words out of order.
+        bool sorted = true;
+        for (size_t i = 1; i < n && sorted; ++i) sorted = t.words[i - 1].start <= t.words[i].start;
+        std::vector<double> cum(n + 1, 0.0);
+        for (size_t i = 0; i < n; ++i) cum[i + 1] = cum[i] + (double)t.words[i].conf;
+        const float r = f.local_radius_sec;
+        size_t lo = 0, hi = 0;  // window [lo, hi)
+        for (size_t i = 0; i < n; ++i) {
+            const float s = t.words[i].start;
+            double sum = 0.0;
+            size_t cnt = 0;
+            if (sorted) {
+                while (lo < i && s - t.words[lo].start > r) ++lo;
+                if (hi < i + 1) hi = i + 1;
+                while (hi < n && t.words[hi].start - s <= r) ++hi;
+                sum = cum[hi] - cum[lo];
+                cnt = hi - lo;
+            } else {
+                for (size_t j = 0; j < n; ++j)
+                    if (std::fabs(t.words[j].start - s) <= r) { sum += (double)t.words[j].conf; ++cnt; }
+            }
+            if (cnt > 0 && sum / (double)cnt < (double)f.min_local_conf) drop[i] = 1;
+        }
+    }
+    if (f.drop_punct_only)
+        for (size_t i = 0; i < n; ++i)
+            if (is_punct_only(t.words[i].text)) drop[i] = 1;
+    for (size_t i = 0; i < n; ++i) dropped += drop[i] ? 1u : 0u;
+    t.dropped_words = (t.dropped_words < 0 ? 0 : t.dropped_words) + (int)dropped;
+    if (dropped == 0) return 0;
+
+    // Rebuild words, text and tokens without the dropped words.
+    std::vector<char> tdrop(t.tokens.size(), 0);
+    std::vector<Word> kept;
+    std::string text;
+    for (size_t i = 0; i < n; ++i) {
+        const Word& w = t.words[i];
+        if (drop[i]) {
+            for (int32_t k = w.tok_first; k >= 0 && k <= w.tok_last && (size_t)k < tdrop.size(); ++k) tdrop[(size_t)k] = 1;
+            continue;
+        }
+        if (!text.empty()) text += ' ';
+        text += w.text;
+        kept.push_back(w);
+    }
+    std::vector<int32_t> remap(t.tokens.size(), -1);
+    std::vector<TokenInfo> toks;
+    for (size_t k = 0; k < t.tokens.size(); ++k)
+        if (!tdrop[k]) { remap[k] = (int32_t)toks.size(); toks.push_back(t.tokens[k]); }
+    for (Word& w : kept) {
+        int32_t a = -1, b = -1;
+        for (int32_t k = w.tok_first; k >= 0 && k <= w.tok_last && (size_t)k < remap.size(); ++k)
+            if (remap[(size_t)k] >= 0) { if (a < 0) a = remap[(size_t)k]; b = remap[(size_t)k]; }
+        w.tok_first = a;
+        w.tok_last = b;
+    }
+    t.words = std::move(kept);
+    t.tokens = std::move(toks);
+    t.text = std::move(text);
+    return (int)dropped;
 }
 
 } // namespace pk
