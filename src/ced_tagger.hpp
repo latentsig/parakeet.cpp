@@ -17,8 +17,14 @@ class CedTagger {
 public:
     // False when parakeet was built with PARAKEET_WITH_CED=OFF.
     static bool available();
-    // nullptr on failure (or when unavailable).
-    static std::unique_ptr<CedTagger> load(const std::string& gguf_path);
+    // nullptr on failure (or when unavailable). With a non-empty `component`,
+    // `gguf_path` is a bundle GGUF (docs/bundle.md) and the model is its component
+    // of kind "ced". ced.cpp opens models by path only, so the component is first
+    // written as a standalone GGUF (an in-memory file on Linux, else a temporary
+    // file removed after the load; see bundle_extract.hpp). `err`, when given,
+    // receives the reason for a failure.
+    static std::unique_ptr<CedTagger> load(const std::string& gguf_path, const std::string& component = "",
+                                           std::string* err = nullptr);
     ~CedTagger();
     CedTagger(const CedTagger&) = delete;
     CedTagger& operator=(const CedTagger&) = delete;

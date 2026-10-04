@@ -13,11 +13,11 @@
 
 namespace pk {
 
-std::unique_ptr<DiarizationModel> DiarizationModel::load(const std::string& path) {
+std::unique_ptr<DiarizationModel> DiarizationModel::load(const std::string& path, const std::string& component) {
     // unique_ptr<DiarizationModel> via private ctor: construct then load.
     std::unique_ptr<DiarizationModel> m(new (std::nothrow) DiarizationModel());
     if (!m) return nullptr;
-    if (!m->loader_.load(path)) return nullptr;
+    if (!(component.empty() ? m->loader_.load(path) : m->loader_.load_component(path, component))) return nullptr;
 
     const auto& cfg = m->loader_.config();
     if (cfg.arch != "diarization") {

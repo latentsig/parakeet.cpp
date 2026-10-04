@@ -22,6 +22,7 @@
 #include "transcription_json.hpp"
 #include "vad_json.hpp"
 #include "silero_vad.hpp"
+#include "bundle.hpp"
 #include "audio_io.hpp"
 
 #include <algorithm>
@@ -250,7 +251,99 @@ extern "C" int parakeet_capi_abi_version(void) {
     return PARAKEET_CAPI_ABI_VERSION;
 }
 
-extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
+namespace {
+
+// Reason for the last failed parakeet_capi_load / _load_component /
+// _bundle_components_json on this thread (there is no context to hold it).
+thread_local std::string g_load_error;
+
+parakeet_ctx* load_plain(const char* gguf_path);
+
+// Opens one component of a bundle GGUF, by the kind recorded in the header.
+parakeet_ctx* load_bundle_component(const char* path, const std::string& name) {
+    pk::BundleInfo info;
+    std::string err;
+    if (!pk::read_bundle_info(path, info, &err)) { g_load_error = err; return nullptr; }
+    const pk::BundleComponent* c = info.find(name);
+    if (!c) {
+        g_load_error = std::string("bundle has no component \"") + name + "\"; components: " +
+                       pk::bundle_component_names(info);
+        return nullptr;
+    }
+    std::unique_ptr<parakeet_ctx> ctx(new (std::nothrow) parakeet_ctx());
+    if (!ctx) { g_load_error = "out of memory"; return nullptr; }
+    if (c->kind == pk::kBundleKindAsr) {
+        ctx->model = pk::Model::load(path, name);
+        if (!ctx->model) {
+            g_load_error = "cannot load ASR component \"" + name + "\" (see the log for the reason)";
+            return nullptr;
+        }
+    } else if (c->kind == pk::kBundleKindDiar) {
+        ctx->diar = pk::DiarizationModel::load(path, name);
+        if (!ctx->diar) {
+            g_load_error = "cannot load diarization component \"" + name + "\" (see the log for the reason)";
+            return nullptr;
+        }
+    } else if (c->kind == pk::kBundleKindCed) {
+        ctx->tagger = pk::CedTagger::load(path, name, &err);
+        if (!ctx->tagger) { g_load_error = "cannot load sound component \"" + name + "\": " + err; return nullptr; }
+    } else if (c->kind == pk::kBundleKindVoice) {
+        try {
+            ctx->speaker = pk::SpeakerEncoder::load(path, name, &err);
+        } catch (...) { ctx->speaker.reset(); }
+        if (!ctx->speaker) { g_load_error = "cannot load voice component \"" + name + "\": " + err; return nullptr; }
+        // Profiles are tied to the exact model. For a component the identity is the sha256
+        // of the single-model file it was built from, recorded in the bundle header, so a
+        // voice enrolled with the standalone file matches the same model inside a bundle.
+        const std::string& h = c->source_sha256;
+        bool hex = h.size() == 64;
+        for (char ch : h) hex = hex && ((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'));
+        if (!hex) {
+            g_load_error = "voice component \"" + name + "\" has no valid source_sha256 in the bundle header, "
+                           "which is its speaker model identity";
+            return nullptr;
+        }
+        ctx->speaker_identity = "sha256:" + h;
+    } else if (c->kind == pk::kBundleKindVad && pk::bundle_vad_is_slice(path, name)) {
+        // A VAD-only slice: same context as a standalone slice file.
+        ctx->vad_model = pk::Model::load_vad_only(path, name);
+        if (!ctx->vad_model) {
+            g_load_error = "cannot load VAD-only component \"" + name + "\" (see the log for the reason)";
+            return nullptr;
+        }
+    } else if (c->kind == pk::kBundleKindVad) {
+        ctx->silero = pk::SileroVad::load(path, &err, name);
+        if (!ctx->silero) { g_load_error = err; return nullptr; }
+    } else {
+        g_load_error = "component \"" + name + "\" has kind \"" + c->kind + "\", which this build cannot load";
+        return nullptr;
+    }
+    return ctx.release();
+}
+
+parakeet_ctx* load_impl(const char* path, const char* component) {
+    g_load_error.clear();
+    if (!path) { g_load_error = "path is NULL"; return nullptr; }
+    const bool bundle = pk::gguf_is_bundle(path);
+    if (component && *component) {
+        if (!bundle) { g_load_error = std::string(path) + " is not a bundle GGUF, so it has no components"; return nullptr; }
+        return load_bundle_component(path, component);
+    }
+    if (bundle) {
+        pk::BundleInfo info;
+        std::string err, name;
+        if (!pk::read_bundle_info(path, info, &err) || !pk::select_default_component(info, name, &err)) {
+            g_load_error = err;
+            return nullptr;
+        }
+        return load_bundle_component(path, name);
+    }
+    parakeet_ctx* c = load_plain(path);
+    if (!c) g_load_error = std::string("cannot load ") + path + " (see the log for the reason)";
+    return c;
+}
+
+parakeet_ctx* load_plain(const char* gguf_path) {
     if (!gguf_path) return nullptr;
     try {
         auto* ctx = new (std::nothrow) parakeet_ctx();
@@ -317,6 +410,35 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
         // Never let an exception cross the boundary.
         return nullptr;
     }
+}
+
+} // namespace
+
+extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
+    try { return load_impl(gguf_path, nullptr); }
+    catch (...) { g_load_error = "unknown error"; return nullptr; }
+}
+
+extern "C" parakeet_ctx* parakeet_capi_load_component(const char* gguf_path, const char* component) {
+    try { return load_impl(gguf_path, component); }
+    catch (...) { g_load_error = "unknown error"; return nullptr; }
+}
+
+extern "C" char* parakeet_capi_bundle_components_json(const char* gguf_path) {
+    g_load_error.clear();
+    if (!gguf_path) { g_load_error = "path is NULL"; return nullptr; }
+    try {
+        pk::BundleInfo info;
+        std::string err;
+        if (!pk::read_bundle_info(gguf_path, info, &err)) { g_load_error = err; return nullptr; }
+        char* out = dup_to_c(pk::bundle_components_json(info));
+        if (!out) g_load_error = "out of memory";
+        return out;
+    } catch (...) { g_load_error = "unknown error"; return nullptr; }
+}
+
+extern "C" const char* parakeet_capi_load_error(void) {
+    return g_load_error.c_str();
 }
 
 extern "C" void parakeet_capi_free(parakeet_ctx* ctx) {

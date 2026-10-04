@@ -1,5 +1,6 @@
 #include "ced_tagger.hpp"
 
+#include "bundle_extract.hpp"
 #include "gguf.h"
 
 #ifdef PARAKEET_WITH_CED
@@ -23,9 +24,21 @@ bool gguf_is_ced(const std::string& path) {
 
 bool CedTagger::available() { return true; }
 
-std::unique_ptr<CedTagger> CedTagger::load(const std::string& path) {
-    ced_ctx* c = ced_capi_load(path.c_str());
-    if (!c) return nullptr;
+std::unique_ptr<CedTagger> CedTagger::load(const std::string& path, const std::string& component,
+                                           std::string* err) {
+    ced_ctx* c = nullptr;
+    if (component.empty()) {
+        c = ced_capi_load(path.c_str());
+    } else {
+        std::string e;
+        std::unique_ptr<ComponentFile> cf = ComponentFile::create(path, component, &e);
+        if (!cf) { if (err) *err = e; return nullptr; }
+        c = ced_capi_load(cf->path().c_str());   // the file is removed when cf goes out of scope
+    }
+    if (!c) {
+        if (err && err->empty()) *err = "cannot load the sound model " + (component.empty() ? path : component);
+        return nullptr;
+    }
     std::unique_ptr<CedTagger> t(new CedTagger());
     t->ctx_ = c;
     return t;
@@ -55,7 +68,10 @@ SoundScorer CedTagger::scorer() {
 #else  // PARAKEET_WITH_CED
 
 bool CedTagger::available() { return false; }
-std::unique_ptr<CedTagger> CedTagger::load(const std::string&) { return nullptr; }
+std::unique_ptr<CedTagger> CedTagger::load(const std::string&, const std::string&, std::string* err) {
+    if (err) *err = "this build has no sound-event support (PARAKEET_WITH_CED=OFF)";
+    return nullptr;
+}
 CedTagger::~CedTagger() = default;
 int CedTagger::n_classes() const { return 0; }
 const char* CedTagger::label(int) const { return nullptr; }
