@@ -157,6 +157,21 @@ and the `parakeet_capi_vad_*` functions accept the file (`Model::load_vad_only`)
 diarize, stream) fails with "context holds a VAD-only model" or a load error.
 Files that are not slices load exactly as before.
 
+### Published slices
+
+Two slices are published in [`mudler/parakeet-cpp-gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf).
+They are cut out of Moondream's models, not trained here, and carry the same
+CC-BY-4.0 license: credit Moondream and NVIDIA.
+
+| File | Parent | Size (bytes) | SHA-256 |
+|---|---|---:|---|
+| [`redux-vad.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/redux-vad.gguf) | parakeet-redux | 9,939,488 | `588e1d6e2ee5b6cdfd9ec5ea98dc0993d5bea498d9cc4ec8d6077041eef8a34f` |
+| [`ultra-vad-q8_0.gguf`](https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/ultra-vad-q8_0.gguf) | parakeet-ultra, Q8_0 | 6,007,328 | `8b891a4435e97438104ca07c72530d0c5fe62b986baee48b2dd4e1500c1d4758` |
+
+    parakeet-cli vad --model redux-vad.gguf --input audio.wav
+
+A slice cannot transcribe, diarize or stream.
+
 The two Redux parents (packed ternary and dequantized F16) give slices with the same
 tensors: the subsampler and the head are not ternary. The Ultra Q8_0 parent has a
 Q8_0 final subsampler projection, so its slice is 6.0 MB; the F16 parents give
