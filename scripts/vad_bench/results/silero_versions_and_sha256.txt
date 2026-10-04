@@ -1,0 +1,16 @@
+whisper.cpp 60c0be6ac8fa71b1a2ae2dd938a31a34a508e774 Fri Oct 2 15:21:13 2026 +0200
+set(WHISPER_VERSION_MAJOR 1)
+parakeet.cpp c1a8391102d34074f48e758c441758327d2465b7 Merge origin/master into feat/vad-silero-api
+parakeet ggml e705c5fe
+gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+cmake version 3.28.3
+8160489282352accc0e95925c2f6bf3d76fb8f7bccdce5c7e46808cb15e8443c  silero-vad-f16.gguf
+1398e5ce230bd8f20c06f825ed3a41dc4528ef7e6fe8f8ec8a5b7aedefbee943  silero-vad-f32.gguf
+1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3  silero_vad.onnx
+2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987  ggml-silero-v6.2.0.bin
+abd79739d3ff4bc37fa1d24f1fca8244f2e31ec9f0bb7ea6244b185bfaa0b8e6  ggml-silero-v6.2.3-ggml.bin
+921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f  ggml-tiny.en.bin
+5b8e79aac593eb87aab62e2083d63e557570d7376b73e8f50c08adfbdbb69767  whisper.cpp/build/bin/whisper-cli
+bf89b74f4a104ff32996eca405b5d5a13fefcdfb74882e5f131b849be37276ea  whisper.cpp/build/bin/whisper-vad-speech-segments
+31bc6b76f9929042e9b47bac13f521c732dc072818df81bee01531fcfc558aec  wvad
+ed5bb79c419fef6e8e31a3fee650fbdac2ed3c931f03102bbd6f5b7c04a0879e  build/examples/cli/parakeet-cli

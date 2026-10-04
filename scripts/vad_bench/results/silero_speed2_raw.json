@@ -1,0 +1,110 @@
+[
+ {
+  "job": "onnxruntime_python_1thr_detect_only",
+  "wall": 0.8058516788296402,
+  "inproc": 0.6678,
+  "rss_kb": 106744,
+  "user": 0.76,
+  "mean_runnable": 4.8,
+  "load1": 4.9,
+  "quiet": true,
+  "attempts": 1,
+  "round": 0
+ },
+ {
+  "job": "whisper-cli_tiny.en_novad",
+  "wall": 15.08737738407217,
+  "inproc": null,
+  "rss_kb": 296592,
+  "user": 14.98,
+  "mean_runnable": 4.0,
+  "load1": 4.69,
+  "quiet": true,
+  "attempts": 1,
+  "round": 0
+ },
+ {
+  "job": "whisper-cli_tiny.en_vad",
+  "wall": 19.682566916104406,
+  "inproc": null,
+  "rss_kb": 314876,
+  "user": 18.18,
+  "mean_runnable": 4.4,
+  "load1": 4.59,
+  "quiet": true,
+  "attempts": 1,
+  "round": 0
+ },
+ {
+  "job": "whisper-cli_tiny.en_novad",
+  "wall": 15.358130356995389,
+  "inproc": null,
+  "rss_kb": 296748,
+  "user": 15.26,
+  "mean_runnable": 3.7,
+  "load1": 6.22,
+  "quiet": true,
+  "attempts": 2,
+  "round": 1
+ },
+ {
+  "job": "whisper-cli_tiny.en_vad",
+  "wall": 19.611542615108192,
+  "inproc": null,
+  "rss_kb": 314880,
+  "user": 18.22,
+  "mean_runnable": 3.7,
+  "load1": 7.3,
+  "quiet": true,
+  "attempts": 11,
+  "round": 1
+ },
+ {
+  "job": "onnxruntime_python_1thr_detect_only",
+  "wall": 1.241450318833813,
+  "inproc": 0.7934,
+  "rss_kb": 106540,
+  "user": 0.69,
+  "mean_runnable": 3.0,
+  "load1": 6.26,
+  "quiet": true,
+  "attempts": 1,
+  "round": 1
+ },
+ {
+  "job": "whisper-cli_tiny.en_vad",
+  "wall": 20.62023510481231,
+  "inproc": null,
+  "rss_kb": 314540,
+  "user": 18.96,
+  "mean_runnable": 5.4,
+  "load1": 4.6,
+  "quiet": true,
+  "attempts": 10,
+  "round": 2
+ },
+ {
+  "job": "onnxruntime_python_1thr_detect_only",
+  "wall": 0.7381441139150411,
+  "inproc": 0.607,
+  "rss_kb": 106712,
+  "user": 0.71,
+  "mean_runnable": 2.8,
+  "load1": 6.91,
+  "quiet": true,
+  "attempts": 4,
+  "round": 2
+ },
+ {
+  "job": "whisper-cli_tiny.en_novad",
+  "wall": 15.142986833816394,
+  "inproc": null,
+  "rss_kb": 296756,
+  "user": 15.04,
+  "mean_runnable": 2.9,
+  "load1": 8.26,
+  "quiet": true,
+  "attempts": 11,
+  "round": 2
+ }
+]

@@ -1,0 +1,18 @@
+ultra-q8_0 full        load-only    peak RSS    905.1 MiB
+ultra-q8_0 full        load+vad33s  peak RSS   1133.4 MiB
+ultra-q8_0 slice       load-only    peak RSS     11.7 MiB
+ultra-q8_0 slice       load+vad33s  peak RSS    240.7 MiB
+ultra-f16 full         load-only    peak RSS   1382.4 MiB
+ultra-f16 full         load+vad33s  peak RSS   1612.3 MiB
+ultra-f16 slice        load-only    peak RSS     15.5 MiB
+ultra-f16 slice        load+vad33s  peak RSS    245.5 MiB
+redux-keep full        load-only    peak RSS    372.1 MiB
+redux-keep full        load+vad33s  peak RSS    602.7 MiB
+redux-keep slice       load-only    peak RSS     15.5 MiB
+redux-keep slice       load+vad33s  peak RSS    245.9 MiB
+redux-deq-f16 full     load-only    peak RSS   1382.4 MiB
+redux-deq-f16 full     load+vad33s  peak RSS   1612.4 MiB
+redux-deq-f16 slice    load-only    peak RSS     15.5 MiB
+redux-deq-f16 slice    load+vad33s  peak RSS    246.4 MiB
+silero-vad-f16         load-only    peak RSS      8.9 MiB
+silero-vad-f16         load+vad33s  peak RSS     13.3 MiB

@@ -1,0 +1,496 @@
+22:25:57 load ultra-q8_0 full cold=False mean_runnable=22.2 load1=10.02 ok=False 
+22:26:37 load ultra-q8_0 full cold=False mean_runnable=8.2 load1=9.38 ok=False 
+22:27:17 load ultra-q8_0 full cold=False mean_runnable=6.0 load1=9.12 ok=False 
+22:27:57 load ultra-q8_0 full cold=False mean_runnable=13.8 load1=13.77 ok=False 
+22:28:37 load ultra-q8_0 full cold=False mean_runnable=8.9 load1=11.14 ok=False 
+22:29:17 load ultra-q8_0 full cold=False mean_runnable=16.6 load1=13.7 ok=False 
+22:29:57 load ultra-q8_0 full cold=False mean_runnable=5.2 load1=9.73 ok=False 
+22:30:37 load ultra-q8_0 full cold=False mean_runnable=3.8 load1=6.89 ok=True 
+22:30:50 load ultra-q8_0 full cold=True mean_runnable=3.3 load1=6.62 ok=True 
+22:31:05 load ultra-q8_0 slice cold=False mean_runnable=2.6 load1=5.83 ok=True 
+22:31:15 load ultra-q8_0 slice cold=True mean_runnable=4.2 load1=5.47 ok=False 
+22:31:55 load ultra-q8_0 slice cold=True mean_runnable=4.5 load1=5.48 ok=False 
+22:32:35 load ultra-q8_0 slice cold=True mean_runnable=8.7 load1=6.49 ok=False 
+22:33:15 load ultra-q8_0 slice cold=True mean_runnable=10.5 load1=11.38 ok=False 
+22:33:55 load ultra-q8_0 slice cold=True mean_runnable=5.6 load1=10.29 ok=False 
+22:34:35 load ultra-q8_0 slice cold=True mean_runnable=2.1 load1=6.89 ok=True 
+22:34:45 load ultra-f16 full cold=False mean_runnable=4.1 load1=6.14 ok=False 
+22:35:25 load ultra-f16 full cold=False mean_runnable=3.2 load1=4.56 ok=True 
+22:35:40 load ultra-f16 full cold=True mean_runnable=2.5 load1=4.13 ok=True 
+22:35:57 load ultra-f16 slice cold=False mean_runnable=2.7 load1=3.82 ok=True 
+22:36:07 load ultra-f16 slice cold=True mean_runnable=2.7 load1=3.46 ok=True 
+22:36:17 load redux-keep full cold=False mean_runnable=2.3 load1=3.32 ok=True 
+22:36:28 load redux-keep full cold=True mean_runnable=2.2 load1=3.12 ok=True 
+22:36:40 load redux-keep slice cold=False mean_runnable=2.5 load1=2.94 ok=True 
+22:36:50 load redux-keep slice cold=True mean_runnable=2.3 load1=2.72 ok=True 
+22:37:00 load redux-deq-f16 full cold=False mean_runnable=1.9 load1=2.53 ok=True 
+22:37:15 load redux-deq-f16 full cold=True mean_runnable=2.1 load1=2.63 ok=True 
+22:37:32 load redux-deq-f16 slice cold=False mean_runnable=2.8 load1=3.61 ok=True 
+22:37:42 load redux-deq-f16 slice cold=True mean_runnable=2.6 load1=3.45 ok=True 
+22:37:52 load silero-vad-f16 cold=False mean_runnable=1.6 load1=3.22 ok=True 
+22:38:02 load silero-vad-f16 cold=True mean_runnable=2.5 load1=3.04 ok=True 
+22:38:26 load ultra-q8_0 full cold=False mean_runnable=11.6 load1=5.64 ok=False 
+22:39:06 load ultra-q8_0 full cold=False mean_runnable=9.6 load1=9.64 ok=False 
+22:39:46 load ultra-q8_0 full cold=False mean_runnable=3.4 load1=7.5 ok=True 
+22:39:59 load ultra-q8_0 full cold=True mean_runnable=5.5 load1=9.37 ok=False 
+22:40:39 load ultra-q8_0 full cold=True mean_runnable=17.2 load1=9.03 ok=False 
+22:41:19 load ultra-q8_0 full cold=True mean_runnable=27.4 load1=19.5 ok=False 
+22:41:59 load ultra-q8_0 full cold=True mean_runnable=8.2 load1=17.44 ok=False 
+22:42:39 load ultra-q8_0 full cold=True mean_runnable=22.4 load1=20.98 ok=False 
+22:43:19 load ultra-q8_0 full cold=True mean_runnable=14.9 load1=18.05 ok=False 
+22:43:59 load ultra-q8_0 full cold=True mean_runnable=4.2 load1=13.28 ok=False 
+22:44:39 load ultra-q8_0 full cold=True mean_runnable=8.7 load1=9.15 ok=False 
+22:45:19 load ultra-q8_0 full cold=True mean_runnable=3.4 load1=7.49 ok=True 
+22:45:34 load ultra-q8_0 slice cold=False mean_runnable=4.7 load1=6.71 ok=False 
+22:46:14 load ultra-q8_0 slice cold=False mean_runnable=10.6 load1=8.53 ok=False 
+22:46:54 load ultra-q8_0 slice cold=False mean_runnable=9.9 load1=10.03 ok=False 
+22:47:34 load ultra-q8_0 slice cold=False mean_runnable=4.1 load1=8.36 ok=False 
+22:48:14 load ultra-q8_0 slice cold=False mean_runnable=17.4 load1=10.4 ok=False 
+22:48:54 load ultra-q8_0 slice cold=False mean_runnable=17.1 load1=11.38 ok=False 
+22:49:34 load ultra-q8_0 slice cold=False mean_runnable=4.3 load1=10.02 ok=False 
+22:50:14 load ultra-q8_0 slice cold=False mean_runnable=3.6 load1=7.13 ok=True 
+22:50:24 load ultra-q8_0 slice cold=True mean_runnable=6.3 load1=6.65 ok=False 
+22:51:04 load ultra-q8_0 slice cold=True mean_runnable=6.8 load1=5.5 ok=False 
+22:51:44 load ultra-q8_0 slice cold=True mean_runnable=35.9 load1=9.91 ok=False 
+22:52:24 load ultra-q8_0 slice cold=True mean_runnable=50.3 load1=21.91 ok=False 
+22:53:04 load ultra-q8_0 slice cold=True mean_runnable=29.2 load1=30.68 ok=False 
+22:53:44 load ultra-q8_0 slice cold=True mean_runnable=50.9 load1=35.89 ok=False 
+22:54:24 load ultra-q8_0 slice cold=True mean_runnable=54.1 load1=45.19 ok=False 
+22:55:04 load ultra-q8_0 slice cold=True mean_runnable=15.3 load1=40.41 ok=False 
+22:55:44 load ultra-q8_0 slice cold=True mean_runnable=57.2 load1=44.67 ok=False 
+22:56:24 load ultra-q8_0 slice cold=True mean_runnable=56.6 load1=54.46 ok=False 
+22:57:05 load ultra-q8_0 slice cold=True mean_runnable=62.5 load1=60.04 ok=False 
+22:57:45 load ultra-q8_0 slice cold=True mean_runnable=52.5 load1=61.9 ok=False 
+22:58:39 speed round0 t1 mean_runnable=44.2 load1=60.45 ok=False 
+not quiet, retry in 30s
+22:59:19 speed round0 t1 mean_runnable=33.6 load1=52.13 ok=False 
+not quiet, retry in 30s
+22:59:59 speed round0 t1 mean_runnable=14.6 load1=38.61 ok=False 
+not quiet, retry in 30s
+23:00:39 speed round0 t1 mean_runnable=21.9 load1=32.01 ok=False 
+not quiet, retry in 30s
+23:01:19 speed round0 t1 mean_runnable=22.2 load1=27.61 ok=False 
+not quiet, retry in 30s
+23:01:59 speed round0 t1 mean_runnable=52.0 load1=46.33 ok=False 
+not quiet, retry in 30s
+23:02:39 speed round0 t1 mean_runnable=23.1 load1=46.53 ok=False 
+not quiet, retry in 30s
+23:03:19 speed round0 t1 mean_runnable=24.4 load1=41.51 ok=False 
+not quiet, retry in 30s
+23:03:59 speed round0 t1 mean_runnable=18.2 load1=33.9 ok=False 
+not quiet, retry in 30s
+23:04:39 speed round0 t1 mean_runnable=16.6 load1=29.14 ok=False 
+not quiet, retry in 30s
+23:05:20 speed round0 t1 mean_runnable=65.3 load1=32.34 ok=False 
+not quiet, retry in 30s
+23:06:00 speed round0 t1 mean_runnable=50.5 load1=44.47 ok=False 
+not quiet, retry in 30s
+23:06:40 speed round0 t1 mean_runnable=31.5 load1=48.52 ok=False 
+not quiet, retry in 30s
+23:07:20 speed round0 t1 mean_runnable=24.8 load1=36.49 ok=False 
+not quiet, retry in 30s
+23:08:00 speed round0 t1 mean_runnable=20.0 load1=32.66 ok=False 
+not quiet, retry in 30s
+23:08:40 speed round0 t1 mean_runnable=6.3 load1=19.66 ok=False 
+not quiet, retry in 30s
+23:09:20 speed round0 t1 mean_runnable=9.8 load1=13.76 ok=False 
+not quiet, retry in 30s
+23:10:00 speed round0 t1 mean_runnable=11.1 load1=13.02 ok=False 
+not quiet, retry in 30s
+23:10:40 speed round0 t1 mean_runnable=4.7 load1=9.44 ok=False 
+not quiet, retry in 30s
+23:11:20 speed round0 t1 mean_runnable=8.3 load1=8.63 ok=False 
+not quiet, retry in 30s
+23:12:00 speed round0 t1 mean_runnable=8.2 load1=13.15 ok=False 
+not quiet, retry in 30s
+23:12:40 speed round0 t1 mean_runnable=11.8 load1=12.36 ok=False 
+not quiet, retry in 30s
+23:13:20 speed round0 t1 mean_runnable=22.9 load1=14.04 ok=False 
+not quiet, retry in 30s
+23:14:00 speed round0 t1 mean_runnable=6.2 load1=13.68 ok=False 
+not quiet, retry in 30s
+23:14:40 speed round0 t1 mean_runnable=3.9 load1=9.33 ok=True 
+23:14:51 speed round0 t8 mean_runnable=4.2 load1=7.71 ok=False 
+not quiet, retry in 30s
+23:15:31 speed round0 t8 mean_runnable=4.9 load1=5.74 ok=False 
+not quiet, retry in 30s
+23:16:11 speed round0 t8 mean_runnable=4.0 load1=5.63 ok=False 
+not quiet, retry in 30s
+23:16:51 speed round0 t8 mean_runnable=7.0 load1=6.84 ok=False 
+not quiet, retry in 30s
+23:17:31 speed round0 t8 mean_runnable=4.7 load1=5.52 ok=False 
+not quiet, retry in 30s
+23:18:11 speed round0 t8 mean_runnable=5.7 load1=5.22 ok=False 
+not quiet, retry in 30s
+23:18:51 speed round0 t8 mean_runnable=4.8 load1=5.23 ok=False 
+not quiet, retry in 30s
+23:19:31 speed round0 t8 mean_runnable=8.6 load1=6.58 ok=False 
+not quiet, retry in 30s
+23:20:11 speed round0 t8 mean_runnable=4.0 load1=5.76 ok=True 
+23:20:23 speed round1 t1 mean_runnable=3.5 load1=5.41 ok=True 
+23:20:34 speed round1 t8 mean_runnable=4.8 load1=5.66 ok=False 
+not quiet, retry in 30s
+23:21:14 speed round1 t8 mean_runnable=15.0 load1=9.33 ok=False 
+not quiet, retry in 30s
+23:21:54 speed round1 t8 mean_runnable=4.0 load1=15.65 ok=True 
+23:22:05 speed round2 t1 mean_runnable=14.3 load1=17.87 ok=False 
+not quiet, retry in 30s
+23:22:45 speed round2 t1 mean_runnable=62.0 load1=26.47 ok=False 
+not quiet, retry in 30s
+23:23:26 speed round2 t1 mean_runnable=71.2 load1=45.48 ok=False 
+not quiet, retry in 30s
+23:24:06 speed round2 t1 mean_runnable=11.1 load1=29.91 ok=False 
+not quiet, retry in 30s
+23:24:46 speed round2 t1 mean_runnable=2.4 load1=17.33 ok=True 
+23:24:57 speed round2 t8 mean_runnable=2.8 load1=14.43 ok=True 
+23:25:08 speed round3 t1 mean_runnable=3.6 load1=12.66 ok=True 
+23:25:20 speed round3 t8 mean_runnable=2.4 load1=11.1 ok=True 
+23:25:31 speed round4 t1 mean_runnable=3.1 load1=9.3 ok=True 
+23:25:42 speed round4 t8 mean_runnable=2.4 load1=8.26 ok=True 
+--- rerun speed with local data copy
+23:26:32 speed round0 t1 mean_runnable=3.0 load1=5.14 ok=True 
+23:27:37 speed round0 t8 mean_runnable=2.2 load1=5.01 ok=True 
+23:28:09 speed round1 t1 mean_runnable=3.2 load1=5.26 ok=True 
+23:29:16 speed round1 t8 mean_runnable=11.8 load1=7.37 ok=False 
+not quiet, retry in 30s
+23:29:56 speed round1 t8 mean_runnable=19.1 load1=12.11 ok=False 
+not quiet, retry in 30s
+23:30:36 speed round1 t8 mean_runnable=3.4 load1=13.89 ok=True 
+23:31:09 speed round2 t1 mean_runnable=3.5 load1=12.67 ok=True 
+23:32:17 speed round2 t8 mean_runnable=37.2 load1=22.05 ok=False 
+not quiet, retry in 30s
+23:32:57 speed round2 t8 mean_runnable=7.2 load1=19.81 ok=False 
+not quiet, retry in 30s
+23:33:37 speed round2 t8 mean_runnable=39.3 load1=23.89 ok=False 
+not quiet, retry in 30s
+23:34:17 speed round2 t8 mean_runnable=5.8 load1=24.75 ok=False 
+not quiet, retry in 30s
+23:34:57 speed round2 t8 mean_runnable=10.6 load1=16.44 ok=False 
+not quiet, retry in 30s
+23:35:37 speed round2 t8 mean_runnable=17.6 load1=19.24 ok=False 
+not quiet, retry in 30s
+23:36:17 speed round2 t8 mean_runnable=3.8 load1=12.7 ok=True 
+23:36:51 speed round3 t1 mean_runnable=3.7 load1=11.9 ok=True 
+23:37:58 speed round3 t8 mean_runnable=8.5 load1=9.58 ok=False 
+not quiet, retry in 30s
+23:38:38 speed round3 t8 mean_runnable=9.4 load1=8.78 ok=False 
+not quiet, retry in 30s
+23:39:18 speed round3 t8 mean_runnable=4.2 load1=8.13 ok=False 
+not quiet, retry in 30s
+23:39:58 speed round3 t8 mean_runnable=7.7 load1=7.36 ok=False 
+not quiet, retry in 30s
+23:40:38 speed round3 t8 mean_runnable=11.0 load1=6.69 ok=False 
+not quiet, retry in 30s
+23:41:18 speed round3 t8 mean_runnable=5.0 load1=7.02 ok=False 
+not quiet, retry in 30s
+23:41:58 speed round3 t8 mean_runnable=22.2 load1=13.86 ok=False 
+not quiet, retry in 30s
+23:42:38 speed round3 t8 mean_runnable=9.4 load1=13.08 ok=False 
+not quiet, retry in 30s
+23:43:18 speed round3 t8 mean_runnable=12.7 load1=13.06 ok=False 
+not quiet, retry in 30s
+23:43:58 speed round3 t8 mean_runnable=7.4 load1=12.51 ok=False 
+not quiet, retry in 30s
+23:44:38 speed round3 t8 mean_runnable=12.9 load1=12.55 ok=False 
+not quiet, retry in 30s
+23:45:18 speed round3 t8 mean_runnable=10.8 load1=11.65 ok=False 
+not quiet, retry in 30s
+23:45:58 speed round3 t8 mean_runnable=17.6 load1=14.55 ok=False 
+not quiet, retry in 30s
+23:46:38 speed round3 t8 mean_runnable=30.9 load1=22.36 ok=False 
+not quiet, retry in 30s
+23:47:18 speed round3 t8 mean_runnable=23.1 load1=25.02 ok=False 
+not quiet, retry in 30s
+23:47:58 speed round3 t8 mean_runnable=83.7 load1=43.53 ok=False 
+not quiet, retry in 30s
+23:48:38 speed round3 t8 mean_runnable=119.0 load1=67.52 ok=False 
+not quiet, retry in 30s
+23:49:18 speed round3 t8 mean_runnable=90.1 load1=103.67 ok=False 
+not quiet, retry in 30s
+23:49:58 speed round3 t8 mean_runnable=113.4 load1=96.99 ok=False 
+not quiet, retry in 30s
+23:50:38 speed round3 t8 mean_runnable=119.6 load1=119.77 ok=False 
+not quiet, retry in 30s
+23:51:18 speed round3 t8 mean_runnable=53.0 load1=102.39 ok=False 
+not quiet, retry in 30s
+23:51:58 speed round3 t8 mean_runnable=61.3 load1=87.49 ok=False 
+not quiet, retry in 30s
+23:52:38 speed round3 t8 mean_runnable=51.3 load1=88.8 ok=False 
+not quiet, retry in 30s
+23:53:18 speed round3 t8 mean_runnable=72.8 load1=88.13 ok=False 
+not quiet, retry in 30s
+23:53:58 speed round3 t8 mean_runnable=65.3 load1=83.06 ok=False 
+not quiet, retry in 30s
+23:54:38 speed round3 t8 mean_runnable=80.5 load1=82.42 ok=False 
+not quiet, retry in 30s
+23:55:18 speed round3 t8 mean_runnable=76.4 load1=89.03 ok=False 
+not quiet, retry in 30s
+23:55:58 speed round3 t8 mean_runnable=46.8 load1=80.18 ok=False 
+not quiet, retry in 30s
+23:56:38 speed round3 t8 mean_runnable=14.1 load1=61.31 ok=False 
+not quiet, retry in 30s
+23:57:18 speed round3 t8 mean_runnable=18.6 load1=42.61 ok=False 
+not quiet, retry in 30s
+23:57:58 speed round3 t8 mean_runnable=24.1 load1=31.22 ok=False 
+not quiet, retry in 30s
+23:58:38 speed round3 t8 mean_runnable=30.4 load1=27.78 ok=False 
+not quiet, retry in 30s
+23:59:18 speed round3 t8 mean_runnable=83.2 load1=52.49 ok=False 
+not quiet, retry in 30s
+23:59:58 speed round3 t8 mean_runnable=41.8 load1=48.26 ok=False 
+not quiet, retry in 30s
+00:00:38 speed round3 t8 mean_runnable=72.8 load1=55.97 ok=False 
+not quiet, retry in 30s
+00:01:18 speed round3 t8 mean_runnable=10.9 load1=46.46 ok=False 
+not quiet, retry in 30s
+00:01:58 speed round3 t8 mean_runnable=16.4 load1=31.58 ok=False 
+not quiet, retry in 30s
+00:02:38 speed round3 t8 mean_runnable=18.3 load1=25.8 ok=False 
+not quiet, retry in 30s
+00:03:18 speed round3 t8 mean_runnable=61.1 load1=26.92 ok=False 
+not quiet, retry in 30s
+00:03:58 speed round3 t8 mean_runnable=108.9 load1=65.61 ok=False 
+not quiet, retry in 30s
+00:04:38 speed round3 t8 mean_runnable=78.7 load1=66.31 ok=False 
+not quiet, retry in 30s
+00:05:18 speed round3 t8 mean_runnable=40.3 load1=64.74 ok=False 
+not quiet, retry in 30s
+00:05:58 speed round3 t8 mean_runnable=32.8 load1=52.31 ok=False 
+not quiet, retry in 30s
+00:06:38 speed round3 t8 mean_runnable=56.0 load1=49.43 ok=False 
+not quiet, retry in 30s
+00:07:18 speed round3 t8 mean_runnable=60.2 load1=60.68 ok=False 
+not quiet, retry in 30s
+00:07:58 speed round3 t8 mean_runnable=113.5 load1=81.87 ok=False 
+not quiet, retry in 30s
+00:08:38 speed round3 t8 mean_runnable=64.5 load1=80.12 ok=False 
+not quiet, retry in 30s
+00:09:18 speed round3 t8 mean_runnable=52.6 load1=71.99 ok=False 
+not quiet, retry in 30s
+00:09:58 speed round3 t8 mean_runnable=51.6 load1=65.16 ok=False 
+not quiet, retry in 30s
+00:10:38 speed round3 t8 mean_runnable=79.2 load1=72.1 ok=False 
+not quiet, retry in 30s
+00:11:18 speed round3 t8 mean_runnable=47.8 load1=68.7 ok=False 
+not quiet, retry in 30s
+00:11:58 speed round3 t8 mean_runnable=29.4 load1=54.79 ok=False 
+not quiet, retry in 30s
+00:12:38 speed round3 t8 mean_runnable=36.2 load1=45.03 ok=False 
+not quiet, retry in 30s
+00:13:18 speed round3 t8 mean_runnable=46.0 load1=50.37 ok=False 
+not quiet, retry in 30s
+00:13:58 speed round3 t8 mean_runnable=15.9 load1=37.31 ok=False 
+not quiet, retry in 30s
+00:14:38 speed round3 t8 mean_runnable=12.8 load1=24.53 ok=False 
+not quiet, retry in 30s
+00:15:18 speed round3 t8 mean_runnable=9.1 load1=20.61 ok=False 
+not quiet, retry in 30s
+00:15:58 speed round3 t8 mean_runnable=26.6 load1=23.46 ok=False 
+not quiet, retry in 30s
+00:16:38 speed round3 t8 mean_runnable=44.2 load1=29.85 ok=False 
+not quiet, retry in 30s
+00:17:18 speed round3 t8 mean_runnable=20.3 load1=22.12 ok=False 
+not quiet, retry in 30s
+00:17:58 speed round3 t8 mean_runnable=10.2 load1=23.32 ok=False 
+not quiet, retry in 30s
+00:18:38 speed round3 t8 mean_runnable=20.4 load1=19.81 ok=False 
+not quiet, retry in 30s
+00:19:18 speed round3 t8 mean_runnable=33.9 load1=18.64 ok=False 
+not quiet, retry in 30s
+00:19:58 speed round3 t8 mean_runnable=38.0 load1=33.8 ok=False 
+not quiet, retry in 30s
+00:20:38 speed round3 t8 mean_runnable=36.8 load1=34.77 ok=False 
+not quiet, retry in 30s
+00:21:18 speed round3 t8 mean_runnable=29.9 load1=38.84 ok=False 
+not quiet, retry in 30s
+00:21:58 speed round3 t8 mean_runnable=34.6 load1=41.54 ok=False 
+not quiet, retry in 30s
+00:22:38 speed round3 t8 mean_runnable=27.6 load1=36.55 ok=False 
+not quiet, retry in 30s
+00:23:18 speed round3 t8 mean_runnable=13.7 load1=27.11 ok=False 
+not quiet, retry in 30s
+00:23:58 speed round3 t8 mean_runnable=37.2 load1=35.28 ok=False 
+not quiet, retry in 30s
+00:24:38 speed round3 t8 mean_runnable=29.1 load1=48.33 ok=False 
+not quiet, retry in 30s
+00:25:18 speed round3 t8 mean_runnable=5.2 load1=32.66 ok=False 
+not quiet, retry in 30s
+00:25:58 speed round3 t8 mean_runnable=5.4 load1=21.01 ok=False 
+not quiet, retry in 30s
+00:26:38 speed round3 t8 mean_runnable=63.4 load1=20.82 ok=False 
+not quiet, retry in 30s
+00:27:18 speed round3 t8 mean_runnable=98.2 load1=35.79 ok=False 
+not quiet, retry in 30s
+00:27:58 speed round3 t8 mean_runnable=10.6 load1=28.54 ok=False 
+not quiet, retry in 30s
+00:28:38 speed round3 t8 mean_runnable=26.8 load1=40.58 ok=False 
+not quiet, retry in 30s
+00:29:18 speed round3 t8 mean_runnable=93.5 load1=58.46 ok=False 
+not quiet, retry in 30s
+00:29:58 speed round3 t8 mean_runnable=11.2 load1=53.45 ok=False 
+not quiet, retry in 30s
+00:30:38 speed round3 t8 mean_runnable=35.5 load1=37.22 ok=False 
+not quiet, retry in 30s
+00:31:18 speed round3 t8 mean_runnable=92.5 load1=57.18 ok=False 
+not quiet, retry in 30s
+00:31:58 speed round3 t8 mean_runnable=89.3 load1=72.14 ok=False 
+not quiet, retry in 30s
+00:32:38 speed round3 t8 mean_runnable=10.2 load1=50.99 ok=False 
+not quiet, retry in 30s
+00:33:18 speed round3 t8 mean_runnable=12.2 load1=37.38 ok=False 
+not quiet, retry in 30s
+00:33:58 speed round3 t8 mean_runnable=15.9 load1=26.78 ok=False 
+not quiet, retry in 30s
+00:34:38 speed round3 t8 mean_runnable=21.4 load1=23.94 ok=False 
+not quiet, retry in 30s
+00:35:18 speed round3 t8 mean_runnable=17.2 load1=23.2 ok=False 
+not quiet, retry in 30s
+00:35:58 speed round3 t8 mean_runnable=51.4 load1=32.42 ok=False 
+not quiet, retry in 30s
+00:36:38 speed round3 t8 mean_runnable=8.5 load1=29.3 ok=False 
+not quiet, retry in 30s
+00:37:18 speed round3 t8 mean_runnable=23.8 load1=23.32 ok=False 
+not quiet, retry in 30s
+00:37:58 speed round3 t8 mean_runnable=58.1 load1=31.52 ok=False 
+not quiet, retry in 30s
+00:38:38 speed round3 t8 mean_runnable=67.2 load1=47.1 ok=False 
+not quiet, retry in 30s
+00:39:18 speed round3 t8 mean_runnable=19.9 load1=45.81 ok=False 
+not quiet, retry in 30s
+00:39:58 speed round3 t8 mean_runnable=27.9 load1=39.97 ok=False 
+not quiet, retry in 30s
+00:40:38 speed round3 t8 mean_runnable=23.8 load1=31.28 ok=False 
+not quiet, retry in 30s
+00:41:18 speed round3 t8 mean_runnable=30.2 load1=22.59 ok=False 
+not quiet, retry in 30s
+00:41:58 speed round3 t8 mean_runnable=70.0 load1=40.36 ok=False 
+not quiet, retry in 30s
+00:42:38 speed round3 t8 mean_runnable=61.5 load1=54.21 ok=False 
+not quiet, retry in 30s
+00:43:18 speed round3 t8 mean_runnable=39.9 load1=59.64 ok=False 
+not quiet, retry in 30s
+00:43:58 speed round3 t8 mean_runnable=50.9 load1=52.32 ok=False 
+not quiet, retry in 30s
+00:44:38 speed round3 t8 mean_runnable=35.5 load1=48.34 ok=False 
+not quiet, retry in 30s
+00:45:18 speed round3 t8 mean_runnable=11.1 load1=34.3 ok=False 
+not quiet, retry in 30s
+00:45:58 speed round3 t8 mean_runnable=8.1 load1=22.41 ok=False 
+not quiet, retry in 30s
+00:46:39 speed round3 t8 mean_runnable=89.8 load1=34.07 ok=False 
+not quiet, retry in 30s
+00:47:19 speed round3 t8 mean_runnable=21.6 load1=27.81 ok=False 
+not quiet, retry in 30s
+00:47:59 speed round3 t8 mean_runnable=55.2 load1=45.27 ok=False 
+not quiet, retry in 30s
+00:48:39 speed round3 t8 mean_runnable=53.6 load1=62.55 ok=False 
+not quiet, retry in 30s
+00:49:19 speed round3 t8 mean_runnable=90.2 load1=67.05 ok=False 
+not quiet, retry in 30s
+00:49:59 speed round3 t8 mean_runnable=42.9 load1=56.68 ok=False 
+not quiet, retry in 30s
+00:50:39 speed round3 t8 mean_runnable=69.0 load1=55.88 ok=False 
+not quiet, retry in 30s
+00:51:19 speed round3 t8 mean_runnable=24.2 load1=39.1 ok=False 
+not quiet, retry in 30s
+00:51:59 speed round3 t8 mean_runnable=4.6 load1=22.81 ok=False 
+not quiet, retry in 30s
+00:52:39 speed round3 t8 mean_runnable=10.3 load1=13.88 ok=False 
+not quiet, retry in 30s
+00:53:19 speed round3 t8 mean_runnable=5.5 load1=9.36 ok=False 
+not quiet, retry in 30s
+00:53:59 speed round3 t8 mean_runnable=5.2 load1=6.94 ok=False 
+not quiet, retry in 30s
+00:54:39 speed round3 t8 mean_runnable=11.3 load1=6.98 ok=False 
+not quiet, retry in 30s
+00:55:19 speed round3 t8 mean_runnable=13.4 load1=9.84 ok=False 
+not quiet, retry in 30s
+00:55:59 speed round3 t8 mean_runnable=3.7 load1=9.3 ok=True 
+00:56:34 speed round4 t1 mean_runnable=32.6 load1=18.42 ok=False 
+not quiet, retry in 30s
+00:57:14 speed round4 t1 mean_runnable=30.8 load1=28.52 ok=False 
+not quiet, retry in 30s
+00:57:54 speed round4 t1 mean_runnable=10.0 load1=33.09 ok=False 
+not quiet, retry in 30s
+00:58:34 speed round4 t1 mean_runnable=7.3 load1=20.45 ok=False 
+not quiet, retry in 30s
+00:59:14 speed round4 t1 mean_runnable=36.8 load1=24.39 ok=False 
+not quiet, retry in 30s
+00:59:54 speed round4 t1 mean_runnable=17.9 load1=17.4 ok=False 
+not quiet, retry in 30s
+01:00:34 speed round4 t1 mean_runnable=67.2 load1=21.99 ok=False 
+not quiet, retry in 30s
+01:01:14 speed round4 t1 mean_runnable=8.2 load1=26.74 ok=False 
+not quiet, retry in 30s
+01:01:54 speed round4 t1 mean_runnable=22.9 load1=20.96 ok=False 
+not quiet, retry in 30s
+01:02:34 speed round4 t1 mean_runnable=6.0 load1=13.64 ok=False 
+not quiet, retry in 30s
+01:03:14 speed round4 t1 mean_runnable=4.6 load1=11.96 ok=False 
+not quiet, retry in 30s
+01:03:54 speed round4 t1 mean_runnable=10.8 load1=9.54 ok=False 
+not quiet, retry in 30s
+01:04:34 speed round4 t1 mean_runnable=24.8 load1=22.15 ok=False 
+not quiet, retry in 30s
+01:05:14 speed round4 t1 mean_runnable=105.2 load1=43.74 ok=False 
+not quiet, retry in 30s
+01:05:54 speed round4 t1 mean_runnable=8.0 load1=40.64 ok=False 
+not quiet, retry in 30s
+01:06:34 speed round4 t1 mean_runnable=8.0 load1=26.94 ok=False 
+not quiet, retry in 30s
+01:07:14 speed round4 t1 mean_runnable=8.7 load1=16.64 ok=False 
+not quiet, retry in 30s
+01:07:54 speed round4 t1 mean_runnable=13.6 load1=13.63 ok=False 
+not quiet, retry in 30s
+01:08:34 speed round4 t1 mean_runnable=23.4 load1=14.55 ok=False 
+not quiet, retry in 30s
+01:09:15 speed round4 t1 mean_runnable=23.7 load1=23.17 ok=False 
+not quiet, retry in 30s
+01:09:55 speed round4 t1 mean_runnable=21.6 load1=25.05 ok=False 
+not quiet, retry in 30s
+01:10:35 speed round4 t1 mean_runnable=41.0 load1=28.11 ok=False 
+not quiet, retry in 30s
+01:11:15 speed round4 t1 mean_runnable=10.7 load1=20.96 ok=False 
+not quiet, retry in 30s
+01:11:55 speed round4 t1 mean_runnable=5.5 load1=18.81 ok=False 
+not quiet, retry in 30s
+01:12:35 speed round4 t1 mean_runnable=5.8 load1=13.02 ok=False 
+not quiet, retry in 30s
+01:13:15 speed round4 t1 mean_runnable=7.2 load1=9.47 ok=False 
+not quiet, retry in 30s
+01:13:55 speed round4 t1 mean_runnable=14.8 load1=8.18 ok=False 
+not quiet, retry in 30s
+01:14:35 speed round4 t1 mean_runnable=56.4 load1=18.69 ok=False 
+not quiet, retry in 30s
+01:15:15 speed round4 t1 mean_runnable=122.5 load1=58.63 ok=False 
+not quiet, retry in 30s
+01:15:55 speed round4 t1 mean_runnable=17.6 load1=46.06 ok=False 
+not quiet, retry in 30s
+01:16:35 speed round4 t1 mean_runnable=14.4 load1=46.05 ok=False 
+not quiet, retry in 30s
+01:17:15 speed round4 t1 mean_runnable=26.8 load1=37.02 ok=False 
+not quiet, retry in 30s
+01:17:55 speed round4 t1 mean_runnable=9.6 load1=23.92 ok=False 
+not quiet, retry in 30s
+01:18:35 speed round4 t1 mean_runnable=4.5 load1=16.83 ok=False 
+not quiet, retry in 30s
+01:19:15 speed round4 t1 mean_runnable=6.3 load1=11.49 ok=False 
+not quiet, retry in 30s
+01:19:55 speed round4 t1 mean_runnable=18.8 load1=17.0 ok=False 
+not quiet, retry in 30s
+01:20:35 speed round4 t1 mean_runnable=9.4 load1=20.12 ok=False 
+not quiet, retry in 30s
+01:21:15 speed round4 t1 mean_runnable=9.3 load1=14.33 ok=False 
+not quiet, retry in 30s
+01:21:55 speed round4 t1 mean_runnable=6.3 load1=10.56 ok=False 
+not quiet, retry in 30s
+01:22:35 speed round4 t1 mean_runnable=5.5 load1=7.38 ok=False 
+not quiet, retry in 30s
+01:23:15 speed round4 t1 mean_runnable=5.5 load1=6.77 ok=False 
+not quiet, retry in 30s
+01:23:55 speed round4 t1 mean_runnable=4.2 load1=6.94 ok=False 
+not quiet, retry in 30s
+01:24:35 speed round4 t1 mean_runnable=4.7 load1=5.15 ok=False 
+not quiet, retry in 30s
+01:25:15 speed round4 t1 mean_runnable=3.2 load1=4.54 ok=True 
+01:26:20 speed round4 t8 mean_runnable=8.2 load1=4.15 ok=True 
