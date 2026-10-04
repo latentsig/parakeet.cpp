@@ -14,10 +14,13 @@ namespace pk {
 constexpr const char* kBundleArch = "parakeet-bundle";
 constexpr uint32_t kBundleVersion = 1;   // highest format version this reader knows
 
-// Component kinds understood in phase 1. A bundle may hold other kinds (for
+// Component kinds this reader understands. A bundle may hold other kinds (for
 // example from a newer writer); a reader skips them.
 constexpr const char* kBundleKindAsr = "asr";
 constexpr const char* kBundleKindVad = "vad";   // Silero VAD, or a VAD-only slice of an ASR model (scripts/slice_vad_gguf.py)
+constexpr const char* kBundleKindDiar = "diar";     // Nemotron diarization
+constexpr const char* kBundleKindCed = "ced";       // ced.cpp sound-event tagger
+constexpr const char* kBundleKindVoice = "voice";   // voice-detect.cpp speaker encoder
 
 struct BundleComponent {
     std::string name;
@@ -39,6 +42,9 @@ struct BundleInfo {
     std::vector<BundleComponent> components;
     const BundleComponent* find(const std::string& name) const;
 };
+
+// True for a kind this reader can describe (asr, vad, diar, ced, voice).
+bool bundle_kind_known(const std::string& kind);
 
 // True when the file is a GGUF whose general.architecture is "parakeet-bundle".
 // Reads the header only.

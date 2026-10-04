@@ -65,6 +65,11 @@ const BundleComponent* BundleInfo::find(const std::string& n) const {
     return nullptr;
 }
 
+bool bundle_kind_known(const std::string& k) {
+    return k == kBundleKindAsr || k == kBundleKindVad || k == kBundleKindDiar || k == kBundleKindCed ||
+           k == kBundleKindVoice;
+}
+
 bool gguf_is_bundle(const std::string& path) {
     gguf_init_params ip{/*no_alloc=*/true, /*ctx=*/nullptr};
     Gguf f;
@@ -180,7 +185,7 @@ bool select_default_component(const BundleInfo& info, std::string& name, std::st
     std::vector<const BundleComponent*> asr, known;
     for (const auto& c : info.components) {
         if (c.kind == kBundleKindAsr) asr.push_back(&c);
-        if (c.kind == kBundleKindAsr || c.kind == kBundleKindVad) known.push_back(&c);
+        if (bundle_kind_known(c.kind)) known.push_back(&c);
     }
     const std::vector<const BundleComponent*>& pick = !asr.empty() ? asr : known;
     if (pick.size() == 1) {

@@ -35,7 +35,10 @@ struct DiarizationResult {
 class DiarizationModel {
 public:
     // Load a diarization GGUF. Returns nullptr on failure.
-    static std::unique_ptr<DiarizationModel> load(const std::string& path);
+    // With a non-empty `component`, `path` is a bundle GGUF (docs/bundle.md) and
+    // the model is that component of kind "diar", read natively through the
+    // same prefixed loader as an ASR component; only its tensors are read.
+    static std::unique_ptr<DiarizationModel> load(const std::string& path, const std::string& component = "");
 
     // Diarize an audio file (any format audio_io supports). Returns segments.
     DiarizationResult diarize_path(const std::string& wav_path);

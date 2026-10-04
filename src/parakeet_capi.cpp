@@ -278,6 +278,12 @@ parakeet_ctx* load_bundle_component(const char* path, const std::string& name) {
             g_load_error = "cannot load ASR component \"" + name + "\" (see the log for the reason)";
             return nullptr;
         }
+    } else if (c->kind == pk::kBundleKindDiar) {
+        ctx->diar = pk::DiarizationModel::load(path, name);
+        if (!ctx->diar) {
+            g_load_error = "cannot load diarization component \"" + name + "\" (see the log for the reason)";
+            return nullptr;
+        }
     } else if (c->kind == pk::kBundleKindVad && pk::bundle_vad_is_slice(path, name)) {
         // A VAD-only slice: same context as a standalone slice file.
         ctx->vad_model = pk::Model::load_vad_only(path, name);
