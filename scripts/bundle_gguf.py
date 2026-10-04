@@ -22,7 +22,10 @@ Inspect and verify:
 
   bundle_gguf.py --list bundle.gguf [--json]
   bundle_gguf.py --verify bundle.gguf [--source asr=asr.gguf --source vad=silero.gguf]
-  bundle_gguf.py --notice bundle.gguf
+  bundle_gguf.py --notice bundle.gguf     # credits plus the full licence texts to ship
+
+Kinds: asr (parakeet ASR), vad (Silero, or a VAD-only slice), diar (Nemotron
+diarization), ced (ced.cpp sound events), voice (voice-detect.cpp speaker encoder).
 
 The output is deterministic: the same inputs and manifest give the same bytes.
 The script refuses a component without full licence metadata, a licence that
@@ -40,7 +43,8 @@ from gguf import GGUFReader, GGUFValueType, GGUFWriter
 
 ARCH = "parakeet-bundle"
 VERSION = 1
-KINDS = ("asr", "vad")          # kinds this tool can build (docs/bundle.md lists the reserved ones)
+KINDS = ("asr", "vad", "diar", "ced", "voice")   # kinds this tool can build (see docs/bundle.md)
+LICENSE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bundle_licenses")
 RESERVED_NAMES = {"general", "parakeet", "bundle"}
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 LICENSE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+-]*$")
@@ -48,6 +52,27 @@ REQUIRED = ("license", "license_url", "source", "attribution", "changes")
 MANIFEST_KEYS = {"name", "file", "kind", *REQUIRED}
 MAX_TENSOR_NAME = 63            # ggml keeps names in 64 bytes including the NUL
 SKIP_KEYS = {"general.alignment"}
+
+# Licence of each known source, as agreed for bundling. A manifest that names one of these
+# sources with another licence is refused, so a wrong or silent change cannot slip in.
+# WeSpeaker: Hugging Face says Apache-2.0 for the plain model and CC-BY-4.0 for the -LM
+# variant, and the voice-detect GGUF card says CC-BY-4.0. The stricter reading is used.
+KNOWN_SOURCES = (
+    ("nemotron-3-diarization", "OpenMDW-1.1"),
+    ("mispeech/ced", "Apache-2.0"),
+    ("spkrec-ecapa", "Apache-2.0"),
+    ("eres2net", "Apache-2.0"),
+    ("wespeaker", "CC-BY-4.0"),
+    ("silero", "MIT"),
+)
+# Models that must never be bundled, with the reason. Matched against the manifest's
+# source and licence and against the input's general.name.
+FORBIDDEN = (
+    (re.compile(r"audeering"), "audeering wav2vec2 heads are CC-BY-NC-SA-4.0 (non-commercial)"),
+    (re.compile(r"(^|[^a-z])eou([^a-z]|$)"), "the end-of-utterance model is under the NVIDIA Open Model License "
+                                              "(notice duty and a revocation clause)"),
+    (re.compile(r"nvidia-open-model"), "the NVIDIA Open Model License has a revocation clause"),
+)
 
 
 class BundleError(Exception):
@@ -137,6 +162,14 @@ def check_license_metadata(where, meta):
                           f"such models must not be bundled")
     if not re.match(r"^https?://", meta["license_url"]):
         raise BundleError(f"{where}: license_url must be an http(s) URL")
+    for rx, why in FORBIDDEN:
+        if rx.search(norm_license(meta["source"])) or rx.search(norm_license(meta["license"])):
+            raise BundleError(f"{where}: must not be bundled: {why}")
+    src = meta["source"].lower()
+    for needle, lic in KNOWN_SOURCES:
+        if needle in src and norm_license(meta["license"]) != norm_license(lic):
+            raise BundleError(f"{where}: source '{meta['source']}' is licensed {lic}, the manifest says "
+                              f"'{meta['license']}'; fix the manifest (or the KNOWN_SOURCES table if upstream changed)")
 
 
 # --------------------------------------------------------------------------- build
@@ -193,15 +226,34 @@ def check_input(name, kind, reader, meta):
         if str_field(reader, "parakeet.arch") == "vad":
             raise BundleError(f"component {name}: input is a VAD-only slice, not an ASR model; use kind vad")
         if str_field(reader, "parakeet.arch") == "diarization":
-            raise BundleError(f"component {name}: input is a diarization model, not ASR (a later phase)")
+            raise BundleError(f"component {name}: input is a diarization model, not ASR; use kind diar")
         for k in ("parakeet.encoder.d_model", "parakeet.vocab_size"):
             if k not in reader.fields:
                 raise BundleError(f"component {name}: input lacks the key {k}")
+    elif kind == "diar":
+        if arch != "parakeet" or str_field(reader, "parakeet.arch") != "diarization":
+            raise BundleError(f"component {name}: kind diar needs a Nemotron diarization GGUF "
+                              f"(parakeet.arch 'diarization'; general.architecture is '{arch}')")
+        for k in ("parakeet.diar.n_speakers", "parakeet.encoder.d_model"):
+            if k not in reader.fields:
+                raise BundleError(f"component {name}: input lacks the key {k}")
+    elif kind == "ced":
+        if arch != "ced" or "ced.embed_dim" not in reader.fields:
+            raise BundleError(f"component {name}: kind ced needs a ced.cpp GGUF (general.architecture is '{arch}')")
+    elif kind == "voice":
+        if arch != "voicedetect" or "voicedetect.embedding_dim" not in reader.fields:
+            raise BundleError(f"component {name}: kind voice needs a voice-detect.cpp speaker encoder GGUF "
+                              f"(general.architecture 'voicedetect' with an embedding; analysis heads are not "
+                              f"bundled); general.architecture is '{arch}'")
     elif kind == "vad":
         is_slice = arch == "parakeet" and str_field(reader, "parakeet.arch") == "vad"
         if not is_slice and (arch != "silero_vad" or "silero_vad.sample_rates" not in reader.fields):
             raise BundleError(f"component {name}: kind vad needs a Silero VAD GGUF or a VAD-only slice "
                               f"(scripts/slice_vad_gguf.py); general.architecture is '{arch}'")
+    gname = (str_field(reader, "general.name") or "").lower()
+    for rx, why in FORBIDDEN:
+        if rx.search(gname):
+            raise BundleError(f"component {name}: input '{gname}' must not be bundled: {why}")
     declared = str_field(reader, "general.license")
     if declared is not None and norm_license(declared) != norm_license(meta["license"]):
         raise BundleError(f"component {name}: the input file declares general.license '{declared}' but the manifest "
@@ -401,6 +453,18 @@ def compare_with_source(r, n, src):
     return problems
 
 
+def license_text(spdx):
+    """Full text of a licence from scripts/bundle_licenses/, matched on the normalised id."""
+    want = norm_license(spdx)
+    if os.path.isdir(LICENSE_DIR):
+        for f in sorted(os.listdir(LICENSE_DIR)):
+            if f.endswith(".txt") and norm_license(f[:-4]) == want:
+                with open(os.path.join(LICENSE_DIR, f), encoding="utf-8") as fh:
+                    return fh.read().strip("\n")
+    raise BundleError(f"no licence text for '{spdx}': add scripts/bundle_licenses/{spdx}.txt "
+                      f"(the text must ship with the bundle)")
+
+
 def notice(path):
     r = load_bundle(path)
     lines = [
@@ -410,11 +474,14 @@ def notice(path):
         "Each model keeps its own licence and attribution, listed below. They are also stored in the",
         "file header under parakeet.bundle.<component>.*. The models were converted to GGUF and",
         "merged without further changes to their weights, except where a component says otherwise.",
-        "The full text of each licence is at the URL given for it.",
+        "The full text of every licence used follows the component list. Ship this file with the bundle.",
         "",
     ]
+    used = []
     for n in components_of(r):
         i = component_info(r, n)
+        if i["license"] not in used:
+            used.append(i["license"])
         lines += [
             f"Component {n} ({i['kind']})",
             f"  Model:       {i['source']}",
@@ -424,6 +491,8 @@ def notice(path):
             f"  Input file sha256: {i['source_sha256']}",
             "",
         ]
+    for lic in used:
+        lines += ["=" * 78, f"Licence text: {lic}", "=" * 78, "", license_text(lic), ""]
     sys.stdout.write("\n".join(lines))
 
 

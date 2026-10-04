@@ -71,6 +71,41 @@ def write_slice(path, license="CC-BY-4.0"):
     w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
 
 
+def write_diar(path, name="nvidia/Nemotron-3-Diarization"):
+    w = GGUFWriter(path, "parakeet")
+    w.add_string("general.name", name)
+    w.add_string("parakeet.arch", "diarization")
+    w.add_uint32("parakeet.encoder.d_model", 16)
+    w.add_uint32("parakeet.diar.n_speakers", 4)
+    rng = np.random.default_rng(4)
+    w.add_tensor("encoder.w", rng.standard_normal((4, 16)).astype(np.float32))
+    q = rng.integers(0, 255, size=(4, 34), dtype=np.uint8)
+    w.add_tensor("encoder.q", q, raw_shape=q.shape, raw_dtype=GGMLQuantizationType.Q8_0)
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+
+
+def write_ced(path):
+    w = GGUFWriter(path, "ced")
+    w.add_string("general.name", "mispeech/ced-tiny")
+    w.add_string("ced.arch", "ced")
+    w.add_uint32("ced.embed_dim", 8)
+    w.add_array("ced.labels", ["Speech", "Music"])
+    rng = np.random.default_rng(5)
+    w.add_tensor("patch_embed.proj.weight", rng.standard_normal((8, 4)).astype(np.float32))
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+
+
+def write_voice(path, arch="voicedetect", embedding=True, name="Wespeaker/wespeaker-voxceleb-resnet34"):
+    w = GGUFWriter(path, arch)
+    w.add_string("general.name", name)
+    w.add_string("voicedetect.arch", "wespeaker_resnet34")
+    if embedding:
+        w.add_uint32("voicedetect.embedding_dim", 256)
+    rng = np.random.default_rng(6)
+    w.add_tensor("model.seg_1.weight", rng.standard_normal((4, 8)).astype(np.float32))
+    w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
+
+
 def write_vad(path, license="MIT"):
     w = GGUFWriter(path, "silero_vad")
     w.add_string("general.name", "silero-vad")
@@ -84,6 +119,14 @@ def write_vad(path, license="MIT"):
     w.write_header_to_file(); w.write_kv_data_to_file(); w.write_tensors_to_file(); w.close()
 
 
+DIAR_META = {"kind": "diar", "license": "OpenMDW-1.1", "license_url": "https://openmdw.ai/license/1-1/",
+             "source": "nvidia/Nemotron-3-Diarization", "attribution": "Nemotron 3 Diarization by NVIDIA",
+             "changes": "Converted to GGUF and quantised to Q8_0"}
+CED_META = {"kind": "ced", "license": "Apache-2.0", "license_url": "https://www.apache.org/licenses/LICENSE-2.0",
+            "source": "mispeech/ced-tiny", "attribution": "CED by Xiaomi (mispeech)", "changes": "Converted to GGUF"}
+VOICE_META = {"kind": "voice", "license": "CC-BY-4.0", "license_url": "https://creativecommons.org/licenses/by/4.0/",
+              "source": "Wespeaker/wespeaker-voxceleb-resnet34", "attribution": "WeSpeaker ResNet34",
+              "changes": "Converted from ONNX to GGUF"}
 ASR_META = {"kind": "asr", "license": "CC-BY-4.0", "license_url": "https://creativecommons.org/licenses/by/4.0/",
             "source": "nvidia/stand-in", "attribution": "Stand-in model by NVIDIA", "changes": "Converted to GGUF"}
 VAD_META = {"kind": "vad", "license": "MIT", "license_url": "https://github.com/snakers4/silero-vad/blob/master/LICENSE",
@@ -153,6 +196,64 @@ def main():
         rc, out, err = run("--out", "bs2.gguf", "--manifest", "ms2.json")
         check(rc != 0 and "VAD-only slice" in err, "a slice as kind asr must be refused")
 
+        # --- the other kinds: diar, ced, voice; a full bundle with every kind ---
+        write_diar("diar.gguf"); write_ced("ced.gguf"); write_voice("voice.gguf")
+        manifest("mf.json", [comp("asr", "asr.gguf", ASR_META), comp("diar", "diar.gguf", DIAR_META),
+                             comp("ced", "ced.gguf", CED_META), comp("voice", "voice.gguf", VOICE_META),
+                             comp("vad", "vad.gguf", VAD_META)], name="full-test")
+        rc, out, err = run("--out", "bf.gguf", "--manifest", "mf.json")
+        check(rc == 0, f"full bundle failed to build: {err}")
+        rc, out, err = run("--out", "bf2.gguf", "--manifest", "mf.json")
+        check(rc == 0 and sha("bf.gguf") == sha("bf2.gguf"), "the full bundle is not deterministic")
+        rc, out, err = run("--verify", "bf.gguf", "--source", "asr=asr.gguf", "--source", "diar=diar.gguf",
+                           "--source", "ced=ced.gguf", "--source", "voice=voice.gguf", "--source", "vad=vad.gguf")
+        check(rc == 0, f"verify of the full bundle failed: {err}")
+        rc, out, err = run("--list", "bf.gguf", "--json")
+        j2 = json.loads(out) if rc == 0 else {}
+        check(sorted(j2.get("components", {})) == ["asr", "ced", "diar", "vad", "voice"], "full list components")
+        check({c: v["kind"] for c, v in j2.get("components", {}).items()} ==
+              {"asr": "asr", "diar": "diar", "ced": "ced", "voice": "voice", "vad": "vad"}, "full list kinds")
+        # NOTICE: every component's credit and the full text of each distinct licence
+        rc, out, err = run("--notice", "bf.gguf")
+        check(rc == 0, f"notice failed: {err}")
+        for needle in ("Nemotron 3 Diarization by NVIDIA", "CED by Xiaomi (mispeech)", "WeSpeaker ResNet34",
+                       "Copyright (c) 2020-present Silero Team", "NVIDIA", "OpenMDW License Agreement, version 1.1",
+                       "Apache License", "Attribution 4.0 International", "Permission is hereby granted",
+                       "you shall retain in your distribution"):
+            check(needle in out, f"notice lacks: {needle}")
+        check(out.count("Licence text: ") == 4, "one text per distinct licence (CC-BY-4.0 is used twice)")
+        # a licence without a shipped text is an error, not a silent gap
+        manifest("mx.json", [comp("asr", "asr.gguf", dict(ASR_META, license="LicenseRef-Other"))])
+        run("--out", "bx.gguf", "--manifest", "mx.json")
+        rc, out, err = run("--notice", "bx.gguf")
+        check(rc == 1 and "no licence text" in err, "a licence without a text must make --notice fail")
+
+        # --- kinds must match the file, and the forbidden models are refused ---
+        def refuse2(label, comps, needle):
+            manifest("bad2.json", comps)
+            rc, out, err = run("--out", "bad2.gguf", "--manifest", "bad2.json")
+            check(rc == 1 and needle in err, f"{label}: want a refusal with '{needle}', got rc={rc} {err!r}")
+            check(not os.path.exists("bad2.gguf"), f"{label}: left a file behind")
+        refuse2("diar kind on an ASR file", [comp("diar", "asr.gguf", DIAR_META)], "kind diar")
+        refuse2("ced kind on a voice file", [comp("ced", "voice.gguf", CED_META)], "kind ced")
+        refuse2("voice kind on a ced file", [comp("voice", "ced.gguf", VOICE_META)], "kind voice")
+        write_voice("analyze.gguf", embedding=False, name="audeering/wav2vec2-large-robust-24-ft-age-gender")
+        refuse2("analysis head as voice (no embedding)", [comp("voice", "analyze.gguf", VOICE_META)], "kind voice")
+        write_voice("analyze2.gguf", name="audeering/wav2vec2-large-robust-24-ft-age-gender")
+        refuse2("audeering by file name", [comp("voice", "analyze2.gguf", VOICE_META)], "must not be bundled")
+        refuse2("audeering by source and licence",
+                [comp("voice", "voice.gguf", dict(VOICE_META, source="audeering/wav2vec2-large-robust", license="CC-BY-NC-SA-4.0"))],
+                "must not be bundled")
+        refuse2("NVIDIA Open Model License (EOU)",
+                [comp("asr", "asr.gguf", dict(ASR_META, source="nvidia/parakeet_realtime_eou_120m-v1",
+                                              license="LicenseRef-NVIDIA-Open-Model-License"))], "must not be bundled")
+        refuse2("EOU by licence text", [comp("asr", "asr.gguf", dict(ASR_META, license="NVIDIA-Open-Model-License"))],
+                "must not be bundled")
+        refuse2("diar with a wrong licence", [comp("diar", "diar.gguf", dict(DIAR_META, license="CC-BY-4.0"))], "is licensed OpenMDW-1.1")
+        refuse2("ced with a wrong licence", [comp("ced", "ced.gguf", dict(CED_META, license="MIT"))], "is licensed Apache-2.0")
+        refuse2("wespeaker as Apache-2.0 (the stricter reading is required)",
+                [comp("voice", "voice.gguf", dict(VOICE_META, license="Apache-2.0"))], "is licensed CC-BY-4.0")
+
         # --- a tampered bundle fails verify ---
         data = bytearray(open("b1.gguf", "rb").read())
         data[-5] ^= 0xFF
@@ -193,9 +294,8 @@ def main():
         refuse("silero licence conflict", [comp("vad", "vad_bad_lic.gguf", VAD_META)], "declares general.license")
         refuse("kind does not match the file", [comp("asr", "vad.gguf", ASR_META)], "kind asr")
         refuse("vad kind on an ASR file", [comp("vad", "asr.gguf", VAD_META)], "kind vad")
-        write_asr("diar.gguf", parakeet_arch="diarization")
-        refuse("diarization is a later phase", [comp("asr", "diar.gguf", ASR_META)], "diarization")
-        refuse("unknown kind", [comp("x", "asr.gguf", ASR_META, kind="diarization")], "kind must be")
+        refuse("a diarization file is not kind asr", [comp("asr", "diar.gguf", ASR_META)], "use kind diar")
+        refuse("unknown kind", [comp("x", "asr.gguf", ASR_META, kind="sound")], "kind must be")
         refuse("duplicate names", [comp("asr", "asr.gguf", ASR_META), comp("asr", "asr.gguf", ASR_META)], "duplicate")
         for bad in ("Asr", "a.b", "general", "parakeet", "bundle", "1a", ""):
             refuse(f"bad name {bad!r}", [comp(bad, "asr.gguf", ASR_META)], "component name")
