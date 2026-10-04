@@ -50,7 +50,8 @@ Each clip is a short animated preview. The full video is linked below it. The cl
 [![Scene stream on a film scene: transcript, speakers and sound tags](benchmarks/media/scene_sprite_fright.gif)](benchmarks/media/scene_sprite_fright.mp4)
 
 Excerpt of the scene demo: ASR, diarization and CED sound tags together, on CPU ([MP4 excerpt](benchmarks/media/scene_sprite_fright.mp4)). Film: Sprite Fright, CC BY 4.0, Blender Studio.
-<!-- OWNER: upload the full scene video (x_sprite_01m05_square.mp4) through the GitHub web editor to get a user-attachments URL and paste it here for inline playback -->
+
+https://github.com/user-attachments/assets/02c29d27-ce26-46f2-8677-661c59686323
 
 </td>
 <td width="50%" valign="top">
@@ -60,7 +61,11 @@ Excerpt of the scene demo: ASR, diarization and CED sound tags together, on CPU 
 [![Batched against one-at-a-time decode on a GPU](benchmarks/media/batch_decode_race.gif)](benchmarks/media/batch_decode_race.mp4)
 
 Serial against batched decode of 16 clips, with identical output ([MP4](benchmarks/media/batch_decode_race.mp4)). Details: [batching.md](docs/batching.md).
-<!-- OWNER: upload demo1_race.mp4 through the GitHub web editor to get a user-attachments URL and paste it here for inline playback -->
+
+
+https://github.com/user-attachments/assets/9a541488-b03f-4c68-8d59-2a6a9e631cc1
+
+
 
 </td>
 </tr>
@@ -72,7 +77,10 @@ Serial against batched decode of 16 clips, with identical output ([MP4](benchmar
 [![parakeet.cpp q8_0 against NeMo on the same CPU](benchmarks/media/nemotron_streaming_race.gif)](benchmarks/media/nemotron_streaming_race.mp4)
 
 Same model, same CPU, identical output ([MP4](benchmarks/media/nemotron_streaming_race.mp4)).
-<!-- OWNER: upload nemotron_race.mp4 through the GitHub web editor to get a user-attachments URL and paste it here for inline playback -->
+
+
+https://github.com/user-attachments/assets/3811082d-5c5e-42d5-bbd8-fd6412c8775c
+
 
 </td>
 <td width="50%" valign="top">
