@@ -1,0 +1,34 @@
+clean file redux {'P': np.float64(0.9865234250842286), 'R': np.float64(0.9155752212389381), 'F1': np.float64(0.9497261405709742)}
+clean file ultra {'P': np.float64(0.9851348753764336), 'R': np.float64(0.9070796460176991), 'F1': np.float64(0.9444973431212949)}
+clean fixedA redux {'P': np.float64(0.9870253768364816), 'R': np.float64(0.9155752212389381), 'F1': np.float64(0.9499586814801213)}
+clean fixedA ultra {'P': np.float64(0.9853291293996526), 'R': np.float64(0.9034218289085546), 'F1': np.float64(0.9425994890892863)}
+clean fixedB redux {'P': np.float64(0.9863066046748614), 'R': np.float64(0.9136283185840708), 'F1': np.float64(0.9485773789470461)}
+clean fixedB ultra {'P': np.float64(0.9850572482049291), 'R': np.float64(0.8984070796460177), 'F1': np.float64(0.9397389613996112)}
+noise-only white -60 {'file': {'redux': np.float64(18.9), 'ultra': np.float64(84.4)}, 'fixedA': {'redux': np.float64(0.0), 'ultra': np.float64(0.0)}, 'fixedB': {'redux': np.float64(0.0), 'ultra': np.float64(0.0)}}
+noise-only white -50 {'file': {'redux': np.float64(64.1), 'ultra': np.float64(96.5)}, 'fixedA': {'redux': np.float64(0.0), 'ultra': np.float64(0.0)}, 'fixedB': {'redux': np.float64(0.0), 'ultra': np.float64(49.2)}}
+noise-only white -40 {'file': {'redux': np.float64(94.4), 'ultra': np.float64(98.5)}, 'fixedA': {'redux': np.float64(0.1), 'ultra': np.float64(14.2)}, 'fixedB': {'redux': np.float64(0.0), 'ultra': np.float64(26.2)}}
+noise-only white -30 {'file': {'redux': np.float64(96.7), 'ultra': np.float64(99.1)}, 'fixedA': {'redux': np.float64(78.3), 'ultra': np.float64(98.0)}, 'fixedB': {'redux': np.float64(24.4), 'ultra': np.float64(86.6)}}
+noise-only white -23 {'file': {'redux': np.float64(97.5), 'ultra': np.float64(98.6)}, 'fixedA': {'redux': np.float64(96.6), 'ultra': np.float64(99.8)}, 'fixedB': {'redux': np.float64(87.4), 'ultra': np.float64(99.7)}}
+noise-only white -15 {'file': {'redux': np.float64(97.7), 'ultra': np.float64(99.0)}, 'fixedA': {'redux': np.float64(96.4), 'ultra': np.float64(99.4)}, 'fixedB': {'redux': np.float64(97.7), 'ultra': np.float64(99.6)}}
+noise-only pink -60 {'file': {'redux': np.float64(18.0), 'ultra': np.float64(73.2)}, 'fixedA': {'redux': np.float64(0.0), 'ultra': np.float64(0.0)}, 'fixedB': {'redux': np.float64(0.0), 'ultra': np.float64(0.0)}}
+noise-only pink -50 {'file': {'redux': np.float64(82.9), 'ultra': np.float64(95.6)}, 'fixedA': {'redux': np.float64(0.0), 'ultra': np.float64(0.0)}, 'fixedB': {'redux': np.float64(0.0), 'ultra': np.float64(0.0)}}
+noise-only pink -40 {'file': {'redux': np.float64(96.5), 'ultra': np.float64(98.3)}, 'fixedA': {'redux': np.float64(0.0), 'ultra': np.float64(0.7)}, 'fixedB': {'redux': np.float64(0.0), 'ultra': np.float64(0.8)}}
+noise-only pink -30 {'file': {'redux': np.float64(97.2), 'ultra': np.float64(98.2)}, 'fixedA': {'redux': np.float64(2.3), 'ultra': np.float64(37.6)}, 'fixedB': {'redux': np.float64(1.1), 'ultra': np.float64(21.2)}}
+noise-only pink -23 {'file': {'redux': np.float64(96.8), 'ultra': np.float64(98.6)}, 'fixedA': {'redux': np.float64(64.8), 'ultra': np.float64(90.0)}, 'fixedB': {'redux': np.float64(40.6), 'ultra': np.float64(81.7)}}
+noise-only pink -15 {'file': {'redux': np.float64(97.7), 'ultra': np.float64(98.2)}, 'fixedA': {'redux': np.float64(94.4), 'ultra': np.float64(98.1)}, 'fixedB': {'redux': np.float64(93.2), 'ultra': np.float64(98.3)}}
+
+redux: embedded 30 s stretch false-alarm frame rate % (speech recall % in brackets), white+pink pooled
+| SNR | file | fixedA | fixedB |
+|---|---|---|---|
+| 20 dB | 33.4 (93) | 0.0 (91) | 0.0 (91) |
+| 10 dB | 60.4 (94) | 11.9 (91) | 0.8 (89) |
+| 5 dB | 55.7 (95) | 45.5 (94) | 23.3 (92) |
+| 0 dB | 55.1 (95) | 65.8 (95) | 45.2 (93) |
+
+ultra: embedded 30 s stretch false-alarm frame rate % (speech recall % in brackets), white+pink pooled
+| SNR | file | fixedA | fixedB |
+|---|---|---|---|
+| 20 dB | 0.0 (91) | 1.8 (93) | 15.0 (94) |
+| 10 dB | 1.0 (89) | 45.6 (94) | 27.8 (93) |
+| 5 dB | 13.3 (92) | 68.5 (97) | 57.3 (95) |
+| 0 dB | 47.8 (95) | 89.9 (98) | 83.0 (97) |

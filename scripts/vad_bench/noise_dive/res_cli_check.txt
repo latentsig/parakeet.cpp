@@ -1,0 +1,17 @@
+gap-white20_00 redux stretch FP pct CLI 42.5 ref 42.5 | max|dp| 0.0003
+gap-white20_00 ultra stretch FP pct CLI 0.0 ref 0.0 | max|dp| 0.0075
+gap-white20_01 redux stretch FP pct CLI 57.4 ref 57.4 | max|dp| 0.0003
+gap-white20_01 ultra stretch FP pct CLI 0.0 ref 0.0 | max|dp| 0.0071
+gap-white5_00 redux stretch FP pct CLI 71.5 ref 71.5 | max|dp| 0.0002
+gap-white5_00 ultra stretch FP pct CLI 2.3 ref 2.0 | max|dp| 0.0119
+gap-white5_01 redux stretch FP pct CLI 56.4 ref 56.4 | max|dp| 0.0369
+gap-white5_01 ultra stretch FP pct CLI 0.8 ref 0.8 | max|dp| 0.0324
+gap-white0_00 redux stretch FP pct CLI 50.0 ref 50.0 | max|dp| 0.0067
+gap-white0_00 ultra stretch FP pct CLI 32.0 ref 31.5 | max|dp| 0.0167
+gap-white0_01 redux stretch FP pct CLI 40.8 ref 40.8 | max|dp| 0.0002
+gap-white0_01 ultra stretch FP pct CLI 19.4 ref 18.9 | max|dp| 0.0086
+amp -20 {'redux': np.float64(97.6), 'ultra': np.float64(98.9)}
+amp -50 {'redux': np.float64(69.6), 'ultra': np.float64(97.9)}
+amp -60 {'redux': np.float64(22.4), 'ultra': np.float64(85.1)}
+amp -70 {'redux': np.float64(8.0), 'ultra': np.float64(42.9)}
+amp -80 {'redux': np.float64(0.0), 'ultra': np.float64(6.9)}

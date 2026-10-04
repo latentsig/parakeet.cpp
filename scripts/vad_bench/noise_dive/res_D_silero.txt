@@ -1,0 +1,5 @@
+Silero VAD on the 300 s talk excerpt with a 60 s inserted block at 111.7 to 171.7 s.
+Segments from the Silero run (files white_-20 and music_-35; the other files were not run with Silero):
+  segment 99.968 to 129.952 s is the only one touching the block, so 18.25 s of the block are kept
+  and 41.75 s are dropped.
+Transcription with the Ultra model and the Silero segments, music at -35 dB: 20 words start inside the block.

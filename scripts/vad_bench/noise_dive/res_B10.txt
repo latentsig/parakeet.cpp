@@ -1,0 +1,10 @@
+redux D only R2 of median logit: 0.43 coef [4.8]
+redux S only R2 of median logit: 0.47 coef [8.37]
+redux D and S R2 of median logit: 0.74 coef [3.91 6.97]
+   gap          n=48 mean D -0.25 mean S 0.73 FA 50% median logit -0.06
+   talk+insert  n=24 mean D -0.25 mean S 0.33 FA 5% median logit -4.11
+ultra D only R2 of median logit: 0.56 coef [3.44]
+ultra S only R2 of median logit: 0.11 coef [2.55]
+ultra D and S R2 of median logit: 0.59 coef [3.26 1.38]
+   gap          n=48 mean D -0.25 mean S 0.73 FA 14% median logit -1.71
+   talk+insert  n=24 mean D -0.25 mean S 0.33 FA 30% median logit -1.55

@@ -19,16 +19,35 @@ repeat them, are in [vad-benchmarks.md](vad-benchmarks.md).
 
 The Parakeet VAD head alone gives false alarms on audio without speech. On a speech-free
 file the head calls about 99 percent of the frames speech (Ultra 99.4 percent, Redux 97.8
-percent), because the features are normalised per file and pure noise is rescaled until it
-looks like speech. Inside a file that has speech, over a 30 s stretch of noise at
-threshold 0.5, the false-alarm frame rate was 17.7 percent for the Ultra head and 55
-percent for the Redux head, and it grows with the noise level. Silero showed 0 percent in
-both tests. This was measured on synthetic data: LibriSpeech with added white and pink
-noise, see [the experiment](vad-benchmarks.md#the-head-on-noise-only-audio).
+percent). Inside a file that has speech, over a 30 s stretch of noise at threshold 0.5,
+the false-alarm frame rate was 17.7 percent for the Ultra head and 55 percent for the
+Redux head. Silero showed 0 percent in both tests. This was measured on synthetic data:
+LibriSpeech with added white and pink noise, see
+[the experiment](vad-benchmarks.md#the-head-on-noise-only-audio).
 
-So prefer Silero as an always-on gate, or whenever the audio can contain long stretches
-without speech. Use the head on audio that is known to be mostly speech (for example
-before the transcription of recorded talks), or where its higher recall matters.
+This is not a bug in parakeet.cpp. An independent reference built from Hugging Face
+transformers and the documented head structure matches `parakeet-cli vad --probabilities`
+to a maximum probability difference of 2e-4 on F16 files. It is a property of the model.
+The head judges each 80 ms frame by its level and texture relative to the average of the
+file it is in. Steady loud noise, or a file that is only noise, sits at a logit of about
++1.5 to +2 (probability 0.8 to 0.9). Speech sits at +5 to +12 and pauses at -3 to -8. The
+cards of the model say the head exists so that recordings can be cut at pauses into
+segments of at most 30 s. What it was trained on is not stated. It is not a noise or
+music rejector.
+
+So use Silero, or Silero first with the head extending the boundaries, whenever long
+stretches without speech are possible (always-on gates, calls, recordings with music or
+noise). Use the head alone on audio that is known to be mostly speech (for example
+before the transcription of recorded talks), or where its higher recall matters. If you
+use the head alone and want fewer false alarms, raising the threshold to 0.9 removes most
+noise false alarms at a cost of 1.5 to 2.6 F1 points on speech. Details, the noise types
+that do and do not trigger it, and the mitigations we tested are in
+[the benchmark page](vad-benchmarks.md#the-head-on-noise-only-audio).
+
+For `transcribe --vad` the user-visible cost is small: some wasted decoding, and rarely a
+hallucinated phrase. The 30 s hard cut of the segmenter can also keep a large part of a
+long noise gap, even where the head called none of it speech. This is a segmenter
+behaviour, not a head false alarm, and it has not been fixed.
 
 An offline experiment also combined the two: Silero decides what is speech, and the head
 only moves the edges. It scored 0.75 to 1.13 F1 points above the best single detector on

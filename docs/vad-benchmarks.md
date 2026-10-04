@@ -551,22 +551,19 @@ The accuracy numbers do not depend on load and were not re-run.
 ## The head on noise-only audio
 
 The Parakeet VAD head gives false alarms on audio that has no speech. Silero does not.
-This was measured on synthetic data: LibriSpeech test-clean utterances with added white
-or pink noise (see [the fusion experiment](#fusing-silero-and-the-head-offline-experiment)
-for the corpus). The numbers are frame rates at threshold 0.5 with the default
-segmenter settings (bridge 0.1 s, minimum speech 0.1 s, minimum pause 0.2 s, no padding).
+This was first measured on synthetic data: LibriSpeech test-clean utterances with added
+white or pink noise (see [the fusion experiment](#fusing-silero-and-the-head-offline-experiment)
+for the corpus). A follow-up root-cause study (below) then looked at why, at other noise
+types and levels, and at what it costs in `transcribe --vad`. The numbers in the first
+two tables are frame rates at threshold 0.5 with the default segmenter settings (bridge
+0.1 s, minimum speech 0.1 s, minimum pause 0.2 s, no padding).
 
 | Test | Silero | Ultra head (Q8_0) | Redux head (packed) |
 | --- | ---: | ---: | ---: |
 | Speech-free 30 s clips (96 clips: white and pink noise at 20, 10, 5 and 0 dB), share of frames called speech | 0.00% | 99.44% | 97.83% |
 | A 30 s noise stretch inside a file that also has speech (96 files), share of frames in the stretch called speech | 0.0% | 17.7% | 55.2% |
 
-On a file with no speech at all, the heads call nearly every frame speech. The likely
-reason is that the head normalises the features of each file on their own, so pure
-noise is rescaled until it looks like speech (this is an explanation, not something the
-experiment tested). When the file also has speech, the normalisation is set by the
-speech, and the false alarms drop, but they do not go away. For the stretch inside a
-speech file, the rate depends on the noise level:
+For the stretch inside a speech file, the rate depends on the noise level:
 
 | Noise level (SNR) | Ultra head | Redux head | Silero |
 | --- | ---: | ---: | ---: |
@@ -575,19 +572,232 @@ speech file, the rate depends on the noise level:
 | 5 dB | 14.3% | 60.8% | 0.0% |
 | 0 dB | 55.8% | 59.4% | 0.0% |
 
-For Ultra the false alarms grow with the noise level. For Redux they are already high at
-20 dB. Each cell pools 12 white noise and 12 pink noise files. The numbers are in
+Each cell pools 12 white noise and 12 pink noise files. The numbers are in
 `scripts/vad_bench/fusion/results.md` (noise-only clips) and `gap_results.md` (the
 stretch inside a file).
 
-What this means: use Silero as the always-on gate, and whenever the audio can contain
-long stretches without speech. Use the head on audio that is known to be mostly speech,
-for example before the transcription of recorded talks, or where its higher recall
-matters.
+### Root-cause study
 
-Limits: synthetic noise (white and pink) added to read English speech. Babble, music,
-room noise and other languages were not tested. The false alarms in a stretch were
-measured only for a stretch of about 30 s.
+Verdict: this is not a bug in parakeet.cpp. It is a property of the model. Scripts and
+result files: [`scripts/vad_bench/noise_dive/`](../scripts/vad_bench/noise_dive/README.md).
+
+**Our implementation is faithful.** An independent reference was built from Hugging Face
+transformers (feature extractor and subsampler) and the head structure documented in
+[ternary.md](ternary.md). On 8 signals it matches `parakeet-cli vad --probabilities` to a
+maximum probability difference of 1.1e-4 to 2.6e-4 on F16 files (Redux and Ultra F16),
+and up to 1.1e-2 for the Ultra Q8_0 file (quantisation), and the speech
+fractions agree (`res_A.md`). On the 12 stretch files checked, the CLI and the reference
+agree on the false-alarm rate to within 0.5 points (`res_cli_check.txt`). The one real
+difference is digital silence (see Proposed behaviour).
+
+#### Why
+
+The head judges each 80 ms frame by its level and texture relative to the average of the
+file it is in. Steady loud noise, or a file that is only noise, therefore sits at a logit
+of about +1.5 to +2 (probability 0.8 to 0.9). Speech sits at +5 to +12 and pauses at -3
+to -8:
+
+| Logit (median, 5th to 95th percentile) | Redux | Ultra |
+| --- | ---: | ---: |
+| Speech in clean clips | +8.0 (-3.1 to +12.7) | +7.0 (-2.7 to +13.2) |
+| Pauses in clean clips (digital -60 dBFS dither) | -8.1 (-11.6 to -5.5) | -3.2 (-5.0 to -1.8) |
+| Noise-only file at -23 dBFS | +1.5 (+0.2 to +3.0) | +1.7 (+0.5 to +3.1) |
+| Noise-only file at -50 dBFS | +0.5 (-0.6 to +1.8) | +1.3 (+0.1 to +2.6) |
+
+![Logit histograms](../scripts/vad_bench/noise_dive/fig_logit_hist.png)
+
+What the study found about the cause:
+
+- The per-file normalisation of the features is one input, not the whole cause. With a
+  fixed normalisation (mean and standard deviation taken from the speech clips), noise-only
+  files at -60 and -50 dBFS stop firing (Redux 0.0 percent, Ultra 0.0 to 49 percent
+  depending on the statistics), but at -30 and -23 dBFS they still do (Redux 78 and 97
+  percent with one set of statistics). A noise stretch inside a speech file does not go away
+  either (`res_B3.txt`).
+- Level alone does not explain the logit on noise. A held-out regression of the logit on
+  six frame features (level, absolute log level, flux, flatness, 2 to 8 Hz modulation,
+  tilt) gives R2 of 0.01 to 0.03 on white, pink and speech-shaped noise (about 0.2 on
+  brown noise) and 0.74 to 0.76 on speech (`res_B4.txt`). Inside a speech file the logit
+  follows the mean level of the stretch relative to the file (correlation 0.80 for Redux
+  and 0.84 for Ultra with the median logit, `res_B8.txt`) and its temporal variation
+  (`res_B10.txt`).
+- The share of noise in the file is not monotonic. For white noise at -15 dB re the talk,
+  Ultra calls 100 percent of a 5 s stretch speech, 23 percent of a 60 s stretch and 3
+  percent of a 90 s stretch (`res_B7.md`).
+- Amplitude invariance does not hold. Above about -40 dBFS RMS the output is flat.
+  Below it the output falls off (white noise alone in a file: Redux 94 percent speech
+  frames at -40 dBFS, 22 at -60, 0 at -80; Ultra 99, 85, 7; `res_B1.txt`), because of the
+  2^-24 guard inside the log of the mel features. That attribution is from the study
+  notes; no result file isolates the guard.
+- Moondream's cards say the head exists so that recordings can be cut at pauses into
+  segments of at most 30 s. What it was trained on is not stated. Nothing in the cards
+  claims robustness to noise or music. Moondream's own runtime was not available, so the
+  head wiring is inferred from the documentation and is consistent with the behaviour
+  (a residual variant of the context block breaks Ultra: clean speech F1 81.0 instead of
+  95.0, `res_A2_variants.txt`).
+
+#### What the head does with different noise
+
+Each signal is the only content of a 30 s file (375 frames), share of frames called
+speech at threshold 0.5 (`res_B2.md`):
+
+| Signal | Redux | Ultra |
+| --- | ---: | ---: |
+| Digital silence | 98.7% | 99.7% |
+| Constant tone (1 kHz, -20 dBFS) | 0.0% | 98.9% |
+| Sine sweep 50 to 7500 Hz | 5.9% | 45.1% |
+| Clicks, 3 per second | 3.5% | 46.9% |
+| Clicks, 10 per second | 33.1% | 94.4% |
+| Hum 50 Hz and harmonics, -25 dBFS | 0.0% | 0.0% |
+| Music-like chords, -20 dBFS | 23.5% | 54.9% |
+| Brown noise, -25 dBFS | 28.3% | 19.2% |
+| White noise, -25 dBFS | 98.7% | 99.2% |
+| Pink noise, -25 dBFS | 97.3% | 98.4% |
+| Speech (LibriSpeech, for comparison) | 91.5% | 88.5% |
+
+Redux and Ultra differ by stimulus, and neither is simply worse. Redux reacts to the
+texture of flat-spectrum noise (white, pink, speech-shaped) and reacts much less to
+tones, hum, sparse clicks and music. Ultra reacts to level, and also to clicks, sweeps
+and music, but it stops firing on white and pink noise sooner once the noise is below
+the speech. A pure tone fires Ultra only when it is alone in a file (98.9 percent above);
+inside a speech file it gave 0 percent (next table).
+
+#### How far below the speech the noise must be
+
+In a speech file, with a 30 s stretch of a given noise type, share of stretch frames
+called speech by the level of the stretch below the speech (6 clips per cell,
+`res_B6.txt`):
+
+| Stretch type | Redux 10 dB | Redux 20 dB | Redux 30 dB | Ultra 10 dB | Ultra 20 dB | Ultra 30 dB |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| White | 79 | 53 | 0 | 0 | 0 | 0 |
+| Pink | 63 | 33 | 0 | 0 | 0 | 0 |
+| Speech-shaped | 48 | 43 | 1 | 46 | 0 | 0 |
+| Clicks, 10 per second | 16 | 9 | 0 | 64 | 22 | 1 |
+| Clicks, 3 per second | 1 | 1 | 0 | 26 | 9 | 0 |
+| Music-like | 16 | 10 | 1 | 44 | 8 | 0 |
+| Brown noise, 50 Hz hum, 1 kHz sine | 0 | 0 | 0 | 0 | 0 | 0 |
+
+![Stretch false alarms against level](../scripts/vad_bench/noise_dive/fig_types_vs_level.png)
+
+- Brown noise, hum and a pure tone never trigger the head inside a speech file, for
+  either model.
+- Redux needs the white or pink stretch to be 30 dB below the speech before it stops
+  (it is still 33 to 53 percent at 20 dB). Ultra stops at 10 dB for white and pink, 20 dB
+  for speech-shaped noise, and 30 dB for clicks and music.
+- Alone in a file, white noise stops being called speech below about -55 dBFS for Redux
+  and about -70 dBFS for Ultra (`res_B1.txt`; the grid has 10 dB steps: Redux 22 percent
+  at -60 and 8 at -70, Ultra 42 at -70 and 7 at -80).
+
+This corrects the earlier statement that false alarms grow with the noise level. That is
+true for Ultra (stretch in a speech file, white and pink pooled: 0 percent at 20 dB SNR, 14
+at 5 dB, 56 at 0 dB). It is not true for Redux, which is already at 35 percent at 20 dB
+and stays at 59 to 65 percent from 10 dB to 0 dB. And for both models the false-alarm
+rate is not monotonic in the share of the file that is noise (`res_B7.md`).
+
+#### The user-visible cost in `transcribe --vad`
+
+A 60 s block of inserted audio (white, pink, clicks, music; at -35, -20 and -5 dB
+relative to the RMS of the talk) was put at 111.7 to 171.7 s of a 300 s excerpt of a real
+talk. Words that start inside the block are hallucinations, because the block has no
+speech (`res_D.md`, 24 runs per model):
+
+| Case | Hallucinated words in the block |
+| --- | ---: |
+| Without VAD, all 24 runs (12 per model) | 0 |
+| `--vad`, Redux | 0 in 11 files, 2 for white noise at -20 dB |
+| `--vad`, Ultra | 0 in 9 files, 15, 12 and 3 for music at -35, -20 and -5 dB |
+| `--vad`, Silero (Ultra decoder, music at -35 dB, the only Silero file transcribed) | 20 |
+
+Example text: "I don't know, I don't know, I don't know" for Ultra on music at -35 dB. The
+Silero case kept an 18 s segment of music because its 30 s segment ended 18 s into the
+block (`res_D_silero.txt`).
+
+Per-frame head calls inside the inserted block (`res_D_probs.md`): Redux at most 12
+percent in any file; Ultra 68 percent for white at -5 dB and 38 percent for music and
+clicks at -5 dB. At -35 dB the head called 0 percent of the block speech in 5 of the 8 files.
+Even so, the segments the head produced covered 24 to 60 s of the 60 s block (Redux 24
+to 60 s, Ultra 54 to 60 s) and Silero about 18 s.
+
+The cause is the segmenter, not the head. With a 60 s block the head's segments still
+covered 54 to 60 s of it in nearly every file, even where the head called 0 percent of the
+block speech (Ultra white and music at -35 dB). A hard 30 s cut can land just before
+speech resumes, so a piece with a little speech at its edge is kept and decoded. On the
+two Silero files checked (white at -20 dB, music at -35 dB) Silero dropped about 42 s of the
+block. This segmenter behaviour deserves its own look. It is not fixed.
+
+So the user-visible cost is small: wasted decoding of segments that are noise, and rarely
+a hallucinated phrase. With `--vad` the talk words outside the block differed from the
+run without VAD by at most 6 words in about 814 (`res_D.md`). The head does well on real speech: on a 1168 s talk it called speech 97.0
+percent (Redux) and 96.3 percent (Ultra) of the time, where Silero called 93.4 percent,
+and the head and Silero agree with an F1 of 98.0 to 98.3 (`res_E2_talk.txt`). On
+synthetic clips with pauses its frame F1 is 95.4 (Redux) and 95.0 (Ultra), and 94.7 and
+93.6 with added white and pink noise (`res_E.md`).
+
+#### Mitigations we tested
+
+Offline, on a Python reimplementation of the segmenter on a 10 ms grid, with the speech
+clips and noise of the fusion corpus (`res_E.md`). F1 is the frame F1 on speech; the
+noisy set is white and pink noise at 20 to 0 dB. False alarms are the share of frames
+called speech in noise-only files and in a 30 s stretch embedded in speech. Lower is
+better for false alarms.
+
+| Rule | Redux F1 clean / noisy | Redux false alarms, noise-only / stretch | Ultra F1 clean / noisy | Ultra false alarms, noise-only / stretch |
+| --- | --- | --- | --- | --- |
+| Head, threshold 0.5 (default) | 95.4 / 94.7 | 97.8 / 55.2 | 95.0 / 93.6 | 99.4 / 17.3 |
+| Head, threshold 0.7 | 94.8 / 93.9 | 76.5 / 10.1 | 94.2 / 91.8 | 94.2 / 3.6 |
+| Head, threshold 0.9 | 93.9 / 92.0 | 16.3 / 0.1 | 92.4 / 87.5 | 25.8 / 0.0 |
+| Head, threshold 0.97 | 92.5 / 89.4 | 1.0 / 0.0 | 90.0 / 80.6 | 0.5 / 0.0 |
+| Head 0.5, minimum speech 1.0 s | 94.6 / 94.1 | 96.6 / 29.0 | 93.8 / 91.9 | 99.4 / 6.9 |
+| Head 0.5, energy gate (frame at least 25 dB below the file P95) | 92.1 / 94.3 | 97.8 / 53.2 | 92.0 / 93.3 | 99.4 / 17.3 |
+| Head 0.5, keep a run only if its median logit is at least 2.5 (p about 0.92) | 95.4 / 94.7 | 0.1 / 0.3 | 94.5 / 90.3 | 0.0 / 0.0 |
+| Silero 0.5 AND head 0.5 | 93.4 / 91.8 | 0.0 / 0.0 | 93.3 / 91.2 | 0.0 / 0.0 |
+| Two-stage (Silero decides, head moves the edges) | 95.4 / 94.8 | 0.0 / 0.0 | 95.1 / 94.2 | 0.0 / 0.0 |
+| Silero 0.5 alone, for reference | 93.9 / 92.4 | 0.0 / 0.0 | 93.9 / 92.4 | 0.0 / 0.0 |
+
+In plain language:
+
+- Raising the threshold trades recall for fewer false alarms and still leaves noise-only
+  files firing until about 0.97, where speech F1 has fallen by 3 to 5 points (clean) and
+  up to 13 points (Ultra, noisy). At 0.9 most false alarms in a speech file go away, at a
+  cost of 1.5 to 2.6 F1 points on clean speech.
+- The energy gate and a longer minimum speech do not help: the gate removes speech
+  (clean F1 86.1 to 94.6, depending on the gate) and leaves noise-only files at 97.8 and 99.4 percent. A minimum speech of
+  1.0 s helps only for the embedded stretch (Ultra 17.3 to 6.9) and costs about 0.8 to 1.2
+  clean F1 points.
+- The median-logit run gate is the best cheap option. It drops almost all false alarms
+  and costs nothing for Redux on clean speech (95.4) and 0.5 F1 points for Ultra (3.3 on the
+  noisy set). With the run threshold at 3.5 (not in the table) Redux clean F1 is 94.9 and
+  Ultra 93.6. It is not validated on WER and is not
+  implemented. On the 1168 s talk it removed 0.2 to 0.3 percent of the head's speech
+  frames at 2.5 (`res_E2_talk.txt`). In the inserted block test at most 18 percent of the
+  block frames remained, and 0 in 21 of 24 files (`res_D_mit.md`).
+- The two-stage rule needs Silero. It removes the false alarms and keeps the F1 of the head.
+  See [the fusion experiment](#fusing-silero-and-the-head-offline-experiment).
+
+#### Proposed behaviour
+
+The defaults stay as they are. One candidate fix, not in this PR: a guard for digital
+silence or a constant tone. Our CLI calls 98.7 percent (Redux) and 99.7 percent (Ultra)
+of the frames of a silent file speech, because it accumulates the normalisation in
+double and gets exactly zero features. The reference with the same double accumulation
+gives a speech probability of 0.76 to 0.86 per frame on the same file (`res_B2.md`
+column "mean p"). The Hugging Face float32 normalisation leaves rounding noise instead and
+gives a probability of about 0; that float32 run is not among the committed result
+files.
+
+#### Limits of this study
+
+- Moondream's runtime was not available. The head wiring is inferred from the
+  documentation and is consistent with the behaviour, but not checked against it.
+- The noise is synthetic: LibriSpeech with generated white, pink, brown, speech-shaped,
+  click, hum, tone and music-like signals, plus one real talk.
+- The mitigation numbers come from a Python reimplementation of the segmenter on a 10 ms
+  grid, not from the C++ code.
+- The hallucination counts come from one talk and one insertion point. Only one Silero
+  file was transcribed.
+- The black-box check of the head against the released runtime was skipped (it needs
+  CUDA or Metal).
 
 ## Fusing Silero and the head (offline experiment)
 
@@ -724,7 +934,7 @@ This is limited to what the numbers above support.
   one thread on a shared machine. It gave frame level F1 of 91.7 to 94.4 on the
   synthetic data and 91.8 to 92.1 on the TED talks.
 - **Always-on gate, or audio with long stretches without speech.** Silero. The heads give
-  false alarms on noise-only audio (see
+  false alarms on noise-only audio, and the effect depends on the noise type and level (see
   [the head on noise-only audio](#the-head-on-noise-only-audio)); Silero gave none.
 - **The Parakeet head when Ultra or Redux is already loaded, on audio that is mostly
   speech** (for example recorded talks before transcription). The head costs no extra
@@ -751,7 +961,7 @@ This is limited to what the numbers above support.
   detector and no false alarms on noise. It is not implemented in parakeet.cpp. See
   [the fusion experiment](#fusing-silero-and-the-head-offline-experiment).
 - **Not supported by these numbers:** any claim about GPUs, ARM, other languages,
-  music or non speech noise, streaming latency, or the effect of the VAD on WER.
+  music or non speech noise beyond the synthetic signals of [the noise study](#root-cause-study), streaming latency, or the effect of the VAD on WER.
 
 ## How to reproduce
 
@@ -766,6 +976,7 @@ are committed. In short:
 4. Silero parity: `make_clips.py`, build `wvad.cpp` against whisper.cpp,
    `silero_collect.py`, `silero_analyze.py`; speed with `speed_silero.py`.
 5. Long talks: `longform_b1.sh`.
+6. Noise root-cause study: [`noise_dive/`](../scripts/vad_bench/noise_dive/README.md).
 
 Small result files of the runs on this page (tables, per run timings and load logs)
 are in `scripts/vad_bench/results/`. The raw per clip predictions are not committed;
