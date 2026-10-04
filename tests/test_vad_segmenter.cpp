@@ -1,6 +1,7 @@
 #include "vad_segmenter.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <initializer_list>
 #include <random>
@@ -13,6 +14,12 @@ static int failures = 0;
 #define CHECK(c) do { if (!(c)) { std::fprintf(stderr, "FAIL: %s (line %d)\n", #c, __LINE__); ++failures; } } while (0)
 
 static const double FS = 0.08;
+
+// Options with trimming off: the segmenter before trim_sec existed.
+static SegmenterOpts legacy(SegmenterOpts o = SegmenterOpts()) {
+    o.trim_sec = 0.0;
+    return o;
+}
 
 // n frames of speech (p = 0.95) with silent ranges [a, b) in frames (p = 0.02).
 static std::vector<float> make_p(int n, std::initializer_list<std::pair<int, int>> silences) {
@@ -46,10 +53,13 @@ static void test_defaults() {
     CHECK(near(o.min_seg_sec, 1.0));
     CHECK(near(o.bridge_sec, 0.1));
     CHECK(near(o.min_speech_sec, 0.1));
+    CHECK(near(o.trim_sec, 0.3));
+    CHECK(near(default_segmenter_opts(VadKind::kHead).trim_sec, 0.3));
+    CHECK(near(default_segmenter_opts(VadKind::kSilero).trim_sec, 0.3));
 }
 
 static void test_short_is_single() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     auto s = segment_by_vad(make_p(250, {}), 20.0, o);
     CHECK(s.size() == 1 && s[0].start == 0.0 && s[0].end == 20.0);
     s = segment_by_vad({}, 0.5, o);            // shorter than one frame
@@ -62,7 +72,7 @@ static void test_short_is_single() {
 }
 
 static void test_threshold_is_inclusive() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     // 70 s of p == 0.5 exactly is all speech: hard cuts, nothing dropped.
     std::vector<float> p(875, 0.5f);
     auto s = segment_by_vad(p, 70.0, o);
@@ -73,7 +83,7 @@ static void test_threshold_is_inclusive() {
 }
 
 static void test_all_speech_hard_cuts() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 70.0;
     auto s = segment_by_vad(make_p((int)std::ceil(total / FS), {}), total, o);
     check_ordered(s, total, o.max_seg_sec);
@@ -86,7 +96,7 @@ static void test_all_speech_hard_cuts() {
 }
 
 static void test_cuts_land_in_pauses() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 70.0;
     // pauses at [312,325) and [640,653): midpoints 318 (25.44 s) and 646 (51.68 s)
     auto p = make_p((int)std::ceil(total / FS), {{312, 325}, {640, 653}});
@@ -102,7 +112,7 @@ static void test_cuts_land_in_pauses() {
 }
 
 static void test_picks_last_pause_not_longest() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 40.0;
     // A long pause at 10-12 s and a short one (0.4 s) at 27 s. The last one wins.
     auto p = make_p((int)std::ceil(total / FS), {{125, 150}, {337, 342}});
@@ -113,7 +123,7 @@ static void test_picks_last_pause_not_longest() {
 }
 
 static void test_pause_must_be_fully_inside() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 45.0;
     // Pause 1 [200,230) is fully inside the window [0, 375]. Pause 2 [370,390)
     // starts inside but ends after 30 s, so it is not fully inside: pause 1 wins
@@ -126,7 +136,7 @@ static void test_pause_must_be_fully_inside() {
 }
 
 static void test_midpoint_fallback() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 45.0;
     // Only pause: [350,390) = 28.0 to 31.2 s. It is not fully inside the 30 s
     // window, but its midpoint (370 = 29.6 s) is, so the cut goes there.
@@ -143,7 +153,7 @@ static void test_midpoint_fallback() {
 }
 
 static void test_min_segment_one_second() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 31.0;
     // Pause [6,20): starts before 1 s, midpoint 13 = 1.04 s is inside: cut there.
     auto p = make_p((int)std::ceil(total / FS), {{6, 20}});
@@ -157,7 +167,7 @@ static void test_min_segment_one_second() {
 }
 
 static void test_min_pause() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 45.0;
     // 2 frames (0.16 s) is shorter than 0.2 s: hard cut at 30 s.
     auto s = segment_by_vad(make_p((int)std::ceil(total / FS), {{312, 314}}), total, o);
@@ -168,7 +178,7 @@ static void test_min_pause() {
 }
 
 static void test_bridge_short_speech_gap() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 45.0;
     // A one-frame (0.08 s) dip inside speech is bridged, so it cannot form a
     // pause even when min_pause is set below one frame.
@@ -183,7 +193,7 @@ static void test_bridge_short_speech_gap() {
 }
 
 static void test_drop_short_speech_runs() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 40.0;
     const int n = (int)std::ceil(total / FS);
     // Speech 0-5 s, then a lone one-frame blip at 34 s, silence elsewhere. The
@@ -206,7 +216,7 @@ static void test_drop_short_speech_runs() {
 }
 
 static void test_segments_without_speech_are_dropped() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 70.0;
     const int n = (int)std::ceil(total / FS);
     // Speech for the first 10 s, then nothing. The pause [125,875) is not inside
@@ -228,7 +238,7 @@ static void test_segments_without_speech_are_dropped() {
 }
 
 static void test_all_silence() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     const double total = 65.0;
     CHECK(segment_by_vad(make_p((int)std::ceil(total / FS), {{0, 100000}}), total, o).empty());
     CHECK(segment_by_vad({}, 65.0, o).empty());
@@ -238,7 +248,7 @@ static void test_random_property() {
     std::mt19937 rng(7);
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
     std::uniform_int_distribution<int> run_len(1, 12);
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     for (int trial = 0; trial < 200; ++trial) {
         const double total = 31.0 + 600.0 * u(rng);
         const int n = (int)std::ceil(total / FS);
@@ -265,13 +275,13 @@ static void test_random_property() {
 static void test_degenerate_opts() {
     const double bad[] = {0.0, -0.08, INFINITY, NAN};
     for (double fs : bad) {
-        SegmenterOpts o;
+        SegmenterOpts o = legacy();
         o.frame_sec = fs;
         auto s = segment_by_vad(std::vector<float>(100, 0.0f), 100.0, o);
         CHECK(s.size() == 1);
         if (s.size() == 1) CHECK(s[0].start == 0.0 && s[0].end == 100.0);
     }
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     o.max_seg_sec = 0.05;  // smaller than a frame
     auto s = segment_by_vad(std::vector<float>(100, 0.0f), 100.0, o);
     CHECK(s.size() == 1);
@@ -285,7 +295,7 @@ static void test_nonfinite_and_huge_opts() {
     const double bads[] = {INFINITY, -INFINITY, NAN, 1e300, 1e7};
     for (double v : bads) {
         for (int which = 0; which < 5; ++which) {
-            SegmenterOpts o;
+            SegmenterOpts o = legacy();
             if (which == 0) o.min_seg_sec = v;
             else if (which == 1) o.min_pause_sec = v;
             else if (which == 2) o.max_seg_sec = v;
@@ -298,7 +308,7 @@ static void test_nonfinite_and_huge_opts() {
     }
     const float thr[] = {INFINITY, -INFINITY, NAN};
     for (float t : thr) {
-        SegmenterOpts o;
+        SegmenterOpts o = legacy();
         o.threshold = t;
         auto s = segment_by_vad(std::vector<float>(2000, 0.0f), 100.0, o);
         CHECK(s.size() == 1);
@@ -309,7 +319,7 @@ static void test_nonfinite_and_huge_opts() {
 // speech_regions: smoothed speech runs for audio of any length, with gaps
 // shorter than min_pause merged.
 static void test_speech_regions() {
-    SegmenterOpts o;
+    SegmenterOpts o = legacy();
     // 50 frames (4 s): silence 0-10, speech 10-20, silence 20-23 (0.24 s, a
     // pause), speech 23-35, silence 35-50.
     std::vector<float> p(50, 0.02f);
@@ -371,7 +381,7 @@ static void test_kind_defaults() {
 
 // Frames of 32 ms: boundaries are whole frames, a pause is found, caps hold.
 static void test_segmenter_32ms() {
-    SegmenterOpts o = default_segmenter_opts(VadKind::kSilero);
+    SegmenterOpts o = legacy(default_segmenter_opts(VadKind::kSilero));
     const double fs = 0.032;
     // 50 s: speech, a 0.5 s pause at 20 s, speech to the end.
     const int n = (int)std::ceil(50.0 / fs);
@@ -507,6 +517,179 @@ static void test_event_tracker_matches_offline() {
     CHECK(ev.size() == 2 && ev[0].start && near(ev[1].time, 0.5));
 }
 
+
+// ---- trim_sec ------------------------------------------------------------
+
+// n frames at p = 0.02 with speech (p = 0.95) in the given frame ranges.
+static std::vector<float> speech_p(int n, std::initializer_list<std::pair<int, int>> speech) {
+    std::vector<float> p((size_t)n, 0.02f);
+    for (auto r : speech)
+        for (int i = r.first; i < r.second && i < n; ++i) p[(size_t)i] = 0.95f;
+    return p;
+}
+
+static bool seg_is(const std::vector<VadSegment>& s, std::initializer_list<std::pair<double, double>> want) {
+    if (s.size() != want.size()) return false;
+    size_t i = 0;
+    for (auto w : want) {
+        if (!near(s[i].start, w.first) || !near(s[i].end, w.second)) return false;
+        ++i;
+    }
+    return true;
+}
+
+// Head frames (0.08 s), default trim 0.3 s.
+static void test_trim_head() {
+    const SegmenterOpts o;  // trim_sec 0.3
+    // Speech [330,375) = 26.4-30.0 s and [450,500) = 36.0-40.0 s in 45 s. The
+    // cuts are at the middle of the leading silence (frame 165, which holds no
+    // speech, so that piece is dropped) and of the pause (frame 412 = 32.96 s).
+    auto p = speech_p(563, {{330, 375}, {450, 500}});
+    auto s = segment_by_vad(p, 45.0, o);
+    CHECK(seg_is(s, {{26.4 - 0.3, 30.0 + 0.3}, {36.0 - 0.3, 40.0 + 0.3}}));
+    // trim 0 keeps the whole cuts.
+    s = segment_by_vad(p, 45.0, legacy());
+    CHECK(seg_is(s, {{165 * FS, 412 * FS}, {412 * FS, 45.0}}));
+    // Speech at both edges of the audio: the start cannot go below 0 and the
+    // end not beyond the audio. Cut at the middle of the pause (frame 250).
+    p = speech_p(500, {{0, 10}, {490, 500}});
+    s = segment_by_vad(p, 40.0, o);
+    CHECK(seg_is(s, {{0.0, 0.8 + 0.3}, {39.2 - 0.3, 40.0}}));
+    // No speech anywhere: nothing is left, and no segment is trimmed to nothing.
+    CHECK(segment_by_vad(speech_p(875, {}), 70.0, o).empty());
+    // Two speech runs 0.16 s apart (not a pause) stay in one segment, and the
+    // gap between them is kept. The audio after the last run is dropped.
+    p = speech_p(563, {{100, 120}, {122, 140}});
+    s = segment_by_vad(p, 45.0, o);
+    CHECK(seg_is(s, {{8.0 - 0.3, 11.2 + 0.3}}));
+    // Two runs far apart, in two segments: each is trimmed on its own, and the
+    // trim never reaches into the neighbouring segment.
+    p = speech_p(563, {{20, 40}, {60, 80}});
+    s = segment_by_vad(p, 45.0, o);
+    CHECK(seg_is(s, {{1.6 - 0.3, 3.2 + 0.3}, {4.8 - 0.3, 6.4 + 0.3}}));
+    // A trim larger than the pause is limited by the cut (cut at frame 50 = 4.0 s).
+    SegmenterOpts big;
+    big.trim_sec = 5.0;
+    s = segment_by_vad(p, 45.0, big);
+    CHECK(s.size() == 2 && near(s[0].start, 0.0) && near(s[0].end, 4.0) && near(s[1].start, 4.0));
+    check_ordered(s, 45.0, 30.0);
+}
+
+// Silero frames (0.032 s).
+static void test_trim_silero() {
+    const SegmenterOpts o = default_segmenter_opts(VadKind::kSilero);
+    CHECK(near(o.trim_sec, 0.3));
+    const double fs = 0.032;
+    // Speech at the end of a window and a later run. 45 s, n = 1407.
+    //   speech [900,937) and [1200,1250). The first cut is in the leading
+    //   silence (frame 450), the second in the pause (frame 1068).
+    auto p = speech_p(1407, {{900, 937}, {1200, 1250}});
+    auto s = segment_by_vad(p, 45.0, o);
+    CHECK(seg_is(s, {{900 * fs - 0.3, 937 * fs + 0.3}, {1200 * fs - 0.3, 1250 * fs + 0.3}}));
+    s = segment_by_vad(p, 45.0, legacy(o));
+    CHECK(seg_is(s, {{450 * fs, 1068 * fs}, {1068 * fs, 45.0}}));
+    // Speech at both edges. 40 s, n = 1250, cut at frame 625 (20 s).
+    p = speech_p(1250, {{0, 40}, {1210, 1250}});
+    s = segment_by_vad(p, 40.0, o);
+    CHECK(seg_is(s, {{0.0, 40 * fs + 0.3}, {1210 * fs - 0.3, 40.0}}));
+    // No speech.
+    CHECK(segment_by_vad(speech_p(1407, {}), 45.0, o).empty());
+    // A short run (below min_speech 0.25 s) is no speech and is not kept.
+    CHECK(segment_by_vad(speech_p(1407, {{500, 507}}), 45.0, o).empty());
+}
+
+// Speech that runs through a hard cut is not trimmed at the cut, and a clip of
+// at most max_seg_sec is returned whole.
+static void test_trim_keeps_cuts_and_short_audio() {
+    const SegmenterOpts o;
+    auto s = segment_by_vad(speech_p(875, {{0, 875}}), 70.0, o);
+    CHECK(seg_is(s, {{0.0, 30.0}, {30.0, 60.0}, {60.0, 70.0}}));
+    s = segment_by_vad(speech_p(300, {{100, 110}}), 24.0, o);  // 24 s: whole
+    CHECK(seg_is(s, {{0.0, 24.0}}));
+    s = segment_by_vad(speech_p(375, {{100, 110}}), 30.0, o);  // exactly the cap
+    CHECK(seg_is(s, {{0.0, 30.0}}));
+    // Speech only in the leading 0.1 s of the second half of a hard cut.
+    s = segment_by_vad(speech_p(875, {{0, 375}, {375, 377}}), 70.0, o);
+    CHECK(s.size() == 2 && near(s[1].start, 30.0) && near(s[1].end, 30.0 + 0.16 + 0.3));
+    // A bad trim is degenerate like the other options.
+    SegmenterOpts bad;
+    bad.trim_sec = NAN;
+    s = segment_by_vad(speech_p(875, {{0, 10}}), 70.0, bad);
+    CHECK(seg_is(s, {{0.0, 70.0}}));
+    // A negative trim means off.
+    bad.trim_sec = -1.0;
+    s = segment_by_vad(speech_p(563, {{20, 40}, {60, 80}}), 45.0, bad);
+    CHECK(s.size() == 2 && near(s[0].start, 0.0) && near(s[0].end, 4.0));
+}
+
+// Random streams: trimmed segments are inside the old cuts, contain the same
+// speech, and never exceed trim_sec of non-speech at either edge.
+static void test_trim_random_property() {
+    std::mt19937 rng(11);
+    for (int trial = 0; trial < 200; ++trial) {
+        const SegmenterOpts old = legacy(default_segmenter_opts(trial % 2 ? VadKind::kSilero : VadKind::kHead));
+        SegmenterOpts nw = old;
+        nw.trim_sec = 0.1 * (double)(rng() % 10);
+        const double fs = old.frame_sec;
+        const int n = (int)(35.0 / fs) + (int)(rng() % 2000);
+        std::vector<float> p;
+        bool sp = rng() & 1;
+        while ((int)p.size() < n) {
+            const int len = 1 + (int)(rng() % 300);
+            for (int i = 0; i < len && (int)p.size() < n; ++i) p.push_back(sp ? 0.9f : 0.05f);
+            sp = !sp;
+        }
+        const double total = (double)n * fs;
+        const auto a = segment_by_vad(p, total, old);
+        const auto b = segment_by_vad(p, total, nw);
+        CHECK(a.size() == b.size());
+        for (size_t i = 0; i < a.size() && i < b.size(); ++i) {
+            CHECK(b[i].start >= a[i].start - 1e-9 && b[i].end <= a[i].end + 1e-9);
+            CHECK(b[i].end > b[i].start);
+        }
+        check_ordered(b, total, old.max_seg_sec);
+    }
+}
+
+// With trim_sec 0 the output equals what the segmenter gave before trimming
+// existed: the digest was computed with the previous implementation on the same
+// seeded streams (80 ms and 32 ms frames, assorted options).
+// Digest of segment_by_vad over seeded random inputs (FNV-1a over the printed segments).
+static uint64_t digest_segments() {
+    std::mt19937 rng(20261004);
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](const char* s) { for (; *s; ++s) { h ^= (unsigned char)*s; h *= 1099511628211ull; } };
+    for (int kind = 0; kind < 2; ++kind) {
+        for (int iter = 0; iter < 150; ++iter) {
+            SegmenterOpts o = default_segmenter_opts(kind ? VadKind::kSilero : VadKind::kHead);
+            o.trim_sec = 0.0;
+            if (iter % 3 == 1) o.min_pause_sec = 0.05 + 0.01 * (double)(rng() % 40);
+            if (iter % 4 == 2) o.max_seg_sec = 5.0 + (double)(rng() % 250) / 10.0;
+            const int n = (int)(o.max_seg_sec / o.frame_sec) + 1 + (int)(rng() % 4000);
+            std::vector<float> p;
+            bool sp = rng() & 1;
+            while ((int)p.size() < n) {
+                const int len = 1 + (int)(rng() % (iter % 2 ? 40 : 400));
+                for (int i = 0; i < len && (int)p.size() < n; ++i) p.push_back(sp ? 0.9f : 0.05f);
+                sp = !sp;
+            }
+            const double total = (double)n * o.frame_sec - (double)(rng() % 100) / 100.0 * o.frame_sec * 0.9;
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "#%d,%d;", kind, iter);
+            mix(buf);
+            for (const VadSegment& g : segment_by_vad(p, total, o)) {
+                std::snprintf(buf, sizeof(buf), "%.9f,%.9f;", g.start, g.end);
+                mix(buf);
+            }
+        }
+    }
+    return h;
+}
+
+static void test_trim_zero_equals_previous_output() {
+    CHECK(digest_segments() == 16100934503807512709ull);
+}
+
 int main() {
     test_defaults();
     test_nonfinite_and_huge_opts();
@@ -530,6 +713,11 @@ int main() {
     test_segmenter_32ms();
     test_silero_speech_regions_and_pad();
     test_event_tracker_matches_offline();
+    test_trim_head();
+    test_trim_silero();
+    test_trim_keeps_cuts_and_short_audio();
+    test_trim_random_property();
+    test_trim_zero_equals_previous_output();
     if (failures) return 1;
     std::puts("test_vad_segmenter: OK");
     return 0;

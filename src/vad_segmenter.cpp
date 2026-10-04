@@ -20,7 +20,7 @@ std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total
         !(o.max_seg_sec > 2.0 * o.frame_sec) || !std::isfinite(total_sec) ||
         !std::isfinite(o.threshold) || !std::isfinite(o.min_seg_sec) ||
         !std::isfinite(o.min_pause_sec) || !std::isfinite(o.bridge_sec) ||
-        !std::isfinite(o.min_speech_sec) || o.max_seg_sec > kMaxSec || o.min_seg_sec > kMaxSec ||
+        !std::isfinite(o.min_speech_sec) || !std::isfinite(o.trim_sec) || o.max_seg_sec > kMaxSec || o.min_seg_sec > kMaxSec ||
         o.min_pause_sec > kMaxSec || o.bridge_sec > kMaxSec || o.min_speech_sec > kMaxSec) {
         out.push_back({0.0, total_sec});
         return out;
@@ -67,8 +67,20 @@ std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total
     for_runs(false, [&](int64_t a, int64_t b) { if (b - a >= pause_f) pauses.emplace_back(a, b); });
 
     // Step 3: cut from the front. A segment starting at s may end at a pause.
+    // With trim_sec > 0 the segment shrinks to its speech plus trim_sec on each
+    // side (never beyond the cut itself), so the decoder gets little else.
     auto emit = [&](int64_t a, int64_t b, double end_sec) {
-        if (has_speech(a, std::min(b, n))) out.push_back({(double)a * fs, end_sec});
+        const int64_t be = std::min(b, n);
+        if (!has_speech(a, be)) return;
+        double s0 = (double)a * fs, e0 = end_sec;
+        if (o.trim_sec > 0.0) {
+            int64_t fa = a, fb = be;
+            while (fa < fb && !sp[(size_t)fa]) ++fa;
+            while (fb > fa && !sp[(size_t)(fb - 1)]) --fb;
+            s0 = std::max(s0, (double)fa * fs - o.trim_sec);
+            e0 = std::min(e0, (double)fb * fs + o.trim_sec);
+        }
+        out.push_back({s0, e0});
     };
     int64_t s = 0;
     while (total_sec - (double)s * fs > o.max_seg_sec + 1e-9) {
