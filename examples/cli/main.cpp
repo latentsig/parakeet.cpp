@@ -1537,7 +1537,9 @@ static std::string registry_read_error(const std::string& path, int e) {
 
 static const char* kEnrollUsage =
     "usage: parakeet-cli enroll --model <speaker.gguf> --name <name> "
-    "--input <wav> [--input <wav> ...] --registry <file>\n";
+    "--input <wav> [--input <wav> ...] --registry <file>\n"
+    "  The registry records the encoder (family and weights hash). An existing\n"
+    "  registry with speakers and no fingerprint is refused: see `parakeet-cli registry`.\n";
 
 // parakeet-cli enroll --model <speaker.gguf> --name <name> --input <wav> [--input <wav> ...]
 //                     --registry <file>
@@ -1582,6 +1584,7 @@ static int cmd_enroll(int argc, char** argv) {
         }
     }
     int clips = 0;
+    bool warned = false;
     for (const std::string& in : inputs) {
         pk::Audio audio;
         if (!load_audio_arg_16k_mono(in, audio)) {
@@ -1595,8 +1598,14 @@ static int cmd_enroll(int argc, char** argv) {
                          enc->last_error().c_str());
             return 1;
         }
-        try { reg.enroll(name, emb); }
-        catch (const std::exception& e) {
+        try {
+            // Records the encoder that made the voice (family and weights hash).
+            const pk::FingerprintVerdict v = reg.enroll(name, emb, enc->fingerprint());
+            if (v.is_warning() && !warned) {
+                std::fprintf(stderr, "parakeet-cli enroll: warning: %s\n", v.message.c_str());
+                warned = true;
+            }
+        } catch (const std::exception& e) {
             std::fprintf(stderr, "parakeet-cli enroll: %s\n", e.what());
             return 1;
         }
@@ -1614,13 +1623,88 @@ static int cmd_enroll(int argc, char** argv) {
     return 0;
 }
 
+static const char* kRegistryUsage =
+    "usage: parakeet-cli registry <file> [--restamp --encoder <speaker.gguf>]\n"
+    "  Prints the speaker registry's format version, embedding size, encoder\n"
+    "  fingerprint and speakers. With --restamp it writes the fingerprint of\n"
+    "  the given encoder into a registry that has none (a version 1 file).\n"
+    "  Only restamp with the encoder that made the voices: nothing can verify it.\n";
+
+// parakeet-cli registry <file> [--restamp --encoder <speaker.gguf>]
+static int cmd_registry(int argc, char** argv) {
+    std::string path, encoder;
+    bool restamp = false;
+    for (int i = 0; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--restamp") == 0) restamp = true;
+        else if (std::strcmp(argv[i], "--encoder") == 0 && i + 1 < argc) encoder = argv[++i];
+        else if (argv[i][0] != '-' && path.empty()) path = argv[i];
+        else { std::fprintf(stderr, "%s", kRegistryUsage); return 2; }
+    }
+    if (path.empty() || (restamp && encoder.empty()) || (!restamp && !encoder.empty())) {
+        std::fprintf(stderr, "%s", kRegistryUsage);
+        return 2;
+    }
+    std::string blob;
+    const int rerr = read_file_bytes(path, blob);
+    if (rerr != 0) {
+        std::fprintf(stderr, "parakeet-cli registry: %s\n", registry_read_error(path, rerr).c_str());
+        return 1;
+    }
+    pk::SpeakerRegistry reg;
+    try { reg = pk::SpeakerRegistry::deserialize(blob); }
+    catch (const std::exception& e) {
+        std::fprintf(stderr, "parakeet-cli registry: %s is not a speaker registry: %s\n", path.c_str(), e.what());
+        return 1;
+    }
+    if (restamp) {
+        if (!reg.fingerprint().empty()) {
+            std::fprintf(stderr, "parakeet-cli registry: %s already has a fingerprint (%s); "
+                         "enroll again to change the encoder\n", path.c_str(), reg.fingerprint().family.c_str());
+            return 1;
+        }
+        if (!pk::SpeakerEncoder::available()) {
+            std::fprintf(stderr, "parakeet-cli: built without speaker identification (PARAKEET_WITH_VOICEDETECT=OFF)\n");
+            return 2;
+        }
+        auto enc = pk::SpeakerEncoder::load(encoder);
+        if (!enc) {
+            std::fprintf(stderr, "parakeet-cli registry: failed to load speaker model %s\n", encoder.c_str());
+            return 1;
+        }
+        if (reg.dim() != 0 && reg.dim() != enc->dim()) {
+            std::fprintf(stderr, "parakeet-cli registry: registry holds %d-value embeddings, %s produces %d; "
+                         "this is not the encoder that made them\n", reg.dim(), encoder.c_str(), enc->dim());
+            return 1;
+        }
+        reg.set_fingerprint(enc->fingerprint());
+        std::string werr;
+        if (!pk::write_file_atomic(path, reg.serialize(), &werr)) {
+            std::fprintf(stderr, "parakeet-cli registry: %s\n", werr.c_str());
+            return 1;
+        }
+        std::printf("restamped %s with the fingerprint of %s\n", path.c_str(), encoder.c_str());
+    }
+    uint32_t ver = 0;
+    std::memcpy(&ver, blob.data() + 4, 4);
+    if (restamp) ver = 2;
+    const pk::EncoderFingerprint& fp = reg.fingerprint();
+    std::printf("format version: %u\n", ver);
+    std::printf("embedding size: %d\n", reg.dim());
+    std::printf("encoder family: %s\n", fp.family.empty() ? "(none)" : fp.family.c_str());
+    std::printf("encoder weights: %s\n", fp.weights.empty() ? "(none)" : fp.weights.c_str());
+    std::printf("speakers: %zu\n", reg.size());
+    for (const std::string& n : reg.names()) std::printf("  %s\n", n.c_str());
+    return 0;
+}
+
 static const char* kSceneUsage =
     "usage: parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] "
     "[--sound <ced.gguf>] [--speakers <speaker.gguf> --registry <file> "
-    "[--speaker-threshold F]] --input <wav|-> "
+    "[--speaker-threshold F] [--strict-registry]] --input <wav|-> "
     "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
     "[--show-speech] [--json]\n"
-    "  --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n";
+    "  --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n"
+    "  --strict-registry: refuse a registry with no encoder fingerprint\n";
 
 // parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] [--sound <ced.gguf>]
 //                    [--speakers <speaker.gguf> --registry <file> [--speaker-threshold F]]
@@ -1635,6 +1719,7 @@ static const char* kSceneUsage =
 static int cmd_scene(int argc, char** argv) {
     std::string model, diar, sound, input, latency_str;
     std::string speakers, registry_path;
+    bool strict_registry = false;
     bool have_threshold = false;
     float speaker_threshold = 0.0f;
     bool json = false;
@@ -1651,6 +1736,8 @@ static int cmd_scene(int argc, char** argv) {
             speakers = argv[++i];
         } else if (std::strcmp(argv[i], "--registry") == 0 && i + 1 < argc) {
             registry_path = argv[++i];
+        } else if (std::strcmp(argv[i], "--strict-registry") == 0) {
+            strict_registry = true;
         } else if (std::strcmp(argv[i], "--speaker-threshold") == 0 && i + 1 < argc) {
             char* end = nullptr;
             const char* txt = argv[++i];
@@ -1711,8 +1798,8 @@ static int cmd_scene(int argc, char** argv) {
         std::fprintf(stderr, "parakeet-cli: built without sound tagging (PARAKEET_WITH_CED=OFF)\n");
         return 2;
     }
-    if (speakers.empty() && (!registry_path.empty() || have_threshold)) {
-        std::fprintf(stderr, "parakeet-cli scene: --registry and --speaker-threshold need --speakers\n");
+    if (speakers.empty() && (!registry_path.empty() || have_threshold || strict_registry)) {
+        std::fprintf(stderr, "parakeet-cli scene: --registry, --speaker-threshold and --strict-registry need --speakers\n");
         return 2;
     }
     pk::SpeakerIdOpts speaker_opts;
@@ -1784,13 +1871,16 @@ static int cmd_scene(int argc, char** argv) {
                          registry_path.c_str(), e.what());
             return 1;
         }
-        if (registry.dim() != speaker_enc->dim()) {
-            std::fprintf(stderr,
-                "parakeet-cli scene: registry %s holds %d-dim voices but %s makes %d-dim embeddings "
-                "(enroll again with this model)\n",
-                registry_path.c_str(), registry.dim(), speakers.c_str(), speaker_enc->dim());
+        // Same check and same text as the C-API, before any name is assigned.
+        const pk::FingerprintVerdict v = pk::check_registry_for_encoder(
+            registry, speaker_enc->dim(), speaker_enc->fingerprint(), strict_registry);
+        if (v.is_error()) {
+            std::fprintf(stderr, "parakeet-cli scene: %s (registry %s, speaker model %s)\n",
+                         v.message.c_str(), registry_path.c_str(), speakers.c_str());
             return 1;
         }
+        if (v.is_warning())
+            std::fprintf(stderr, "parakeet-cli scene: warning: %s\n", v.message.c_str());
     }
 
     pk::Audio audio;
@@ -2005,6 +2095,8 @@ int main(int argc, char** argv) {
         return run_and_shutdown(cmd_bench, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "enroll") == 0)
         return run_and_shutdown(cmd_enroll, argc - 2, argv + 2);
+    if (argc >= 2 && std::strcmp(argv[1], "registry") == 0)
+        return run_and_shutdown(cmd_registry, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "scene") == 0)
         return run_and_shutdown(cmd_scene, argc - 2, argv + 2);
     if (argc >= 2 && std::strcmp(argv[1], "vad") == 0)
@@ -2034,11 +2126,12 @@ int main(int argc, char** argv) {
         "[--batch-sizes 1,4,8,16] [--threads N] [--reps R] [--json <out>]\n"
         "  parakeet-cli scene [--model <m.gguf>] [--diar <diar.gguf>] "
         "[--sound <ced.gguf>] [--speakers <speaker.gguf> --registry <file> "
-        "[--speaker-threshold F]] --input <wav|-> "
+        "[--speaker-threshold F] [--strict-registry]] --input <wav|-> "
         "[--latency model|low|very_low|ultra_low] [--chunk-ms N] "
         "[--show-speech] [--json]\n"
         "      --speaker-threshold: default 0.5; ECAPA needs about 0.7, see docs/speaker.md\n"
         "  parakeet-cli enroll --model <speaker.gguf> --name <name> "
-        "--input <wav> [--input <wav> ...] --registry <file>\n");
+        "--input <wav> [--input <wav> ...] --registry <file>\n"
+        "  parakeet-cli registry <file> [--restamp --encoder <speaker.gguf>]\n");
     return 2;
 }

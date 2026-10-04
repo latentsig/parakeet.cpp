@@ -67,6 +67,9 @@ typedef struct parakeet_ctx parakeet_ctx;
 //      and diarize-only naming (parakeet_capi_diarize_named_pcm_json), for
 //      callers that keep speaker embeddings themselves. Additive: no
 //      existing signature changed.
+// Speaker registry encoder fingerprint (parakeet_capi_speaker_registry_add_embedding_fp,
+//      _encoder_family/_encoder_weights/_set_strict, parakeet_capi_speaker_encoder_family,
+//      parakeet_capi_speaker_last_warning) is additive and keeps ABI v10.
 // Standalone VAD (parakeet_capi_vad_*, parakeet_capi_vad_stream_*,
 //      parakeet_capi_transcribe_path_json_vad*) and Silero VAD contexts are
 //      additive and keep ABI v10: a caller that needs them checks for the symbols
@@ -790,6 +793,50 @@ int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, parakeet_ctx* s
 // `reg` returns nonzero with no message. ABI v10.
 int parakeet_capi_speaker_registry_add_embedding(parakeet_speaker_registry* reg, const char* name,
                                                  const float* embedding, int dim);
+
+// --- Encoder fingerprint (additive; ABI stays 10) ---------------------------
+// A registry remembers which speaker encoder made its embeddings, because equal
+// embedding sizes do not mean the same embedding space. Two strings:
+//   family:  "voicedetect:<arch>:<model name>:<dim>" from the encoder GGUF
+//            metadata. A different family is an error.
+//   weights: "sha256:<64 hex>" of the encoder GGUF file bytes (the string
+//            parakeet_capi_speaker_identity returns). A different weights hash
+//            of the same family (another quantization) is only a warning.
+// Every named entry point (diarize_named_pcm_json, diarize_profiles_pcm_json,
+// transcribe_and_diarize_named_json, scene_stream_begin_speaker,
+// speaker_identify_pcm_json, speaker_enroll) checks the registry against the
+// speaker ctx before it assigns any name; see docs/diarization.md. An error is
+// reported like a size mismatch (NULL or nonzero, message on the speaker ctx).
+// A warning is logged to stderr and kept in parakeet_capi_speaker_last_warning.
+
+// Same as _add_embedding, and records which encoder made the embedding. Pass the
+// values of the model that computed it: parakeet_capi_speaker_encoder_family and
+// parakeet_capi_speaker_identity of its ctx, or the strings you stored with the
+// embedding. NULL or "" for both means no fingerprint (exactly _add_embedding).
+// An empty registry takes the fingerprint. Refused (nonzero, message on the
+// registry): another family than the registry's; a fingerprint for a registry
+// that already holds unfingerprinted speakers (no silent stamping); no
+// fingerprint for a fingerprinted registry. Another weights hash of the same
+// family is accepted and the registry keeps its first hash.
+int parakeet_capi_speaker_registry_add_embedding_fp(parakeet_speaker_registry* reg, const char* name,
+                                                    const float* embedding, int dim,
+                                                    const char* encoder_family,
+                                                    const char* encoder_weights);
+// The registry's fingerprint, "" when it has none. Borrowed until the registry
+// changes or is freed. NULL registry gives "".
+const char* parakeet_capi_speaker_registry_encoder_family(const parakeet_speaker_registry* reg);
+const char* parakeet_capi_speaker_registry_encoder_weights(const parakeet_speaker_registry* reg);
+// With strict != 0, the named entry points refuse a registry that has speakers
+// and no fingerprint. Not saved to the file; default 0 (such a registry is
+// accepted with a warning). Does nothing on NULL.
+void parakeet_capi_speaker_registry_set_strict(parakeet_speaker_registry* reg, int strict);
+// Family of a speaker ctx's encoder, "voicedetect:<arch>:<name>:<dim>"; NULL
+// for NULL or a context that is not a speaker model. Borrowed until free.
+const char* parakeet_capi_speaker_encoder_family(const parakeet_ctx* speaker);
+// Warning from the latest check or enrollment on this speaker ctx (for example
+// "same family, other weights"), "" if none. Cleared by the next check. Borrowed.
+// NULL ctx gives "".
+const char* parakeet_capi_speaker_last_warning(const parakeet_ctx* speaker);
 
 // Binary file. 0 on success; nonzero on error (message on the registry).
 int parakeet_capi_speaker_registry_save(const parakeet_speaker_registry* reg, const char* path);

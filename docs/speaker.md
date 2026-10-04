@@ -59,9 +59,14 @@ well. Sizes are for the f32 files. ERes2Net has not been run through any of
 the tests here.
 
 A registry belongs to the encoder that made it. The embedding sizes differ, and
-even two encoders with the same size do not share a space, so enroll again if
-you switch models. `scene` checks the size and stops if it does not match; it
-cannot tell two encoders of the same size apart.
+even two encoders with the same size do not share a space (ECAPA and CAM++ both
+give 192 values), so enroll again if you switch models. The registry records
+the encoder's family and weights hash, and `scene` and the C-API check them
+before they assign a name: another family stops with an error that names both,
+another quantization of the same family only warns, and a registry from before
+this check (no fingerprint) warns, or stops with `--strict-registry`. See
+"Encoder fingerprint" in [diarization.md](diarization.md) for the rules and the
+file format. `parakeet-cli registry <file>` shows what a registry records.
 
 The speaker-model weights have their own licences (WeSpeaker, 3D-Speaker and
 SpeechBrain each publish theirs). voice-detect.cpp's own licence does
@@ -104,7 +109,7 @@ the margin. Names are compared exactly, so near-duplicate names (`Ada` and
 ```
 parakeet-cli scene --model <asr.gguf> --diar <diar.gguf> \
     --speakers <speaker.gguf> --registry <file> [--speaker-threshold F] \
-    --input <wav>
+    [--strict-registry] --input <wav>
 ```
 
 `--speakers` needs `--diar` and `--registry`. Real output on the same fixture
@@ -179,7 +184,10 @@ speaker GGUF loads through `parakeet_capi_load` into a context of kind
 parakeet_capi_speaker_dim                        # embedding size, -1 if not a speaker ctx
 parakeet_capi_speaker_registry_new / _free / _size / _last_error
 parakeet_capi_speaker_enroll                     # embed PCM and add it under a name
-parakeet_capi_speaker_registry_save / _load      # binary file
+parakeet_capi_speaker_registry_save / _load      # binary file (version 2 holds the encoder fingerprint)
+parakeet_capi_speaker_registry_add_embedding_fp  # add_embedding plus the encoder family and weights
+parakeet_capi_speaker_registry_encoder_family / _encoder_weights / _set_strict
+parakeet_capi_speaker_encoder_family / _last_warning
 parakeet_capi_speaker_identify_pcm_json          # {"name":"alice","score":0.71}
 parakeet_capi_scene_stream_begin_speaker         # scene stream with a speaker ctx + registry
 parakeet_capi_transcribe_and_diarize_named_json  # offline speaker-attributed ASR with names

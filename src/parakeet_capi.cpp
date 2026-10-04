@@ -107,6 +107,7 @@ struct parakeet_ctx {
     std::unique_ptr<pk::SpeakerEncoder> speaker;
     std::unique_ptr<pk::SileroVad> silero;   // Silero VAD model (architecture "silero_vad")
     std::string speaker_identity;
+    std::string speaker_warning;   // latest registry/encoder check warning
     ErrorSlot last_error;
 };
 
@@ -114,6 +115,7 @@ struct parakeet_ctx {
 struct parakeet_speaker_registry {
     pk::SpeakerRegistry reg;
     std::string last_error;
+    bool strict = false;   // refuse a registry with speakers and no fingerprint
 };
 
 // The opaque streaming session: a pk::StreamingSession over the ctx's model plus
@@ -285,11 +287,11 @@ extern "C" parakeet_ctx* parakeet_capi_load(const char* gguf_path) {
 
         // A voice-detect GGUF (architecture "voicedetect") is a speaker encoder.
         if (pk::gguf_is_voicedetect(gguf_path)) {
-            try {
-                ctx->speaker = pk::load_speaker_with_identity(gguf_path, ctx->speaker_identity,
-                    [&] { return pk::SpeakerEncoder::load(gguf_path); });
-            } catch (...) { delete ctx; return nullptr; }
-            if (ctx->speaker) return ctx;
+            ctx->speaker = pk::SpeakerEncoder::load(gguf_path);   // hashes the file on both sides of the load
+            if (ctx->speaker) {
+                ctx->speaker_identity = ctx->speaker->fingerprint().weights;
+                return ctx;
+            }
             delete ctx;
             return nullptr;
         }
@@ -1365,6 +1367,22 @@ bool require_speaker(parakeet_ctx* ctx) {
     return true;
 }
 
+// Runs where an encoder meets a registry, before any name is assigned: embedding
+// size, then encoder family (error), weights and missing fingerprint (warning,
+// or an error in strict mode). Sets speaker->last_error on an error, and
+// speaker->speaker_warning plus a log line on a warning.
+bool check_registry(parakeet_ctx* speaker, const parakeet_speaker_registry* reg) {
+    speaker->speaker_warning.clear();
+    const pk::FingerprintVerdict v = pk::check_registry_for_encoder(
+        reg->reg, speaker->speaker->dim(), speaker->speaker->fingerprint(), reg->strict);
+    if (v.is_error()) { speaker->last_error = v.message; return false; }
+    if (v.is_warning()) {
+        speaker->speaker_warning = v.message;
+        PK_LOG("warning: %s", v.message.c_str());
+    }
+    return true;
+}
+
 std::string diar_result_json_string(const pk::DiarizationResult& r) {
     std::string json = "{\"speakers\":";
     pk::append_json_int(json, r.n_speakers);
@@ -2011,13 +2029,7 @@ extern "C" parakeet_scene_stream* parakeet_capi_scene_stream_begin_speaker(
         so.max_voice_sec = scene_float_field(o, offsetof(parakeet_scene_opts, speaker_max_voice_sec), so.max_voice_sec);
         const std::string err = pk::validate_speaker_opts(so);
         if (!err.empty()) { speaker->last_error = "invalid speaker options: " + err; return nullptr; }
-        const int rd = registry->reg.dim();
-        if (rd != 0 && rd != speaker->speaker->dim()) {
-            speaker->last_error = "registry holds " + std::to_string(rd) +
-                                  "-value embeddings, this model produces " +
-                                  std::to_string(speaker->speaker->dim());
-            return nullptr;
-        }
+        if (!check_registry(speaker, registry)) return nullptr;
     }
     try {
         pk::SceneParts p;
@@ -2154,7 +2166,12 @@ extern "C" int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, para
         if (!name || !*name) { speaker->last_error = "speaker name is empty"; return 1; }
         std::vector<float> emb;
         if (!speaker_embed_pcm(speaker, pcm, n, sample_rate, emb)) return 1;
-        reg->reg.enroll(name, emb);
+        speaker->speaker_warning.clear();
+        const pk::FingerprintVerdict v = reg->reg.enroll(name, emb, speaker->speaker->fingerprint());
+        if (v.is_warning()) {
+            speaker->speaker_warning = v.message;
+            PK_LOG("warning: %s", v.message.c_str());
+        }
         speaker->last_error.clear();
         return 0;
     } catch (const std::exception& e) {
@@ -2180,6 +2197,48 @@ extern "C" int parakeet_capi_speaker_registry_add_embedding(parakeet_speaker_reg
         reg->last_error = "unknown error";
     }
     return 1;
+}
+
+extern "C" int parakeet_capi_speaker_registry_add_embedding_fp(parakeet_speaker_registry* reg, const char* name,
+                                                               const float* embedding, int dim,
+                                                               const char* encoder_family,
+                                                               const char* encoder_weights) {
+    if (!reg) return 1;
+    try {
+        if (!name || !*name) { reg->last_error = "speaker name is empty"; return 1; }
+        if (!embedding || dim <= 0) { reg->last_error = "no embedding"; return 1; }
+        pk::EncoderFingerprint fp{encoder_family ? encoder_family : "", encoder_weights ? encoder_weights : ""};
+        const pk::FingerprintVerdict v =
+            reg->reg.enroll(name, std::vector<float>(embedding, embedding + dim), fp);
+        if (v.is_warning()) PK_LOG("warning: %s", v.message.c_str());
+        reg->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        reg->last_error = e.what();
+    } catch (...) {
+        reg->last_error = "unknown error";
+    }
+    return 1;
+}
+
+extern "C" const char* parakeet_capi_speaker_registry_encoder_family(const parakeet_speaker_registry* reg) {
+    return reg ? reg->reg.fingerprint().family.c_str() : "";
+}
+
+extern "C" const char* parakeet_capi_speaker_registry_encoder_weights(const parakeet_speaker_registry* reg) {
+    return reg ? reg->reg.fingerprint().weights.c_str() : "";
+}
+
+extern "C" void parakeet_capi_speaker_registry_set_strict(parakeet_speaker_registry* reg, int strict) {
+    if (reg) reg->strict = strict != 0;
+}
+
+extern "C" const char* parakeet_capi_speaker_encoder_family(const parakeet_ctx* speaker) {
+    return speaker && speaker->speaker ? speaker->speaker->fingerprint().family.c_str() : nullptr;
+}
+
+extern "C" const char* parakeet_capi_speaker_last_warning(const parakeet_ctx* speaker) {
+    return speaker ? speaker->speaker_warning.c_str() : "";
 }
 
 extern "C" int parakeet_capi_speaker_registry_save(const parakeet_speaker_registry* reg, const char* path) {
@@ -2236,6 +2295,7 @@ extern "C" char* parakeet_capi_speaker_identify_pcm_json(parakeet_speaker_regist
     try {
         if (!require_speaker(speaker)) return nullptr;
         if (!reg) { speaker->last_error = "registry is NULL"; return nullptr; }
+        if (!check_registry(speaker, reg)) return nullptr;
         std::vector<float> emb;
         if (!speaker_embed_pcm(speaker, pcm, n, sample_rate, emb)) return nullptr;
         const pk::SpeakerIdOpts d;
@@ -2268,13 +2328,7 @@ extern "C" char* parakeet_capi_transcribe_and_diarize_named_json(
         int n_speakers = 0;
         if (!run_sas(asr_ctx, diar_ctx, samples, n_samples, sample_rate, words, n_speakers, &segs, &pcm16k))
             return nullptr;
-        const int rd = registry->reg.dim();
-        if (rd != 0 && rd != speaker->speaker->dim()) {
-            speaker->last_error = "registry holds " + std::to_string(rd) +
-                                  "-value embeddings, this model produces " +
-                                  std::to_string(speaker->speaker->dim());
-            return nullptr;
-        }
+        if (!check_registry(speaker, registry)) return nullptr;
         std::map<int, pk::SlotName> names;
         try {
             names = pk::identify_offline(pcm16k, segs, speaker->speaker->embedder(), registry->reg,
@@ -2339,13 +2393,7 @@ static char* diarize_named_pcm_json(bool export_profiles, parakeet_ctx* diar_ctx
             diar_ctx->last_error = "invalid sample rate";
             return nullptr;
         }
-        const int rd = registry->reg.dim();
-        if (rd != 0 && rd != speaker->speaker->dim()) {
-            speaker->last_error = "registry holds " + std::to_string(rd) +
-                                  "-value embeddings, this model produces " +
-                                  std::to_string(speaker->speaker->dim());
-            return nullptr;
-        }
+        if (!check_registry(speaker, registry)) return nullptr;
         pk::SpeakerIdOpts o;
         if (accept_threshold != 0.0f) o.accept_threshold = accept_threshold;
         if (margin != 0.0f) o.margin = margin;
