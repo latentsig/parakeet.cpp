@@ -548,6 +548,173 @@ one command each when the machine is quiet.
 
 The accuracy numbers do not depend on load and were not re-run.
 
+## The head on noise-only audio
+
+The Parakeet VAD head gives false alarms on audio that has no speech. Silero does not.
+This was measured on synthetic data: LibriSpeech test-clean utterances with added white
+or pink noise (see [the fusion experiment](#fusing-silero-and-the-head-offline-experiment)
+for the corpus). The numbers are frame rates at threshold 0.5 with the default
+segmenter settings (bridge 0.1 s, minimum speech 0.1 s, minimum pause 0.2 s, no padding).
+
+| Test | Silero | Ultra head (Q8_0) | Redux head (packed) |
+| --- | ---: | ---: | ---: |
+| Speech-free 30 s clips (96 clips: white and pink noise at 20, 10, 5 and 0 dB), share of frames called speech | 0.00% | 99.44% | 97.83% |
+| A 30 s noise stretch inside a file that also has speech (96 files), share of frames in the stretch called speech | 0.0% | 17.7% | 55.2% |
+
+On a file with no speech at all, the heads call nearly every frame speech. The likely
+reason is that the head normalises the features of each file on their own, so pure
+noise is rescaled until it looks like speech (this is an explanation, not something the
+experiment tested). When the file also has speech, the normalisation is set by the
+speech, and the false alarms drop, but they do not go away. For the stretch inside a
+speech file, the rate depends on the noise level:
+
+| Noise level (SNR) | Ultra head | Redux head | Silero |
+| --- | ---: | ---: | ---: |
+| 20 dB | 0.0% | 35.2% | 0.0% |
+| 10 dB | 0.6% | 65.3% | 0.0% |
+| 5 dB | 14.3% | 60.8% | 0.0% |
+| 0 dB | 55.8% | 59.4% | 0.0% |
+
+For Ultra the false alarms grow with the noise level. For Redux they are already high at
+20 dB. Each cell pools 12 white noise and 12 pink noise files. The numbers are in
+`scripts/vad_bench/fusion/results.md` (noise-only clips) and `gap_results.md` (the
+stretch inside a file).
+
+What this means: use Silero as the always-on gate, and whenever the audio can contain
+long stretches without speech. Use the head on audio that is known to be mostly speech,
+for example before the transcription of recorded talks, or where its higher recall
+matters.
+
+Limits: synthetic noise (white and pink) added to read English speech. Babble, music,
+room noise and other languages were not tested. The false alarms in a stretch were
+measured only for a stretch of about 30 s.
+
+## Fusing Silero and the head (offline experiment)
+
+The head has the higher recall and Silero has the cleaner decisions. This experiment
+asked whether combining them beats each alone. **Fusion is not implemented in
+parakeet.cpp.** It is an offline experiment: the rules run in a Python port of the
+segmenter (`scripts/vad_bench/fusion/`), on probabilities saved from Silero and from the
+heads. No C++ code, API or option changed.
+
+### Setup
+
+- Corpus: rebuilt from LibriSpeech test-clean. 342 speech clips (38 sets of 5
+  utterances, each set in 9 conditions: clean, and white and pink noise at 20, 10, 5 and
+  0 dB SNR) and 96 noise-only 30 s clips (12 per noise type and level).
+- Detectors: Silero ONNX 6.2.3 (run with onnxruntime), the Ultra Q8_0 head and the Redux
+  packed head, through `parakeet-cli vad --probabilities`.
+- All probabilities go to a 10 ms grid by sample-and-hold. All rules use the same
+  post-processing: bridge 0.1 s, minimum speech 0.1 s, minimum pause 0.2 s, no padding.
+- Tuned numbers use speaker-disjoint 4-fold cross-validation: the parameters are chosen on
+  three folds and scored on the fourth. All intervals are 95 percent bootstrap intervals
+  over clips.
+- Score: frame level precision (P), recall (R) and F1 against the reference, pooled over
+  the 342 speech clips. The reference is the span of each utterance in the synthetic
+  clip, with an energy trim.
+
+### The two-stage rule
+
+Silero decides what is speech. The head only changes the edges: it moves the start of a
+Silero region earlier by up to 160 to 320 ms and its end later by up to 160 ms, but only
+where the head also says speech, and it fills a gap between two regions if the gap is
+shorter than 300 to 600 ms and the head calls at least half of it speech. The default
+setting is 160 ms before, 160 ms after, 300 ms fill; the best setting found on all the
+clips was 320 ms before, 160 ms after, 600 ms fill. Where Silero finds no speech, the head can
+never add any. This is why the rule has no false alarms on noise.
+
+### Results at the defaults (threshold 0.5)
+
+Pooled over 342 clips, percent.
+
+| System | P | R | F1 |
+| --- | ---: | ---: | ---: |
+| Silero | 99.6 | 85.6 | 92.1 |
+| Ultra head | 98.6 | 89.4 | 93.8 |
+| Redux head | 97.6 | 92.0 | 94.7 |
+| OR of both (Redux) | 97.6 | 92.1 | 94.8 |
+| AND of both (Redux) | 99.6 | 85.5 | 92.0 |
+| Two-stage (Ultra) | 99.0 | 90.0 | 94.3 |
+| Two-stage (Redux) | 98.9 | 91.2 | 94.9 |
+
+### Results after tuning (cross-validated)
+
+| System | P | R | F1 | F1 gain over the best single detector |
+| --- | ---: | ---: | ---: | ---: |
+| Silero, tuned threshold | 98.3 | 91.1 | 94.5 | |
+| Ultra head, tuned threshold | 95.8 | 93.0 | 94.4 | |
+| Redux head, tuned threshold | 96.9 | 92.8 | 94.8 | |
+| Two-stage (Ultra) | 98.5 | 92.3 | 95.3 | +0.75 [+0.65, +0.86] |
+| Two-stage (Redux) | 98.0 | 93.9 | 95.9 | +1.13 [+1.00, +1.28] |
+
+The gain is measured against the better of the two single detectors with their own tuned
+threshold (Silero for Ultra, the Redux head for Redux).
+
+Recall when precision must stay at 99 percent or more (the threshold is chosen on the
+training folds):
+
+| System | Recall at P of 99 percent or more |
+| --- | ---: |
+| Silero | 88.6 |
+| Ultra head | 87.4 |
+| Redux head | 89.4 |
+| Two-stage (Ultra) | 90.6 |
+| Two-stage (Redux) | 91.5 |
+
+### In plain language
+
+At the defaults on this corpus, for every 100 s of real speech Silero misses 14.4 s,
+the Redux head 8.0 s and the two-stage rule 8.8 s (the Ultra head 10.6 s). For every
+100 s that a detector calls speech, Silero is wrong for 0.4 s, the Redux head for 2.4 s
+and the two-stage rule for 1.1 s (the Ultra head 1.4 s). The two-stage rule keeps most of
+the head's extra recall and about two thirds of Silero's precision advantage over
+the Redux head, and it never fires on noise-only audio. These are the default rows of the table
+above, expressed in seconds; they are frame counts, not a statement about words.
+
+### Rules that did not help
+
+- **OR, max and mean of the two probabilities.** They inherit the head's false alarms on
+  noise. OR and max call 99.4 percent of the frames of the noise-only clips speech with
+  Ultra (97.8 percent with Redux), the same as the head alone. The mean at the default
+  weights is clean on noise-only clips (0.0 to 0.1 percent) but gained less on speech
+  (F1 93.4 for Redux against 94.9 for the two-stage rule).
+- **AND and min.** No false alarms, but they are no better than Silero: recall 85.5
+  against 85.6.
+- **Switching between the two on an estimated noise level.** At the defaults it gave the
+  same false alarms on noise-only clips as the head alone (99.4 percent of the frames
+  with Ultra, 97.8 percent with Redux), so it did not remove the problem.
+- **Logistic regression and gradient boosting on both probabilities and their neighbours.**
+  They scored the highest F1 on the synthetic clips (95.1 to 96.3 at threshold 0.5), but they
+  depend on the data they were fitted on. Fitted without noise-only clips,
+  boosting called 95 percent of the frames of noise-only clips speech with Ultra and 60
+  percent with Redux, and the logistic regression 20 to 25 percent (Ultra) and 5 to 10
+  percent (Redux). Adding noise-only clips to the training set brought those false alarms
+  down to under 0.3 percent, but the version fitted without them, applied to a real 600 s
+  talk, called about 90 percent of it speech, against 77.5 percent for Silero and 83 to
+  84 percent for the heads (there was no reference for that talk, so this is a warning
+  sign and not a measured error). The two-stage rule called 84 percent.
+
+### Cost
+
+The two-stage rule needs both detectors to run. The cost is about the sum of the two.
+From the speeds above (Silero about 660x real time and a head about 93x on one thread,
+shared machine) both together run at about 80x real time. The rule itself is cheap
+compared with the model runs, but it was not timed separately.
+
+### Caveats
+
+- Synthetic read speech with synthetic white and pink noise. Babble, music,
+  reverberation and non-English speech were not tested.
+- Part of every tuned gain comes from the reference convention (it counts the pauses
+  inside an utterance as speech and uses an energy trim). A detector that bridges short
+  pauses gains from that. A gain of one F1 point is not a claim about real use.
+- The word-time reference of the TED talks was lost, so the rules were not scored on
+  real talks. Only the share of speech per rule on one 600 s talk is reported.
+- One corpus, one random seed for the bootstrap, one machine for the probabilities.
+
+Scripts, the small result files and how to reproduce:
+[`scripts/vad_bench/fusion/`](../scripts/vad_bench/fusion/README.md).
+
 ## When to use which
 
 This is limited to what the numbers above support.
@@ -556,7 +723,11 @@ This is limited to what the numbers above support.
   MB, the command line tool needs about 60 MB, and it ran at about 660x real time on
   one thread on a shared machine. It gave frame level F1 of 91.7 to 94.4 on the
   synthetic data and 91.8 to 92.1 on the TED talks.
-- **The Parakeet head when Ultra or Redux is already loaded.** The head costs no extra
+- **Always-on gate, or audio with long stretches without speech.** Silero. The heads give
+  false alarms on noise-only audio (see
+  [the head on noise-only audio](#the-head-on-noise-only-audio)); Silero gave none.
+- **The Parakeet head when Ultra or Redux is already loaded, on audio that is mostly
+  speech** (for example recorded talks before transcription). The head costs no extra
   model and its scores are close to Silero in the same tests: within about 1.5 F1 points
   on the synthetic clips at 5 dB and above (Ultra was 0.4 lower in white noise at 5 dB),
   2 to 2.5 points higher on the TED talks, and 1.7 to 2.6 points higher at 0 dB pink
@@ -575,6 +746,10 @@ This is limited to what the numbers above support.
   probabilities of parakeet.cpp match onnxruntime more closely (mean abs diff 0.00002,
   2 flipped frames) than those of whisper.cpp do (0.00224, 309 flipped frames), but this
   did not change the segment scores.
+- **Both together.** In an offline experiment, Silero deciding and the head only moving
+  the edges (the two-stage rule) gave 0.75 to 1.13 more F1 points than the best single
+  detector and no false alarms on noise. It is not implemented in parakeet.cpp. See
+  [the fusion experiment](#fusing-silero-and-the-head-offline-experiment).
 - **Not supported by these numbers:** any claim about GPUs, ARM, other languages,
   music or non speech noise, streaming latency, or the effect of the VAD on WER.
 

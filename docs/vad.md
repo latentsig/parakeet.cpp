@@ -15,6 +15,27 @@ transcription segments. The segmenter takes the frame period as a parameter
 Accuracy and speed numbers for both detectors, with the method and the scripts to
 repeat them, are in [vad-benchmarks.md](vad-benchmarks.md).
 
+## Which detector to use
+
+The Parakeet VAD head alone gives false alarms on audio without speech. On a speech-free
+file the head calls about 99 percent of the frames speech (Ultra 99.4 percent, Redux 97.8
+percent), because the features are normalised per file and pure noise is rescaled until it
+looks like speech. Inside a file that has speech, over a 30 s stretch of noise at
+threshold 0.5, the false-alarm frame rate was 17.7 percent for the Ultra head and 55
+percent for the Redux head, and it grows with the noise level. Silero showed 0 percent in
+both tests. This was measured on synthetic data: LibriSpeech with added white and pink
+noise, see [the experiment](vad-benchmarks.md#the-head-on-noise-only-audio).
+
+So prefer Silero as an always-on gate, or whenever the audio can contain long stretches
+without speech. Use the head on audio that is known to be mostly speech (for example
+before the transcription of recorded talks), or where its higher recall matters.
+
+An offline experiment also combined the two: Silero decides what is speech, and the head
+only moves the edges. It scored 0.75 to 1.13 F1 points above the best single detector on
+the synthetic clips and gave no false alarms on noise. It is not implemented in
+parakeet.cpp. See
+[Fusing Silero and the head](vad-benchmarks.md#fusing-silero-and-the-head-offline-experiment).
+
 ## Standalone VAD API
 
 One call returns the speech regions of a clip as JSON, for either detector. Load
