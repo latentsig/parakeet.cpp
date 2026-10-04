@@ -36,6 +36,11 @@ int  num_threads();  // current override (0 == unset)
 // if set, else the built-in default (8).
 int  effective_threads();
 
+// The thread count the process-global backend is using right now (0 before it
+// is created). A per-call `n_threads` in run_graph applies to that call only, so
+// this does not change across a call. For tests.
+int  backend_thread_count();
+
 // Gallocr buffer size (bytes) reserved for the most recent single-backend (CPU)
 // run_graph compute. Used by tests to assert that banded attention memory scales
 // O(T*window), not O(T^2). Reflects the high-water mark of the persistent
