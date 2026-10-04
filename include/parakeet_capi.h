@@ -74,6 +74,8 @@ typedef struct parakeet_ctx parakeet_ctx;
 //      parakeet_capi_transcribe_path_json_vad*) and Silero VAD contexts are
 //      additive and keep ABI v10: a caller that needs them checks for the symbols
 //      (dlsym) or for PARAKEET_MODEL_KIND_VAD.
+// Word filter (parakeet_capi_transcribe_path_json_with and the filter keys of
+//      parakeet_capi_transcribe_path_json_vad_with) is additive and keeps ABI v10.
 // Bundle GGUF (parakeet_capi_load_component, parakeet_capi_bundle_components_json,
 //      parakeet_capi_load_error; docs/bundle.md) is additive and keeps ABI v10.
 int parakeet_capi_abi_version(void);
@@ -199,13 +201,37 @@ int parakeet_capi_transcribe_pcm_batch_lang(parakeet_ctx* ctx,
 char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx, const char* wav_path,
                                          int decoder);
 
+// Like parakeet_capi_transcribe_path_json, with the optional word filter
+// (additive; no ABI bump). `options_json` is a flat JSON object, or NULL / "" for
+// no filter, in which case the document is the one of the plain function.
+// Keys:
+//   "min_local_conf"  0 to 1; 0 = off (default). A word is dropped when the mean
+//                     confidence of the words that start within "local_radius"
+//                     seconds of it (itself included) is below this value. It
+//                     removes words that stand alone or sit among other low
+//                     confidence words, as noise tends to give, and keeps a
+//                     doubtful word between confident ones. 0.5 is a good
+//                     start. Higher values also drop real words on some models
+//                     (see docs/vad-benchmarks.md).
+//   "local_radius"    seconds > 0; default 5.
+//   "drop_punct_only" true to drop words that are only punctuation (a CTC model
+//                     can emit a lone "." on noise); default false.
+// Unknown keys and bad values are errors (NULL, last error set). The filter only
+// post-processes the decode: with it off, or when it drops nothing, the words and
+// tokens are the same as without it. When a filter is on, the document gets one
+// more member, "guard":{"dropped_words":N}, with N = 0 when nothing was dropped;
+// the dropped words are also removed from "text", "words" and "tokens". The
+// filter works on the whole file as one decode unit.
+char* parakeet_capi_transcribe_path_json_with(parakeet_ctx* ctx, const char* wav_path,
+                                              int decoder, const char* options_json);
+
 // Like parakeet_capi_transcribe_path_json, but long audio is cut at pauses found
 // by the model's own VAD head into segments of at most 30 s, and the segments are
 // transcribed one by one (word/token times are relative to the whole file). Audio
 // of 30 s or less gives the same document as the plain function. Returns NULL and
 // sets the context's last error to "model has no VAD head" when the model has no
 // VAD head. It always uses the default segmenter options (30 s cap, threshold
-// 0.5). Additive; no ABI bump.
+// 0.5, each segment trimmed to its speech plus 0.3 s). Additive; no ABI bump.
 char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_path,
                                              int decoder);
 
@@ -237,6 +263,9 @@ char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_
 //   "speech_pad"    seconds >= 0; "speech" mode: each region is widened by this
 //                   on both sides; default 0 (Silero: 0.03)
 //   "max_segment"   seconds; segment cap in "segments" mode; default 30
+//   "trim"          seconds >= 0; "segments" mode: each segment shrinks to its
+//                   first and last speech frame plus this much; default 0.3;
+//                   0 keeps the whole cuts
 //   "mode"          "speech" (default) or "segments"
 //   "probabilities" true to add the per-frame probabilities; default false
 // Unknown keys and out-of-range values are errors. The Silero defaults are the
@@ -277,8 +306,11 @@ char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_path,
 // Silero context, or NULL to use the ASR model's own head (then the result is
 // as parakeet_capi_transcribe_path_json_vad, with the options below). Options
 // are the JSON object of parakeet_capi_vad_pcm_json; only "threshold",
-// "min_pause", "min_speech" and "max_segment" are used here (the other keys are
-// accepted and ignored). NULL or "" gives the defaults of the VAD in use.
+// "min_pause", "min_speech", "max_segment" and "trim" are used here (the other
+// keys of that object are accepted and ignored), plus the word filter keys of
+// parakeet_capi_transcribe_path_json_with, which apply to each segment on its
+// own (and to the whole file when it is at most max_segment seconds). NULL or
+// "" gives the defaults of the VAD in use.
 // Audio of at most max_segment seconds (30 by default) is transcribed whole,
 // without running the VAD. Word and token times are relative to the whole file.
 // Returns the same document as parakeet_capi_transcribe_path_json. Errors set

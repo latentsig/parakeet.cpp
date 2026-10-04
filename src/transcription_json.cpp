@@ -88,7 +88,14 @@ std::string transcription_to_json(const Transcription& tr, float frame_sec) {
         append_json_float(out, "%.4f", tr.tokens[i].conf);
         out += '}';
     }
-    out += "]}";
+    out += ']';
+    // Present only when a word filter ran: how many words it removed.
+    if (tr.dropped_words >= 0) {
+        out += ",\"guard\":{\"dropped_words\":";
+        append_json_int(out, tr.dropped_words);
+        out += '}';
+    }
+    out += '}';
     return out;
 }
 

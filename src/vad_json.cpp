@@ -47,64 +47,96 @@ bool positive_seconds(double v) { return std::isfinite(v) && v > 0.0 && v <= 1e6
 
 }  // namespace
 
-bool parse_vad_options(const char* json, VadRequest& req, std::string& err, VadKind kind) {
-    req = VadRequest();
-    req.kind = kind;
-    req.opts = default_segmenter_opts(kind);
+namespace {
+
+// Shared parser of the flat option objects. `vad_keys` accepts the segmenter
+// and mode keys, `filter_keys` the word filter keys ("trim" belongs to the
+// segmenter). `what` names the document in error messages.
+bool parse_options(const char* json, VadRequest& req, std::string& err, bool vad_keys,
+                   bool filter_keys, const char* what) {
+    const std::string docs = std::string(what) + "s";  // "VAD options" / "options"
     if (!json) return true;
     Cursor c{json};
     c.ws();
     if (*c.p == '\0') return true;
-    if (*c.p != '{') { err = "invalid VAD options: expected a JSON object"; return false; }
+    if (*c.p != '{') { err = "invalid " + docs + ": expected a JSON object"; return false; }
     ++c.p;
     c.ws();
-    if (*c.p == '}') { ++c.p; c.ws(); if (*c.p) { err = "invalid VAD options: trailing text"; return false; } return true; }
+    if (*c.p == '}') { ++c.p; c.ws(); if (*c.p) { err = "invalid " + docs + ": trailing text"; return false; } return true; }
     for (;;) {
         c.ws();
         std::string key;
-        if (!parse_string(c, key)) { err = "invalid VAD options: expected a key"; return false; }
+        if (!parse_string(c, key)) { err = "invalid " + docs + ": expected a key"; return false; }
         c.ws();
-        if (*c.p != ':') { err = "invalid VAD options: expected ':' after \"" + key + "\""; return false; }
+        if (*c.p != ':') { err = "invalid " + docs + ": expected ':' after \"" + key + "\""; return false; }
         ++c.p;
         c.ws();
-        if (key == "mode") {
+        const std::string opt = std::string(what) + " " + key;
+        const bool is_seg_num = key == "threshold" || key == "min_pause" || key == "min_speech" ||
+                                key == "max_segment" || key == "speech_pad" || key == "trim";
+        if (vad_keys && key == "mode") {
             std::string v;
-            if (!parse_string(c, v)) { err = "invalid VAD option mode: expected a string"; return false; }
+            if (!parse_string(c, v)) { err = "invalid " + opt + ": expected a string"; return false; }
             if (v == "speech") req.mode = VadRequest::Mode::kSpeech;
             else if (v == "segments") req.mode = VadRequest::Mode::kSegments;
-            else { err = "invalid VAD option mode: use \"speech\" or \"segments\""; return false; }
-        } else if (key == "probabilities") {
-            if (std::strncmp(c.p, "true", 4) == 0) { req.probabilities = true; c.p += 4; }
-            else if (std::strncmp(c.p, "false", 5) == 0) { req.probabilities = false; c.p += 5; }
-            else { err = "invalid VAD option probabilities: expected true or false"; return false; }
-        } else if (key == "threshold" || key == "min_pause" || key == "min_speech" ||
-                   key == "max_segment" || key == "speech_pad") {
+            else { err = "invalid " + opt + ": use \"speech\" or \"segments\""; return false; }
+        } else if ((vad_keys && key == "probabilities") || (filter_keys && key == "drop_punct_only")) {
+            bool v = false;
+            if (std::strncmp(c.p, "true", 4) == 0) { v = true; c.p += 4; }
+            else if (std::strncmp(c.p, "false", 5) == 0) { v = false; c.p += 5; }
+            else { err = "invalid " + opt + ": expected true or false"; return false; }
+            if (key == "probabilities") req.probabilities = v;
+            else req.filter.drop_punct_only = v;
+        } else if ((vad_keys && is_seg_num) || (filter_keys && (key == "min_local_conf" || key == "local_radius"))) {
             double v = 0.0;
-            if (!parse_number(c, v)) { err = "invalid VAD option " + key + ": expected a number"; return false; }
+            if (!parse_number(c, v)) { err = "invalid " + opt + ": expected a number"; return false; }
             if (key == "threshold") {
-                if (!(v > 0.0 && v <= 1.0)) { err = "invalid VAD option threshold: must be in (0, 1]"; return false; }
+                if (!(v > 0.0 && v <= 1.0)) { err = "invalid " + opt + ": must be in (0, 1]"; return false; }
                 req.opts.threshold = (float)v;
-            } else if (key == "speech_pad") {
-                if (!(std::isfinite(v) && v >= 0.0 && v <= 1e6)) { err = "invalid VAD option speech_pad: must be a number of seconds >= 0"; return false; }
-                req.opts.pad_sec = v;
+            } else if (key == "min_local_conf") {
+                if (!(v >= 0.0 && v <= 1.0)) { err = "invalid " + opt + ": must be in [0, 1] (0 = off)"; return false; }
+                req.filter.min_local_conf = (float)v;
+            } else if (key == "local_radius") {
+                if (!positive_seconds(v)) { err = "invalid " + opt + ": must be a number of seconds > 0"; return false; }
+                req.filter.local_radius_sec = (float)v;
+            } else if (key == "speech_pad" || key == "trim") {
+                if (!(std::isfinite(v) && v >= 0.0 && v <= 1e6)) { err = "invalid " + opt + ": must be a number of seconds >= 0"; return false; }
+                (key == "trim" ? req.opts.trim_sec : req.opts.pad_sec) = v;
             } else {
-                if (!positive_seconds(v)) { err = "invalid VAD option " + key + ": must be a number of seconds > 0"; return false; }
+                if (!positive_seconds(v)) { err = "invalid " + opt + ": must be a number of seconds > 0"; return false; }
                 if (key == "min_pause") req.opts.min_pause_sec = v;
                 else if (key == "min_speech") req.opts.min_speech_sec = v;
                 else req.opts.max_seg_sec = v;
             }
         } else {
-            err = "unknown VAD option: " + key;
+            err = std::string("unknown ") + what + ": " + key;
             return false;
         }
         c.ws();
         if (*c.p == ',') { ++c.p; continue; }
         if (*c.p == '}') { ++c.p; break; }
-        err = "invalid VAD options: expected ',' or '}'";
+        err = "invalid " + docs + ": expected ',' or '}'";
         return false;
     }
     c.ws();
-    if (*c.p) { err = "invalid VAD options: trailing text"; return false; }
+    if (*c.p) { err = "invalid " + docs + ": trailing text"; return false; }
+    return true;
+}
+
+}  // namespace
+
+bool parse_vad_options(const char* json, VadRequest& req, std::string& err, VadKind kind,
+                       bool allow_filter) {
+    req = VadRequest();
+    req.kind = kind;
+    req.opts = default_segmenter_opts(kind);
+    return parse_options(json, req, err, true, allow_filter, "VAD option");
+}
+
+bool parse_filter_options(const char* json, WordFilter& filter, std::string& err) {
+    VadRequest req;
+    if (!parse_options(json, req, err, false, true, "option")) return false;
+    filter = req.filter;
     return true;
 }
 

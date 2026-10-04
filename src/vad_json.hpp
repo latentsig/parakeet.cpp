@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "transcription.hpp"
 #include "vad_segmenter.hpp"
 
 namespace pk {
@@ -18,16 +19,26 @@ struct VadRequest {
     Mode mode = Mode::kSpeech;
     bool probabilities = false;       // add "probabilities" to the document
     VadKind kind = VadKind::kHead;    // which model the defaults in `opts` are for
+    WordFilter filter;                // word filter keys, only with allow_filter
 };
 
 // Parses an options document: a flat JSON object, or NULL / "" for the
 // defaults. Keys: "threshold" (0 < x <= 1), "min_pause", "min_speech",
-// "max_segment" (seconds, > 0), "mode" ("speech" or "segments"),
-// "probabilities" (bool), "speech_pad" (seconds >= 0, "speech" mode). Unknown
-// keys and bad values are errors. The values that a key leaves out come from
-// default_segmenter_opts(kind). Returns false and sets `err` on failure.
+// "max_segment" (seconds, > 0), "trim" (seconds >= 0, "segments" mode and the
+// transcribe functions; 0 = no trimming), "mode" ("speech" or "segments"),
+// "probabilities" (bool), "speech_pad" (seconds >= 0, "speech" mode). With
+// `allow_filter` the word filter keys of parse_filter_options are accepted too
+// and stored in `req.filter`. Unknown keys and bad values are errors. The
+// values that a key leaves out come from default_segmenter_opts(kind). Returns
+// false and sets `err` on failure.
 bool parse_vad_options(const char* json, VadRequest& req, std::string& err,
-                       VadKind kind = VadKind::kHead);
+                       VadKind kind = VadKind::kHead, bool allow_filter = false);
+
+// The word filter options alone: a flat JSON object, or NULL / "" for a filter
+// that is off. Keys: "min_local_conf" (0 <= x <= 1, 0 = off), "local_radius"
+// (seconds > 0, default 5), "drop_punct_only" (bool). Unknown keys and bad
+// values are errors. Returns false and sets `err` on failure.
+bool parse_filter_options(const char* json, WordFilter& filter, std::string& err);
 
 // Same document for a Silero VAD model. `pcm` is mono at `sample_rate`, which
 // must be 16000 or 8000 (the caller resamples anything else); times are on the
