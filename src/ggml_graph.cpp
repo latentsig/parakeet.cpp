@@ -81,6 +81,11 @@ Backend& global_backend() {
     return global_backend_locked();
 }
 
+int backend_thread_count() {
+    std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
+    return g_backend_threads;
+}
+
 void shutdown_backend() {
     // Free the process-global backend explicitly. Required for GPU backends: the
     // backend (and its gallocr's device buffer) must be released while the CUDA/
@@ -107,16 +112,26 @@ bool run_graph(size_t /*mem_bytes*/, int n_threads,
     std::lock_guard<std::recursive_mutex> lock(g_backend_mutex);
     Backend& be = global_backend_locked();
     // When no global override is set, honor the caller's per-call n_threads (the
-    // historical behavior, used by the unit tests). A positive global override
-    // already pinned the backend's thread count in global_backend().
+    // historical behavior, used by the unit tests) for THIS call only. The
+    // backend is process-global, so a count left behind would slow every later
+    // graph: a Silero VAD pass (1 thread per tiny chunk) used to leave the ASR
+    // decode single-threaded. The previous count is restored after the compute.
+    // A positive global override already pinned the backend's thread count in
+    // global_backend_locked() and wins over the per-call value.
     const int g = g_num_threads.load(std::memory_order_relaxed);
-    if (g <= 0 && n_threads > 0 && n_threads != g_backend_threads) {
+    const int prev_threads = g_backend_threads;
+    const bool scoped = g <= 0 && n_threads > 0 && n_threads != prev_threads;
+    if (scoped) {
         be.set_n_threads(n_threads);
         g_backend_threads = n_threads;
     }
 
     // Backend::compute builds the graph in a no_alloc context, allocates via the
     // persistent gallocr, pushes inputs AFTER alloc, computes, and reads back.
+    struct Restore {
+        Backend& be; bool on; int prev;
+        ~Restore() { if (on) { be.set_n_threads(prev); g_backend_threads = prev; } }
+    } restore{be, scoped, prev_threads};
     return be.compute(build, out);
 }
 
