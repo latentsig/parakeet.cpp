@@ -925,6 +925,89 @@ compared with the model runs, but it was not timed separately.
 Scripts, the small result files and how to reproduce:
 [`scripts/vad_bench/fusion/`](../scripts/vad_bench/fusion/README.md).
 
+## Trimming segments and the word filter
+
+Two changes to what `transcribe --vad` hands to the decoder. Scripts and the full output are in
+[scripts/vad_bench/decoder_guards](../scripts/vad_bench/decoder_guards) (`results/tables.txt`). The
+options are described in [vad.md](vad.md).
+
+The run was not made on a quiet machine: the load average was between 5 and 50 (see the first line
+of `results/tables.txt`). Word error rates and word counts do not depend on load; no timing is
+claimed.
+
+### Setup
+
+- Old: `parakeet-cli` before the change (the cuts of the previous segmenter). New: the default,
+  each segment trimmed to its speech plus 0.3 s. `--vad-trim 0` gave the old output byte for byte on
+  all 45 files that were run both ways (15 per detector).
+- Detectors: the Ultra head, the Redux head (dequantized F16), and TDT 0.6B v3 with Silero.
+  The model was Ultra F16 for the head runs.
+- Talks: three whole TED-LIUM long-form talks that were not used to choose any setting (5627
+  reference words). Words are lower-cased, punctuation removed.
+- Speech in noise: 4 sets of 6 LibriSpeech test-clean utterances with gaps (about 50 s each, so the
+  segmenter cuts them), clean, with white noise at 5 dB SNR, or with pink noise at 0 dB SNR. 429
+  reference words per condition.
+- Noise block: 90 s of a talk with 60 s of synthetic noise (white, pink, clicks, music-like tones) put
+  in at a quiet point, 30 files. Any word the decoder returns inside the block is an invented word.
+  "Seconds decoded" is the overlap of the cuts with the block, from `vad --mode segments`.
+- Noise alone: 63 files of 30 s (seven noise types, three levels), decoded whole.
+
+### Trimming: word error rate
+
+| Set | Detector | Old | Trim 0.3 | Change |
+| --- | --- | ---: | ---: | ---: |
+| 3 talks | Ultra head | 3.68 | 3.68 | +0.00 |
+| 3 talks | Redux head | 4.39 | 4.51 | +0.12 |
+| 3 talks | v3 + Silero | 3.45 | 3.45 | +0.00 |
+| clean | Ultra / Redux / v3 + Silero | 2.10 / 3.26 / 1.86 | 1.86 / 3.03 / 1.86 | -0.23 / -0.23 / +0.00 |
+| white noise 5 dB | Ultra / Redux / v3 + Silero | 4.90 / 7.23 / 5.59 | 4.43 / 6.76 / 5.13 | -0.47 / -0.47 / -0.47 |
+| pink noise 0 dB | Ultra / Redux / v3 + Silero | 6.53 / 12.35 / 7.93 | 5.59 / 13.29 / 7.69 | -0.93 / +0.93 / -0.23 |
+
+On talks the change is within 0.12 points; the Redux head loses a little on two of the three talks
+and on pink noise. The speech-in-noise sets are small (one word is 0.23 points), so read them as
+"neutral", not as a gain.
+
+### Trimming: the noise block
+
+| Detector | Seconds of the 60 s block decoded, old | New | Invented words, old | New |
+| --- | ---: | ---: | ---: | ---: |
+| Ultra head | 33.8 | 12.0 | 0 | 0 |
+| Redux head | 29.7 | 0.3 | 0 | 0 |
+| v3 + Silero | 27.7 | 0.1 | 11 (5 files) | 0 |
+
+The seconds are means over the 30 files. The head still passes loud white and pink noise (-5 dB
+against the speech) as speech, and then the trim cannot remove it: Ultra decodes 52 to 58 s of
+those blocks. The Redux head also fires on digital silence. The words the decoder invented were
+rare in this run (Ultra and Redux gave none, in the block or in 63 noise-only files), so the
+trim's benefit here is mostly seconds saved, and for v3 the 11 invented words.
+
+### Word filter at 0.5
+
+| Check | Ultra head | v3 + Silero |
+| --- | ---: | ---: |
+| WER on the 3 talks, trim 0.3 / plus filter | 3.68 / 3.68 | 3.45 / 3.45 |
+| WER on speech in noise (12 files, 1287 words): off / 0.5 / 0.7 / 0.9 | 3.96 / 3.96 / 3.96 / 6.06 | 4.90 / 4.90 / 4.90 / 16.08 |
+| Words dropped at 0.9 on those files | 31 | 164 |
+| Words dropped at 0.5 on all files with real speech | 0 of 15375 | 3 of 15406 |
+| Invented words in the 5 blocks that had them (old cuts, filter alone) | no events | 11 -> 1, 0 of 1484 other words lost |
+| Invented words in the 63 noise-only files | 0 | 1 -> 0 (v3) |
+
+At 0.5 the filter is free on these sets and it removes most of the few invented words there were.
+At 0.9 it costs real words, most on v3. Hence 0.5 is the suggested value.
+
+### Limits
+
+- The noise is synthetic. The event counts are small: 11 invented words in 5 files, all from v3. A
+  filter that removes 10 of 11 is a weak estimate of a rate.
+- The filter was not run against invented words on Ultra, Redux or an RNN-T model (none occurred), and
+  not at all on a CTC model of 0.6B (a unit test runs it on one fixture). The `drop_punct_only`
+  option for CTC rests on the 110M CTC head, not measured here.
+- A single lone invented word between real speech was not tested.
+- Silero followed by the head (the two-stage rule), GPU backends and the quantized files other than the
+  F16 ones were not tested.
+- The trim changes transcripts of long audio through the VAD paths slightly; the numbers above are
+  from three talks and 12 clips per condition.
+
 ## When to use which
 
 This is limited to what the numbers above support.
@@ -977,6 +1060,7 @@ are committed. In short:
    `silero_collect.py`, `silero_analyze.py`; speed with `speed_silero.py`.
 5. Long talks: `longform_b1.sh`.
 6. Noise root-cause study: [`noise_dive/`](../scripts/vad_bench/noise_dive/README.md).
+7. Segment trim and word filter: [`decoder_guards/`](../scripts/vad_bench/decoder_guards/README.md).
 
 Small result files of the runs on this page (tables, per run timings and load logs)
 are in `scripts/vad_bench/results/`. The raw per clip predictions are not committed;

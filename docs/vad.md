@@ -98,6 +98,7 @@ the same keys). Unknown keys and out of range values are errors.
 | `min_speech` | seconds; shorter speech runs are dropped | 0.1 | 0.25 |
 | `speech_pad` | seconds >= 0, `speech` mode: widen each region on both sides | 0 | 0.03 |
 | `max_segment` | seconds; cap in `segments` mode | 30 | 30 |
+| `trim` | seconds >= 0; `segments` mode and the transcribe functions: shrink each cut to its speech plus this much on each side, 0 = keep the whole cut | 0.3 | 0.3 |
 | `mode` | `speech` or `segments` | `speech` | `speech` |
 | `probabilities` | add the per frame probabilities | false | false |
 
@@ -106,7 +107,64 @@ shorter than 0.1 s are bridged, runs shorter than `min_speech` are dropped,
 regions closer than `min_pause` merge, then each region is padded (and two
 regions that would overlap meet in the middle of the gap). `segments` is the cut
 that `transcribe --vad` decodes: pieces of at most `max_segment` seconds cut at
-pauses, pieces without speech dropped, audio within the cap returned whole.
+pauses, pieces without speech dropped, audio within the cap returned whole. Each
+kept piece is then trimmed (see below).
+
+### Trimming the segments
+
+A piece cut from long audio used to carry everything between its two cut points
+to the decoder, including the noise and silence the VAD had already flagged as
+non-speech. That is where an ASR model invents words. Since this change each
+piece shrinks to its first speech frame minus `trim` and its last speech frame
+plus `trim` (default 0.3 s, never past the cut itself). Speech is the smoothed
+mask, so the rules above still decide what counts as speech. Audio within the
+cap is not cut and not trimmed. Word and token times are still relative to the
+whole file. `trim` 0 (`--vad-trim 0`) gives the previous cuts exactly.
+
+This is a change of default behaviour for `transcribe --vad`,
+`parakeet_capi_transcribe_path_json_vad*` and the `segments` mode of the VAD
+functions, for the head, for Silero and for VAD-only slices (they share the
+segmenter). On talks, transcripts of long audio can shift slightly (a word WER
+cost of about 0.1 point in our runs); on audio with long noisy stretches the
+decoder sees much less noise. Numbers: [vad-benchmarks.md](vad-benchmarks.md#trimming-segments-and-the-word-filter).
+
+## Word filter (opt-in)
+
+A confidence filter can remove the words a model invents on noise. It is
+post-processing of the decode: the model, the VAD and the cuts are unchanged, and
+it is off by default (output is then byte for byte the same).
+
+A word is dropped when the mean confidence of the words that start within
+`local_radius` seconds of it (the word itself included, the same decode unit) is
+below `min_local_conf`. A low confidence word between confident ones keeps a high
+mean and stays; a word that stands alone, or among other low confidence words,
+goes. A decode unit is the whole clip, or one VAD segment. `drop_punct_only` also
+removes words that consist only of punctuation.
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `min_local_conf` | 0 to 1; 0 = off. 0.5 is the suggested value | 0 |
+| `local_radius` | seconds, both sides | 5 |
+| `drop_punct_only` | drop words with no letter or digit; recommended for CTC models | false |
+
+```
+parakeet-cli transcribe --model m.gguf --input a.wav --min-local-conf 0.5 \
+    [--local-radius SEC] [--drop-punct-only] [--json] [--vad ...]
+
+char* parakeet_capi_transcribe_path_json_with(parakeet_ctx* ctx, const char* wav_path,
+                                              int decoder, const char* options_json);
+```
+
+The options JSON of `parakeet_capi_transcribe_path_json_with` takes the three
+keys above. `parakeet_capi_transcribe_path_json_vad_with` takes them too, next to
+the VAD keys (`trim` included). With a filter on, the JSON document gets one more
+member, `"guard":{"dropped_words":N}` (N is 0 when nothing was dropped), and the
+dropped words are also removed from `text`, `words` and `tokens`.
+
+Limits: 0.5 removes hallucinated words on Ultra, Redux and RNN-T models at no
+cost in WER on clean speech. On v3 and on CTC models, and at higher thresholds,
+it also removes real words (see the benchmark page). It does not save time: the
+decoder still runs on everything it is given.
 
 ### Why the Silero defaults differ
 
@@ -167,7 +225,8 @@ audio with Silero:
 
 ```
 parakeet-cli transcribe --model tdt-0.6b-v3.gguf --input long.wav --vad --vad-model silero.gguf \
-    [--vad-threshold F] [--vad-min-pause SEC] [--vad-min-speech SEC] [--vad-max-seg SEC]
+    [--vad-threshold F] [--vad-min-pause SEC] [--vad-min-speech SEC] [--vad-max-seg SEC] \
+    [--vad-trim SEC]
 
 char* parakeet_capi_transcribe_path_json_vad_with(parakeet_ctx* asr, parakeet_ctx* silero,
                                                   const char* wav_path, int decoder,
