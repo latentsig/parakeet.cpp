@@ -1,6 +1,7 @@
 #include "ced_tagger.hpp"
 
-#include "bundle_extract.hpp"
+#include "bundle.hpp"
+#include "bundle_map.hpp"
 #include "gguf.h"
 
 #ifdef PARAKEET_WITH_CED
@@ -30,13 +31,27 @@ std::unique_ptr<CedTagger> CedTagger::load(const std::string& path, const std::s
     if (component.empty()) {
         c = ced_capi_load(path.c_str());
     } else {
+        // The bundle is mapped read-only and ced.cpp copies the tensors of the
+        // component out of the map during the call (docs/bundle.md).
+        BundleInfo info;
         std::string e;
-        std::unique_ptr<ComponentFile> cf = ComponentFile::create(path, component, &e);
-        if (!cf) { if (err) *err = e; return nullptr; }
-        c = ced_capi_load(cf->path().c_str());   // the file is removed when cf goes out of scope
+        if (!read_bundle_info(path, info, &e)) { if (err) *err = e; return nullptr; }
+        const BundleComponent* bc = info.find(component);
+        if (!bc) { if (err) *err = "the bundle has no component \"" + component + "\""; return nullptr; }
+        if (bc->kind != kBundleKindCed) {
+            if (err) *err = "component \"" + component + "\" is of kind \"" + bc->kind + "\", not \"ced\"";
+            return nullptr;
+        }
+        std::unique_ptr<MappedFile> map = MappedFile::open(path, &e);
+        if (!map) { if (err) *err = e; return nullptr; }
+        c = ced_capi_load_from_memory_prefixed(map->data(), map->size(), (component + ".").c_str());
     }
     if (!c) {
-        if (err && err->empty()) *err = "cannot load the sound model " + (component.empty() ? path : component);
+        if (err) {
+            const char* m = ced_capi_last_error(nullptr);
+            *err = "cannot load the sound model " + (component.empty() ? path : component) +
+                   ((m && *m) ? std::string(": ") + m : std::string());
+        }
         return nullptr;
     }
     std::unique_ptr<CedTagger> t(new CedTagger());

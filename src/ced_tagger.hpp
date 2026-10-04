@@ -19,9 +19,9 @@ public:
     static bool available();
     // nullptr on failure (or when unavailable). With a non-empty `component`,
     // `gguf_path` is a bundle GGUF (docs/bundle.md) and the model is its component
-    // of kind "ced". ced.cpp opens models by path only, so the component is first
-    // written as a standalone GGUF (an in-memory file on Linux, else a temporary
-    // file removed after the load; see bundle_extract.hpp). `err`, when given,
+    // of kind "ced". The bundle is mapped read-only and ced.cpp copies the
+    // component's tensors out of the map during the call: no temporary file, and
+    // the other components are not read (see bundle_map.hpp). `err`, when given,
     // receives the reason for a failure.
     static std::unique_ptr<CedTagger> load(const std::string& gguf_path, const std::string& component = "",
                                            std::string* err = nullptr);

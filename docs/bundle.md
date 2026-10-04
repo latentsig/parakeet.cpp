@@ -119,46 +119,75 @@ worth knowing:
   already has the head), and `--vad-component` that names a slice is an error.
 
 | `diar` | A Nemotron diarization GGUF (`parakeet.arch` `diarization`) | `DiarizationModel::load(path, name)`, through the same prefixed loader as `asr` |
-| `ced` | A ced.cpp GGUF (`general.architecture` `ced`, CED-tiny, -mini, -small or -base) | `CedTagger::load(path, name)`, through a standalone copy (see "Components for third-party loaders") |
-| `voice` | A voice-detect.cpp speaker encoder GGUF (`general.architecture` `voicedetect` with an embedding: WeSpeaker ResNet34, ECAPA, ERes2Net, CAM++) | `SpeakerEncoder::load(path, name)`, through a standalone copy |
+| `ced` | A ced.cpp GGUF (`general.architecture` `ced`, CED-tiny, -mini, -small or -base) | `CedTagger::load(path, name)`, from a read-only map of the bundle (see "ced and voice components") |
+| `voice` | A voice-detect.cpp speaker encoder GGUF (`general.architecture` `voicedetect` with an embedding: WeSpeaker ResNet34, ECAPA, ERes2Net, CAM++) | `SpeakerEncoder::load(path, name)`, from a read-only map of the bundle |
 
 A reader skips components of a kind it does not know: they are listed, but it does
 not load them and does not fail because they exist. The wav2vec2 analysis heads of
 voice-detect.cpp (age, gender, emotion) are not a `voice` component: their licence
 is non-commercial, and the build script refuses them.
 
-## Components for third-party loaders
+## ced and voice components
 
-`ced.cpp` and `voice-detect.cpp` open a model by file path only, and parakeet.cpp
-does not change their sources. To load a `ced` or `voice` component, parakeet.cpp
-writes it as a standalone single-model GGUF (keys and tensors without the prefix,
-data streamed from the bundle, only that component's bytes read) and gives the
-loader the path of that copy:
+`ced.cpp` and `voice-detect.cpp` can load a model from memory:
+`ced_capi_load_from_memory_prefixed(data, size, prefix)` and
+`voicedetect_capi_load_from_memory_prefixed(data, size, prefix)`. They take the
+bytes of a whole GGUF that holds the model under a prefix (`ced.`, `voice.`, the
+component name and a dot), parse its header, and copy only the tensors of that
+prefix into memory of their own. parakeet.cpp uses them as follows:
 
-* **Linux:** an anonymous in-memory file (`memfd_create`), opened as
-  `/proc/self/fd/N`. Nothing is written to disk. The loader reads it, then the
-  file is closed. The copy briefly uses memory equal to the component size.
-* **Other systems, or if `memfd_create` or `/proc` is not usable, or when the
-  environment variable `PARAKEET_BUNDLE_NO_MEMFD` is set to a value other than
-  `0`:** a temporary file in the system temporary directory (`TMPDIR`, `TEMP`,
-  else `/tmp`), created owner-only with an exclusive create, and removed as soon as
-  the load has finished. A crash during the load can leave the file behind. The
-  path is only used on macOS and Windows by this fallback; it is not tested there.
+1. It reads the bundle header and checks that the component exists and has the
+   right kind.
+2. It maps the bundle file read-only (`mmap` on Linux and macOS,
+   `MapViewOfFile` on Windows; `src/bundle_map.cpp`). A map reads nothing by
+   itself: the operating system loads only the pages that are touched.
+3. It calls the loader with the map and the prefix. The loader touches the header
+   and the tensors of the component, copies them, and returns. The map is
+   released at once. The loader keeps no pointer into it.
+
+There is no standalone copy of the component, no temporary file, no memory file
+(`memfd`), and no environment variable. The bundle file is opened read-only for
+the moment it takes to map it, and closed again. Linux, macOS and Windows run the
+same code; only Linux is run in the tests and in CI here.
+
+**Memory and I/O.** The other components are never read. Measured with the
+published standard bundle (1100.8 MB: asr 940.5 MB, diar 108.6 MB, ced-small Q8_0
+23.6 MB, voice WeSpeaker ResNet34 F32 26.5 MB, vad), loading one component in a
+fresh process:
+
+| Component | Component size | Peak resident memory above an idle process | Memory kept after the load | Storage read (page cache dropped before) |
+| --- | --- | --- | --- | --- |
+| `ced` | 23.6 MB | 49 MB | 25 MB | 24.2 MB |
+| `voice` | 26.5 MB | 54 MB | 27 MB | 26.5 MB |
+
+The peak is the copy of the component (anonymous memory, kept) plus the pages of
+the map that were touched (file cache, reclaimable, released with the map). It
+depends on the size of the component and not on the size of the bundle: the 338 MB
+small bundle gives the same figures. The previous design wrote the component to an
+in-memory file first, so it held one more copy of the component while the loader ran (not measured).
+
+**Limits.**
+
+* A model file must not change while it loads. If another process shortens the
+  bundle while it is mapped, a read past the new end ends the process
+  (`SIGBUS`, or an access violation on Windows). Model files are meant to be
+  immutable in service.
+* The whole bundle needs address space, not memory. A 32-bit process cannot map a
+  bundle larger than its address space; the load then fails with "cannot map".
+* A tensor name in the bundle is `<component>.<name>`, and ggml keeps names in 63
+  bytes, so the stripped names the loaders see are shorter than that.
 
 The component loaded this way gives the same output as the single-model file:
 the CED class scores and the speaker embeddings are bitwise equal in the tests.
+Load errors come from `ced_capi_last_error(NULL)` and
+`voicedetect_capi_last_load_error()` and are added to the message of
+`CedTagger::load` and `SpeakerEncoder::load`.
 
 The speaker identity of a `voice` component (`parakeet_capi_speaker_identity`) is
 `sha256:` plus the `source_sha256` of its header, which is the sha256 of the
 single-model file. A voice enrolled with the standalone file therefore matches the
 same model inside a bundle. The header is trusted for this: load bundles you
 trust.
-
-Cleaner alternative, a follow-up outside this repository: a `load_from_buffer`
-(or `load_from_reader`) entry point in ced.cpp and voice-detect.cpp, so a
-component could be handed over as a memory range with no copy and no temporary
-file. Both projects are owned by the same maintainer. When it exists,
-`bundle_extract.cpp` can be replaced by a call that passes the mapped range.
 
 ## Compatibility rules
 
@@ -217,16 +246,16 @@ A component is chosen by name or by default.
 ## Partial loading
 
 A loader reads the header and the tensor table, then reads only the tensors of
-the component it was asked for. The ASR and
-diarization loaders read them into one private memory block, and the Silero loader
-seeks to each of its tensors. The `ced` and `voice` loaders read them while they
-write the standalone copy, then read that copy. The bytes of the other components
-are never read. A test checks the number of bytes read from
-the file for each component.
+the component it was asked for. The ASR and diarization loaders read them into
+one private memory block, and the Silero loader seeks to each of its tensors. The
+`ced` and `voice` loaders get a read-only map of the bundle and copy the tensors
+of their component out of it (see "ced and voice components"). The bytes of the
+other components are never read. A test checks the bytes read from storage for
+each component.
 
 Memory: a loaded component uses the same memory as the same single-model file.
-The memory of components that are not loaded is not used. The file stays on disk
-and is not memory mapped.
+The memory of components that are not loaded is not used. For `ced` and `voice`
+the map exists only during the load.
 
 ## Building, inspecting and verifying
 

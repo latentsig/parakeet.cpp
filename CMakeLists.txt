@@ -112,7 +112,7 @@ set(PARAKEET_SRC
     src/vad_segmenter.cpp
     src/vad_json.cpp
     src/bundle.cpp
-    src/bundle_extract.cpp
+    src/bundle_map.cpp
     src/parakeet_capi.cpp
     src/common.cpp
     src/audio_io.cpp

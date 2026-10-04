@@ -18,9 +18,9 @@ public:
     // nullptr on failure, when unavailable, or when the GGUF has no speaker
     // embedding (for example an age/gender/emotion model). With a non-empty
     // `component`, `gguf_path` is a bundle GGUF (docs/bundle.md) and the encoder is
-    // its component of kind "voice". voice-detect.cpp opens models by path only, so
-    // the component is first written as a standalone GGUF (an in-memory file on
-    // Linux, else a temporary file removed after the load; see bundle_extract.hpp).
+    // its component of kind "voice". The bundle is mapped read-only and
+    // voice-detect.cpp copies the component's tensors out of the map during the call:
+    // no temporary file, and the other components are not read (see bundle_map.hpp).
     // `err`, when given, receives the reason for a failure.
     static std::unique_ptr<SpeakerEncoder> load(const std::string& gguf_path, const std::string& component = "",
                                                 std::string* err = nullptr);
@@ -42,8 +42,8 @@ public:
 
 private:
     SpeakerEncoder() = default;
-    static std::unique_ptr<SpeakerEncoder> load_unchecked(const std::string& path,
-                                                          const std::string& weights, std::string* err);
+    static std::unique_ptr<SpeakerEncoder> adopt(void* ctx, const std::string& path, const std::string& prefix,
+                                                 const std::string& weights, std::string* err);
     void* ctx_ = nullptr;   // voicedetect_ctx*
     int dim_ = 0;
     EncoderFingerprint fp_;
@@ -54,8 +54,10 @@ private:
 //   "voicedetect:<voicedetect.arch>:<general.name>:<voicedetect.embedding_dim>"
 // A missing key leaves its field empty ("voicedetect::name:256"). "" when the file
 // is not a readable voice-detect GGUF. `dim_fallback` is used when the GGUF has no
-// embedding_dim key (0 leaves the field empty).
-std::string speaker_encoder_family(const std::string& gguf_path, int dim_fallback = 0);
+// embedding_dim key (0 leaves the field empty). With a non-empty `prefix` (for a bundle
+// component: "<component>.") every key is looked up under that prefix.
+std::string speaker_encoder_family(const std::string& gguf_path, int dim_fallback = 0,
+                                   const std::string& prefix = "");
 
 // True when the GGUF's general.architecture is "voicedetect". Reads only the header.
 bool gguf_is_voicedetect(const std::string& gguf_path);
