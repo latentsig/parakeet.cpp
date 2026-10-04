@@ -82,6 +82,7 @@ src/                 libparakeet implementation
                        audio_io.hpp/cpp   , dr_wav load + linear resample to 16k
                        model_loader.hpp/cpp, GGUF -> ParakeetConfig + name->tensor
                        bundle.hpp/cpp     , bundle GGUF header: components, licences, default component (docs/bundle.md)
+                       bundle_extract.hpp/cpp, one bundle component as a standalone GGUF (memfd or temporary file) for the path-only ced.cpp and voice-detect.cpp loaders
                        mel.cpp            , log-mel frontend
                        encoder.cpp / conformer.cpp / relpos_attention.cpp
                        ctc_decoder.cpp    , CTC head + greedy decode
@@ -113,7 +114,7 @@ examples/cli/        parakeet-cli binary
                      diarize binary: diarize <diar.gguf> <wav> [--stream]
 scripts/             Python tooling
                        convert_parakeet_to_gguf.py, .nemo/.hf -> GGUF (--dtype f32|f16|q8_0)
-                       bundle_gguf.py              , merge GGUFs into one bundle; --list/--verify/--notice (docs/bundle.md)
+                       bundle_gguf.py              , merge GGUFs into one bundle; --list/--verify/--notice with the licence texts of scripts/bundle_licenses/ (docs/bundle.md)
                        convert_hf_parakeet_to_gguf.py, HF safetensors (moondream/parakeet-ultra, -redux) to GGUF (--template, --ternary keep|dequant, --vad keep|drop)
                        slice_vad_gguf.py          , cut a VAD-only GGUF (parakeet.arch "vad") out of an Ultra or Redux GGUF
                        gen_nemo_baseline.py        , NeMo intermediates -> baseline.gguf
@@ -133,7 +134,8 @@ tests/               ctest targets
                        test_model_loader.cpp   , config + tensor map (model-dependent)
                        test_bundle.cpp         , bundle header, selection, partial read, Silero component, C-API (model-independent, synthetic files)
                        test_bundle_models.cpp  , real bundle == single-model files: transcript, VAD head, Silero (PARAKEET_TEST_BUNDLE, _ASR, _SILERO)
-                       python/check_bundle.py  , bundle_gguf.py build/verify/refusals (model-independent)
+                       test_bundle_full.cpp    , full bundle (asr, diar, ced, voice, vad) == single-model files, memfd and temporary-file paths (PARAKEET_TEST_BUNDLE_FULL, PARAKEET_TEST_FULL_*)
+                       python/check_bundle.py  , bundle_gguf.py build/verify/refusals, licence policy, NOTICE (model-independent)
                        test_capi.cpp           , C-API load -> transcribe -> free (model-dependent)
                        test_transcribe_speech.cpp, end-to-end CTC transcript (model-dependent)
                        test_transcribe_tdt.cpp , TDT transcript on speech fixture (model-dependent)

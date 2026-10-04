@@ -1,8 +1,10 @@
 # Bundle GGUF
 
 A bundle is one GGUF file that holds several single-model GGUF files, so a user
-passes one file instead of several. Phase 1 supports two component kinds: an
-ASR model (with its own VAD head, if it has one) and a Silero VAD model.
+passes one file instead of several. A bundle can hold five kinds of component:
+an ASR model (with its own VAD head, if it has one), a VAD model (Silero, or a
+VAD-only slice), speaker diarization, sound-event tagging (ced.cpp) and speaker
+identification (voice-detect.cpp).
 
 A bundle is a packaging format. It does not change how any model runs, and it
 does not convert or re-quantise any weight: each tensor is copied byte for byte
@@ -35,8 +37,13 @@ A component name is 1 to 32 characters from `a-z`, `0-9` and `_`, and starts wit
 a letter. The names `general`, `parakeet` and `bundle` are reserved. A name
 never contains a dot, so `<name>.` is an unambiguous prefix.
 
-By convention the ASR component is named `asr` and the Silero component is
-named `vad`. The name has no meaning to the loader: the `kind` key does.
+By convention the components are named after their role: `asr`, `vad`, `diar`,
+`ced` and `voice`. The name has no meaning to the loader: the `kind` key does.
+
+The prefixed tensor name must stay within 63 bytes (see "Namespacing"). A few
+speaker encoders have long tensor names: the ECAPA GGUF has names of 61 bytes, so
+a bundle can only hold it under a one-letter component name (for example `v`).
+The build script reports the limit.
 
 ### Namespacing
 
@@ -70,7 +77,7 @@ are required.
 
 | Key | Meaning |
 |---|---|
-| `parakeet.bundle.<c>.kind` | `asr` or `vad` in version 1 (see "Kinds") |
+| `parakeet.bundle.<c>.kind` | `asr`, `vad`, `diar`, `ced` or `voice` in version 1 (see "Kinds") |
 | `parakeet.bundle.<c>.license` | SPDX identifier, or `LicenseRef-<name>` |
 | `parakeet.bundle.<c>.license_url` | `http(s)` URL of the licence text |
 | `parakeet.bundle.<c>.source` | Upstream model id or URL |
@@ -111,9 +118,47 @@ worth knowing:
   of the ASR component. It does not use a slice component (the ASR component
   already has the head), and `--vad-component` that names a slice is an error.
 
-The names `diarization`, `sound` and `voice` are reserved for later phases. A
-reader skips components of a kind it does not know: they are listed, but it does
-not load them and does not fail because they exist.
+| `diar` | A Nemotron diarization GGUF (`parakeet.arch` `diarization`) | `DiarizationModel::load(path, name)`, through the same prefixed loader as `asr` |
+| `ced` | A ced.cpp GGUF (`general.architecture` `ced`, CED-tiny, -mini, -small or -base) | `CedTagger::load(path, name)`, through a standalone copy (see "Components for third-party loaders") |
+| `voice` | A voice-detect.cpp speaker encoder GGUF (`general.architecture` `voicedetect` with an embedding: WeSpeaker ResNet34, ECAPA, ERes2Net, CAM++) | `SpeakerEncoder::load(path, name)`, through a standalone copy |
+
+A reader skips components of a kind it does not know: they are listed, but it does
+not load them and does not fail because they exist. The wav2vec2 analysis heads of
+voice-detect.cpp (age, gender, emotion) are not a `voice` component: their licence
+is non-commercial, and the build script refuses them.
+
+## Components for third-party loaders
+
+`ced.cpp` and `voice-detect.cpp` open a model by file path only, and parakeet.cpp
+does not change their sources. To load a `ced` or `voice` component, parakeet.cpp
+writes it as a standalone single-model GGUF (keys and tensors without the prefix,
+data streamed from the bundle, only that component's bytes read) and gives the
+loader the path of that copy:
+
+* **Linux:** an anonymous in-memory file (`memfd_create`), opened as
+  `/proc/self/fd/N`. Nothing is written to disk. The loader reads it, then the
+  file is closed. The copy briefly uses memory equal to the component size.
+* **Other systems, or if `memfd_create` or `/proc` is not usable, or when the
+  environment variable `PARAKEET_BUNDLE_NO_MEMFD` is set to a value other than
+  `0`:** a temporary file in the system temporary directory (`TMPDIR`, `TEMP`,
+  else `/tmp`), created owner-only with an exclusive create, and removed as soon as
+  the load has finished. A crash during the load can leave the file behind. The
+  path is only used on macOS and Windows by this fallback; it is not tested there.
+
+The component loaded this way gives the same output as the single-model file:
+the CED class scores and the speaker embeddings are bitwise equal in the tests.
+
+The speaker identity of a `voice` component (`parakeet_capi_speaker_identity`) is
+`sha256:` plus the `source_sha256` of its header, which is the sha256 of the
+single-model file. A voice enrolled with the standalone file therefore matches the
+same model inside a bundle. The header is trusted for this: load bundles you
+trust.
+
+Cleaner alternative, a follow-up outside this repository: a `load_from_buffer`
+(or `load_from_reader`) entry point in ced.cpp and voice-detect.cpp, so a
+component could be handed over as a memory range with no copy and no temporary
+file. Both projects are owned by the same maintainer. When it exists,
+`bundle_extract.cpp` can be replaced by a call that passes the mapped range.
 
 ## Compatibility rules
 
@@ -151,6 +196,17 @@ A component is chosen by name or by default.
   choice.
 * **By name** (`parakeet_capi_load_component`, `--component`): that component,
   whatever its kind. The context has the kind the component declares.
+* **Other kinds** (`diar`, `ced`, `voice`) are never the default when an `asr`
+  component exists: `parakeet_capi_load` opens the ASR component, and the others
+  are opened by name with `parakeet_capi_load_component`. A bundle without an
+  `asr` component but with exactly one loadable component opens that one; with
+  several it is refused with a message that lists them.
+* **Commands that need one kind** (`parakeet-cli scene`, `enroll`, `info`, the
+  `diarize` tool): given a bundle, they use the only component of the kind they
+  need (ASR, diarization, sound or speaker) and refuse when there is none or
+  several; `--component` (`enroll`, `diarize`) or `--asr-component`,
+  `--diar-component`, `--sound-component`, `--speakers-component` (`scene`) name
+  one. Naming a component of the wrong kind is an error.
 * **VAD source** for `parakeet-cli vad` and for segmented transcription
   (`transcribe --vad`) on a bundle: the Silero component if the bundle has one,
   otherwise the VAD head of the ASR component. `--component` (for `vad`) and
@@ -161,9 +217,11 @@ A component is chosen by name or by default.
 ## Partial loading
 
 A loader reads the header and the tensor table, then reads only the tensors of
-the component it was asked for. The ASR loader reads them into one private
-memory block, and the Silero loader seeks to each of its tensors. The bytes of
-the other components are never read. A test checks the number of bytes read from
+the component it was asked for. The ASR and
+diarization loaders read them into one private memory block, and the Silero loader
+seeks to each of its tensors. The `ced` and `voice` loaders read them while they
+write the standalone copy, then read that copy. The bytes of the other components
+are never read. A test checks the number of bytes read from
 the file for each component.
 
 Memory: a loaded component uses the same memory as the same single-model file.
@@ -178,7 +236,7 @@ and is not memory mapped.
 bundle_gguf.py --out bundle.gguf --manifest manifest.json
 bundle_gguf.py --list bundle.gguf [--json]
 bundle_gguf.py --verify bundle.gguf [--source asr=asr.gguf --source vad=silero.gguf]
-bundle_gguf.py --notice bundle.gguf
+bundle_gguf.py --notice bundle.gguf     # credits and the full licence texts
 ```
 
 The manifest is a JSON file. `file` is relative to the manifest.
@@ -207,6 +265,11 @@ The build:
   `source`, `attribution` or `changes`;
 * refuses a licence that is not an SPDX-style identifier, and refuses licences
   that restrict commercial use or derivatives (`-NC-`, `-ND-`);
+* refuses models that must not be bundled: the audeering wav2vec2 heads
+  (CC-BY-NC-SA-4.0) and the end-of-utterance ASR model (NVIDIA Open Model
+  License: notice duty and a revocation clause), by source, licence or input name;
+* refuses a known source with another licence than the table `KNOWN_SOURCES` in
+  the script (see "Licences");
 * refuses a component whose input file declares a `general.license` that
   differs from the manifest (the same licence in another spelling is accepted);
 * records the sha256 of each input file and the content digest of each
@@ -222,8 +285,9 @@ bytes) and the keys with the single-model file and its recorded sha256. It
 exits 1 on any problem.
 
 `--notice` prints a NOTICE text from the licence keys: for each component the
-model, licence and URL, credit line, changes and input hash. Ship this text and
-the licence texts with the file.
+model, licence and URL, credit line, changes and input hash, followed by the full
+text of every licence used (from `scripts/bundle_licenses/`). It fails when a
+licence has no text there. Ship this text with the file.
 
 ## Licences
 
@@ -238,11 +302,30 @@ is a collection, so it does not have one licence. Rules the tools apply:
   the licences require (CC-BY-4.0 asks for credit, a licence link and a note of
   changes; MIT asks that the copyright notice and licence text stay with copies).
 
+### Licences of the supported components
+
+| Component | Source | Licence | What the bundle must carry |
+|---|---|---|---|
+| ASR | NVIDIA Parakeet (NeMo) and Moondream Ultra/Redux | CC-BY-4.0 | credit, licence link, note of changes |
+| diar | `nvidia/Nemotron-3-Diarization` | OpenMDW-1.1 | a copy of the agreement and the origin notices |
+| ced | `mispeech/ced-*` | Apache-2.0 | licence text and copyright notices |
+| voice, ECAPA | `speechbrain/spkrec-ecapa-voxceleb` | Apache-2.0 | licence text and notices |
+| voice, ERes2Net | 3D-Speaker | Apache-2.0 | licence text and notices |
+| voice, WeSpeaker ResNet34 | `Wespeaker/wespeaker-voxceleb-resnet34` | CC-BY-4.0 (see below) | credit, licence link, note of changes |
+| vad | `snakers4/silero-vad` | MIT | copyright notice and licence text |
+
+WeSpeaker: Hugging Face lists Apache-2.0 for the plain model and CC-BY-4.0 for the
+`-LM` variant, and the voice-detect GGUF card says CC-BY-4.0. The table in the
+script uses CC-BY-4.0, the stricter reading, until the upstream licence is
+confirmed. Not bundled: the audeering heads (CC-BY-NC-SA-4.0) and the EOU model.
+
 ## C-API and CLI
 
 ```c
 parakeet_ctx* parakeet_capi_load(const char* path);                 // bundle: default ASR component
 parakeet_ctx* parakeet_capi_load_component(const char* path, const char* name);
+// kind asr -> ASR context, diar -> diarization, ced -> sound tagger, voice -> speaker
+// encoder, vad -> Silero (or a VAD-only slice). See parakeet_capi_model_kind.
 char*         parakeet_capi_bundle_components_json(const char* path);  // free with parakeet_capi_free_string
 const char*   parakeet_capi_load_error(void);                          // reason of the last failed load on this thread
 ```
@@ -252,17 +335,40 @@ parakeet-cli info bundle.gguf [--component NAME]
 parakeet-cli transcribe --model bundle.gguf --input a.wav [--component NAME]
 parakeet-cli transcribe --model bundle.gguf --input a.wav --vad [--vad-component NAME]
 parakeet-cli vad --model bundle.gguf --input a.wav [--component NAME]
+parakeet-cli scene --model bundle.gguf --diar bundle.gguf --sound bundle.gguf --input a.wav
+parakeet-cli scene ... --speakers bundle.gguf --registry reg.bin
+parakeet-cli enroll --model bundle.gguf [--component NAME] --name N --input a.wav --registry reg.bin
+diarize bundle.gguf a.wav [--stream] [--component NAME]
 ```
+
+Every function that takes a context works with the contexts of a bundle: the
+diarization, sound and speaker contexts from `parakeet_capi_load_component`
+feed `parakeet_capi_diarize_*`, `parakeet_capi_transcribe_and_diarize_*`, the
+scene stream and the named-diarization calls the same way as contexts from
+single-model files.
 
 `parakeet-cli info` without `--component` lists the components, kinds, licences,
 sources, credits and sizes from the header. `--component` prints the details of
-one component. Other subcommands (bench, scene, streaming) do not take a bundle
-yet: they refuse it with a message.
+one component. `bench` and the streaming ASR modes do not take a bundle yet: they
+refuse it with a message.
 
-## Not covered in phase 1
+### A VAD-only slice in a bundle
 
-* diarization, sound-event and speaker-identification components (the kinds are
-  reserved; their loaders are separate libraries);
-* cache-aware streaming from a bundle component;
-* GPU backends were not run with bundles (the loader and the compute path are
-  the same as for single-model files, but there is no test).
+A `vad` component can also hold a VAD-only slice of an Ultra or Redux model
+(`scripts/slice_vad_gguf.py`, `parakeet.arch` `vad`). It is told apart from a
+Silero model by that key. `parakeet_capi_load_component` gives a VAD-only context
+(only the `parakeet_capi_vad_*` calls work), the same as `parakeet_capi_load` on the
+standalone slice file. The build accepts a slice only as kind `vad`. An `asr`
+component with its own VAD head needs no slice. `parakeet-cli vad` uses the first
+`vad` component by default; `transcribe --vad` looks for a Silero component, else
+uses the head of the ASR component, and does not use a slice.
+
+## Not verified
+
+* GPU backends (the loaders and the compute path are the same as for
+  single-model files, but no bundle was run on a GPU);
+* cache-aware streaming ASR from a bundle component, and the other ASR families
+  (EOU, CTC, Nemotron ASR, K-quants) through a bundle;
+* macOS and Windows: the temporary-file fallback for `ced` and `voice` is written
+  for them but not run there;
+* a bundle with a K-quant or Q4 component.
