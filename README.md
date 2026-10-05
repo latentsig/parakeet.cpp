@@ -20,6 +20,7 @@ A C++17/[ggml](https://github.com/ggml-org/ggml) port of NVIDIA's [NeMo](https:/
 
 Latest tagged release: **v0.5.0** (2026-08-01). Entries dated after it are on master, not in a release yet: build from source (see [Build](#build)) or use the `:latest` [Docker images](docs/docker.md).
 
+- 🧬 **Speaker embeddings from the C API** (2026-10-05): `parakeet_capi_speaker_embed_pcm` returns the voice embedding of a clip, from a standalone encoder or a bundle `voice` component. [docs](docs/speaker.md)
 - 🔏 **Speaker fingerprint** (2026-10-04): the speaker registry records which encoder made each voice print and refuses a model mismatch before naming. [docs](docs/diarization.md)
 - 📦 **Bundle GGUF** (2026-10-04): ASR, VAD, diarization, sound events and speaker voice models in one file, with one licence per component; three bundles are published. [docs](docs/bundle.md)
 - ✂️ **VAD-only files** (2026-10-04): 6 to 10 MB slices of the Ultra and Redux VAD head that run `vad` and cannot transcribe. [docs](docs/vad.md)
@@ -299,7 +300,7 @@ VAD accuracy, speed and size, Silero against the Parakeet head against whisper.c
 | [bundle.md](docs/bundle.md) | Bundle GGUF format, selection rules, licences, build and verify |
 | [diarization.md](docs/diarization.md) | Diarization, speaker-attributed ASR, encoder fingerprint, speed |
 | [sound.md](docs/sound.md) | Sound events (CED) and the scene stream |
-| [speaker.md](docs/speaker.md) | Enroll and name speakers, C API v9 and v10, what is not measured |
+| [speaker.md](docs/speaker.md) | Enroll and name speakers, C API v9 and v10, speaker embeddings, what is not measured |
 | [batching.md](docs/batching.md) | Batched decode, exactness, how to measure |
 | [concurrency.md](docs/concurrency.md) | Backend pool, thread rules, measured throughput |
 | [tdt-nbest.md](docs/tdt-nbest.md) | TDT beam search and N-best output |

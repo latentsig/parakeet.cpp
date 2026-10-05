@@ -270,6 +270,52 @@ if (json) {
 parakeet_capi_speaker_registry_free(reg);
 ```
 
+### Embeddings out of the library
+
+```
+int  parakeet_capi_speaker_embed_pcm(parakeet_ctx* speaker, const float* pcm, int n_samples,
+                                     int sample_rate, float** out_embedding, int* out_dim);
+void parakeet_capi_free_floats(float* p);
+```
+
+`speaker_embed_pcm` returns the embedding of a clip, with no registry. This is
+for a host that keeps voices in its own store (the other half of
+`registry_add_embedding`). Additive: it keeps ABI v10, and a caller that needs
+it checks for the symbol.
+
+- On success it returns 0 and sets `*out_embedding` to a `malloc`'d array of
+  `*out_dim` floats. `*out_dim` equals `parakeet_capi_speaker_dim`. The vector is
+  L2-normalized, so the cosine of two embeddings is their dot product. Free the
+  array with `parakeet_capi_free_floats` (safe on NULL).
+- On error it returns nonzero, sets `*out_embedding` to NULL and `*out_dim` to 0,
+  and puts the message on the speaker ctx (`parakeet_capi_last_error`): NULL or
+  empty audio, a sample rate of 0 or less, a ctx that is not a speaker model. A
+  NULL ctx or output pointer returns nonzero with no message.
+- Any positive sample rate works. Audio that is not 16 kHz is resampled to
+  16 kHz first, the same way as `speaker_enroll`.
+- A ctx must not be used by two threads at once, as for the other speaker
+  functions. Use one ctx per thread.
+- A speaker ctx loaded from a bundle `voice` component gives the same
+  embeddings as the standalone GGUF it was built from (see
+  [bundle.md](bundle.md)), so embeddings from the two can be mixed in one store.
+
+```c
+float* emb = NULL;
+int dim = 0;
+if (parakeet_capi_speaker_embed_pcm(speaker, pcm, n_pcm, 16000, &emb, &dim) != 0) {
+    fprintf(stderr, "%s\n", parakeet_capi_last_error(speaker));
+    return 1;
+}
+/* ... store emb[0..dim) ... */
+parakeet_capi_free_floats(emb);
+```
+
+Measured with WeSpeaker ResNet34 on `tests/fixtures/two_speakers.wav` (clips of
+voice A at 0.6 to 4.6 s and 14.9 to 18.7 s, voice B at 6.9 to 10.9 s): cosine
+0.774 for the two clips of one voice and 0.034 between the two voices. Same
+fixture caveat as the rest of this page. The test is
+`tests/test_capi_speaker_embed.cpp`.
+
 ## Devices and threads
 
 voice-detect keeps its own backend and device selection, like ced.cpp does with

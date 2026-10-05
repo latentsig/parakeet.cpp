@@ -189,6 +189,14 @@ single-model file. A voice enrolled with the standalone file therefore matches t
 same model inside a bundle. The header is trusted for this: load bundles you
 trust.
 
+A `voice` component also embeds audio. `parakeet_capi_speaker_embed_pcm` on a
+context from `parakeet_capi_load_component(path, "voice")` returns the embedding
+of a clip (see "Embeddings out of the library" in [speaker.md](speaker.md)). The
+embeddings are in the same space as the standalone WeSpeaker encoder file the
+component was built from: in the test, the cosine between the two is 1.000000
+for the 26.5 MB WeSpeaker ResNet34 component of `parakeet-bundle-small.gguf`.
+A host can store embeddings from either and compare them.
+
 ## Compatibility rules
 
 1. **Plain files are unchanged.** A single-model GGUF has no bundle keys. Every
