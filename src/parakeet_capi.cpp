@@ -2309,6 +2309,34 @@ extern "C" const char* parakeet_capi_speaker_registry_last_error(const parakeet_
     return reg ? reg->last_error.c_str() : "";
 }
 
+extern "C" int parakeet_capi_speaker_embed_pcm(parakeet_ctx* speaker, const float* pcm, int n_samples,
+                                               int sample_rate, float** out_embedding, int* out_dim) {
+    if (out_embedding) *out_embedding = nullptr;
+    if (out_dim) *out_dim = 0;
+    if (!speaker || !out_embedding || !out_dim) return 1;
+    try {
+        if (!require_speaker(speaker)) return 1;
+        std::vector<float> emb;
+        if (!speaker_embed_pcm(speaker, pcm, n_samples, sample_rate, emb)) return 1;
+        if (emb.empty()) { speaker->last_error = "speaker embedding failed"; return 1; }
+        float* out = static_cast<float*>(std::malloc(emb.size() * sizeof(float)));
+        if (!out) { speaker->last_error = "out of memory"; return 1; }
+        std::memcpy(out, emb.data(), emb.size() * sizeof(float));
+        *out_embedding = out;
+        *out_dim = (int)emb.size();
+        speaker->last_error.clear();
+        return 0;
+    } catch (const std::exception& e) {
+        speaker->last_error = e.what();
+        return 1;
+    } catch (...) {
+        speaker->last_error = "unknown error";
+        return 1;
+    }
+}
+
+extern "C" void parakeet_capi_free_floats(float* p) { std::free(p); }
+
 extern "C" int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, parakeet_ctx* speaker,
                                             const char* name, const float* pcm, int n, int sample_rate) {
     if (!speaker) return 1;

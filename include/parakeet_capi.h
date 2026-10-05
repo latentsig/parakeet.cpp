@@ -78,6 +78,9 @@ typedef struct parakeet_ctx parakeet_ctx;
 //      parakeet_capi_transcribe_path_json_vad_with) is additive and keeps ABI v10.
 // Bundle GGUF (parakeet_capi_load_component, parakeet_capi_bundle_components_json,
 //      parakeet_capi_load_error; docs/bundle.md) is additive and keeps ABI v10.
+// Speaker embedding output (parakeet_capi_speaker_embed_pcm, parakeet_capi_free_floats)
+//      is additive and keeps ABI v10: a caller that needs them checks for the symbols
+//      (dlsym).
 int parakeet_capi_abi_version(void);
 
 // Load a GGUF model. Returns an owning context, or NULL on failure.
@@ -848,6 +851,24 @@ const char* parakeet_capi_speaker_registry_last_error(const parakeet_speaker_reg
 // the registry's); the message is on the speaker ctx.
 int parakeet_capi_speaker_enroll(parakeet_speaker_registry* reg, parakeet_ctx* speaker,
                                  const char* name, const float* pcm, int n, int sample_rate);
+
+// Embeds `n_samples` of mono float PCM at `sample_rate` with `speaker` and
+// returns the embedding, without a registry. Any positive sample rate works;
+// the audio is resampled to 16 kHz when it is not 16 kHz. On success returns 0,
+// sets *out_embedding to a malloc'd array of *out_dim floats (the same size as
+// parakeet_capi_speaker_dim) and the vector is L2-normalized, so the cosine of
+// two embeddings is their dot product. Free it with parakeet_capi_free_floats.
+// On error returns nonzero, sets *out_embedding to NULL and *out_dim to 0, and
+// sets the message on `speaker` (parakeet_capi_last_error): NULL or empty
+// audio, an invalid sample rate, a ctx that is not a speaker model. A NULL
+// `speaker`, `out_embedding` or `out_dim` returns nonzero with no message.
+// Like the other speaker functions, a ctx must not be used by two threads at
+// once. Embeddings from a bundle "voice" component and from the standalone
+// encoder GGUF of the same model are in the same space. Additive; keeps ABI v10.
+int parakeet_capi_speaker_embed_pcm(parakeet_ctx* speaker, const float* pcm, int n_samples,
+                                    int sample_rate, float** out_embedding, int* out_dim);
+// Frees an array returned by parakeet_capi_speaker_embed_pcm. Safe on NULL.
+void parakeet_capi_free_floats(float* p);
 
 // Add one already-computed speaker embedding to `reg` under `name`, without a
 // speaker model. `dim` must equal the registry's embedding size once it has
