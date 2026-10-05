@@ -952,7 +952,76 @@ claimed.
   "Seconds decoded" is the overlap of the cuts with the block, from `vad --mode segments`.
 - Noise alone: 63 files of 30 s (seven noise types, three levels), decoded whole.
 
-### Trimming: word error rate
+### Trimming: word error rate, enlarged measurement
+
+The first run (below) had small sets and read a small loss for the Redux head as real. It was
+repeated on a larger set, with the same trim of 0.3 s against the old cuts (`--vad-trim 0`):
+
+- 9 whole TED-LIUM talks (21,540 reference words), 4 used to tune and 5 held out.
+- About 375 noisy LibriSpeech files (6 utterances with gaps each, white and pink noise at 20, 10, 5
+  and 0 dB SNR, 3 noise seeds, split by speaker into tune and held out). The rows below use white 5
+  dB, pink 5 dB and pink 0 dB (15,642 reference words for Ultra and v3, 17,946 for Redux).
+- Models: Redux packed, Ultra Q8_0, and TDT 0.6B v3 Q8_0 with Silero F16. The first run used F16
+  files, so the two runs differ in the models as well as in the size.
+- The delta is trim 0.3 minus the old cuts, in WER points (negative means trim is better), with a
+  95 percent interval from a paired bootstrap over talks and utterances.
+
+| Set | Redux head | Ultra head | v3 + Silero |
+| --- | ---: | ---: | ---: |
+| 9 talks | +0.08 (-0.03..+0.20) | +0.01 (-0.06..+0.08) | +0.01 (-0.06..+0.10) |
+| 5 held-out talks | +0.16 (-0.01..+0.36) | +0.02 (-0.06..+0.11) | +0.03 (-0.08..+0.20) |
+| 4 tune talks | -0.01 (-0.14..+0.13) | +0.00 (-0.10..+0.12) | -0.02 (-0.09..+0.04) |
+| noisy speech (white 5, pink 5, pink 0) | -0.12 (-0.57..+0.45) | -0.27 (-0.57..+0.01) | -0.26 (-0.57..+0.02) |
+| pink 0 dB alone (5,982 words) | -0.15 (-0.90..+0.71) | | |
+
+No interval for talks or for noisy speech excludes zero. The Redux loss of the first run (4.39 to
+4.51 on talks, 12.35 to 13.29 on pink 0 dB) does not hold up: on 9 talks it is +0.08, and on pink 0
+dB it has the other sign. The first run looked worse for two reasons. It was small: its four noisy
+sets had 429 words each, so one word is 0.23 points and the +0.93 was four words. And Redux is the
+most volatile of the three: trim 0.3 changes the text of 15.5 percent of its talk segments, against
+10.0 percent for Ultra and 7.6 percent for v3, and moving the pad from 0.30 to 0.32 s (a change that
+cannot matter) changes the text of 13.5 percent of them and the talk WER by -0.05 (0.35 s: -0.07,
+16.6 percent). That is the noise floor of this comparison. Of the +18 net errors that Redux gains on
+talks, none are at the cut edges (0 net) and 18 are in the interior of the segments, where the
+decoder sees a slightly different input; only 1 of 21,459 words is cut away.
+
+Redux with other trims, against the old cuts (talks / noisy speech with white and pink noise at
+four levels, 47,856 words), is not monotonic in the trim: 0.1 gives +0.03 / -0.01, 0.2 gives +0.02 /
+-0.11, 0.3 gives +0.08 / -0.12, 0.5 gives -0.02 / +0.06, and 1.0 gives -0.00 / -0.01. Three other
+rules (0.5 s before and after, 0.5 s before and 0.3 s after, and trimming only the edges of at least
+0.5 s) are within the intervals of 0.3 on every set, and none is better than the default. Padding is
+nearly free in noise: with trim 1.0 the decoder still gets only 5.7 s (Redux), 13.3 s (Ultra) and
+0.6 s (v3) of a 60 s noise block, against 4.6, 12.1 and 0.0 s with 0.3 (old cuts: 33.2, 37.2, 27.0).
+The 0.3 pad cuts away few words: on noisy speech 14 correct words of 47.8k (Redux), 14 of 16.1k
+(Ultra) and 19 of 15.5k (v3), counted as words whose time lies outside the kept audio (a lower
+bound). The median lateness of the detected speech start against the true start is -5 ms for
+Redux, 79 ms for Ultra and 237 ms for Silero.
+
+Trim also has a real benefit that the first run could not see. With Silero the old cuts drop whole
+sentences on clean speech when a long segment starts with silence: on the held-out clean files the v3
+WER goes from 6.37 to 3.19 with trim 0.3 (-3.19, interval -7.76..-0.14). That interval and the
+Redux clean interval (-0.37, -0.80..-0.07 on held-out clean) are the only ones at 0.3 that exclude
+zero, and both favour the trim.
+
+Decision: the default stays 0.3 s. No code or option changed with this measurement; a minimum edge
+length for trimming (`trim_min_sec`) was considered and not added.
+
+Limits:
+
+- The noise is synthetic and added to read speech. Real room noise and overlapping speech were not
+  tested.
+- The models are not the ones of the first run (see above).
+- The truth for where speech starts and ends is loose: it is the span of each utterance in the
+  synthetic file, so a pause inside an utterance counts as speech.
+- Only 5 talks are held out, and the clean sets are small (1,350 words held out).
+- There is no correction for the many comparisons in the tables. Read a single interval as a
+  range, not as a test.
+
+Tables, the scripts and a note on how to regenerate them:
+[scripts/vad_bench/trim_regression](../scripts/vad_bench/trim_regression/README.md) and
+[results/trim_regression_followup.md](../scripts/vad_bench/decoder_guards/results/trim_regression_followup.md).
+
+### Trimming: word error rate, first run (small sets, superseded)
 
 | Set | Detector | Old | Trim 0.3 | Change |
 | --- | --- | ---: | ---: | ---: |
@@ -963,9 +1032,10 @@ claimed.
 | white noise 5 dB | Ultra / Redux / v3 + Silero | 4.90 / 7.23 / 5.59 | 4.43 / 6.76 / 5.13 | -0.47 / -0.47 / -0.47 |
 | pink noise 0 dB | Ultra / Redux / v3 + Silero | 6.53 / 12.35 / 7.93 | 5.59 / 13.29 / 7.69 | -0.93 / +0.93 / -0.23 |
 
-On talks the change is within 0.12 points; the Redux head loses a little on two of the three talks
-and on pink noise. The speech-in-noise sets are small (one word is 0.23 points), so read them as
-"neutral", not as a gain.
+These are the numbers of the first run, kept for the record. The text that went with them said the
+Redux head loses a little on talks and on pink noise. The enlarged measurement above shows that
+this was noise: the sets are too small to tell (one word is 0.23 points), so read them as
+"neutral".
 
 ### Trimming: the noise block
 

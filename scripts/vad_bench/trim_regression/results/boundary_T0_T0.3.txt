@@ -1,0 +1,36 @@
+== redux T0 -> T0.3  split=all kinds=['talk']   (errors by zone: A / B / B-A)
+  cutaway     S:    0/   0/  +0  D:    1/   1/  +0  I:    1/   0/  -1   total    2/   1/  -1
+  start-edge  S:    9/   7/  -2  D:    2/   2/  +0  I:    7/   9/  +2   total   18/  18/  +0
+  end-edge    S:    4/   5/  +1  D:   14/  13/  -1  I:    3/   3/  +0   total   21/  21/  +0
+  interior    S:  545/ 555/ +10  D:  261/ 267/  +6  I:  186/ 188/  +2   total  992/1010/ +18
+   {'tokens in cut-away': 1, '  of which error (S/I)': 1, 'tokens total (A)': 21459}
+== redux T0 -> T0.3  split=all kinds=['sinr']   (errors by zone: A / B / B-A)
+  cutaway     S:    0/   0/  +0  D:    4/   5/  +1  I:    0/   0/  +0   total    4/   5/  +1
+  start-edge  S:   16/   6/ -10  D:    2/   5/  +3  I:    3/   4/  +1   total   21/  15/  -6
+  end-edge    S:   30/  12/ -18  D:    1/   1/  +0  I:    0/   0/  +0   total   31/  13/ -18
+  interior    S: 2710/2664/ -46  D:  280/ 267/ -13  I:  218/ 238/ +20   total 3208/3169/ -39
+   {'tokens total (A)': 49784, 'tokens in cut-away': 14, '  of which correct(C)': 14}
+== ultra T0 -> T0.3  split=all kinds=['talk']   (errors by zone: A / B / B-A)
+  cutaway     S:    0/   0/  +0  D:    1/   1/  +0  I:    0/   0/  +0   total    1/   1/  +0
+  start-edge  S:   10/   8/  -2  D:    1/   2/  +1  I:    9/  11/  +2   total   20/  21/  +1
+  end-edge    S:    3/   3/  +0  D:    6/   8/  +2  I:    2/   3/  +1   total   11/  14/  +3
+  interior    S:  437/ 441/  +4  D:  230/ 228/  -2  I:  185/ 181/  -4   total  852/ 850/  -2
+   {'tokens total (A)': 21498, 'tokens in cut-away': 1, '  of which correct(C)': 1}
+== ultra T0 -> T0.3  split=all kinds=['sinr']   (errors by zone: A / B / B-A)
+  cutaway     S:    1/   0/  -1  D:   11/   4/  -7  I:    1/   0/  -1   total   13/   4/  -9
+  start-edge  S:    1/   0/  -1  D:    0/   0/  +0  I:    0/   0/  +0   total    1/   0/  -1
+  end-edge    S:   17/   8/  -9  D:    0/   3/  +3  I:    0/   0/  +0   total   17/  11/  -6
+  interior    S:  830/ 797/ -33  D:  123/ 122/  -1  I:   62/  66/  +4   total 1015/ 985/ -30
+   {'tokens total (A)': 17869, 'tokens in cut-away': 16, '  of which correct(C)': 14, '  of which error (S/I)': 2}
+== v3 T0 -> T0.3  split=all kinds=['talk']   (errors by zone: A / B / B-A)
+  cutaway     S:    0/   0/  +0  D:    1/   1/  +0  I:    0/   0/  +0   total    1/   1/  +0
+  start-edge  S:   12/  11/  -1  D:    2/   2/  +0  I:   17/  16/  -1   total   31/  29/  -2
+  end-edge    S:    2/   2/  +0  D:    3/   3/  +0  I:    3/   3/  +0   total    8/   8/  +0
+  interior    S:  426/ 423/  -3  D:  231/ 238/  +7  I:  213/ 213/  +0   total  870/ 874/  +4
+   {'tokens total (A)': 21536}
+== v3 T0 -> T0.3  split=all kinds=['sinr']   (errors by zone: A / B / B-A)
+  cutaway     S:    3/   0/  -3  D:   21/   5/ -16  I:    0/   0/  +0   total   24/   5/ -19
+  start-edge  S:    1/   4/  +3  D:    4/   1/  -3  I:    0/   0/  +0   total    5/   5/  +0
+  end-edge    S:   16/  10/  -6  D:   18/   7/ -11  I:    0/   0/  +0   total   34/  17/ -17
+  interior    S:  835/ 821/ -14  D:  211/ 168/ -43  I:   66/  67/  +1   total 1112/1056/ -56
+   {'tokens total (A)': 17192, 'tokens in cut-away': 23, '  of which correct(C)': 20, '  of which error (S/I)': 3}

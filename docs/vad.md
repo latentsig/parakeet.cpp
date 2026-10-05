@@ -124,9 +124,13 @@ whole file. `trim` 0 (`--vad-trim 0`) gives the previous cuts exactly.
 This is a change of default behaviour for `transcribe --vad`,
 `parakeet_capi_transcribe_path_json_vad*` and the `segments` mode of the VAD
 functions, for the head, for Silero and for VAD-only slices (they share the
-segmenter). On talks, transcripts of long audio can shift slightly (a word WER
-cost of about 0.1 point in our runs); on audio with long noisy stretches the
-decoder sees much less noise. Numbers: [vad-benchmarks.md](vad-benchmarks.md#trimming-segments-and-the-word-filter).
+segmenter). Transcripts of long audio can shift slightly. An enlarged measurement
+(9 talks and about 375 noisy files) found no change in word error rate whose
+interval excludes zero, for the Ultra head, the Redux head or Silero with TDT v3;
+an earlier small run that read a loss for the Redux head was noise. On audio with
+long noisy stretches the decoder sees much less noise, and with Silero the trim
+stops whole sentences from being dropped on clean speech. Numbers:
+[vad-benchmarks.md](vad-benchmarks.md#trimming-segments-and-the-word-filter).
 
 ## Word filter (opt-in)
 

@@ -1,0 +1,9 @@
+ultra talk        segments   299 mean len  24.7s | edges removed: >0 28.8%  >=0.1s 16.1%  >=0.5s  3.0%  >=1s  0.0%  >=2s  0.0%  mean 0.05s  p90 0.18s
+ultra sinr-noisy  segments   864 mean len  23.1s | edges removed: >0 66.3%  >=0.1s 61.2%  >=0.5s 37.2%  >=1s 20.0%  >=2s  0.0%  mean 0.49s  p90 1.38s
+ultra sinr-clean  segments    36 mean len  23.1s | edges removed: >0 72.2%  >=0.1s 68.1%  >=0.5s 40.3%  >=1s 20.8%  >=2s  0.0%  mean 0.50s  p90 1.37s
+redux talk        segments   296 mean len  25.0s | edges removed: >0 28.7%  >=0.1s 18.4%  >=0.5s  2.4%  >=1s  0.0%  >=2s  0.0%  mean 0.05s  p90 0.18s
+redux sinr-noisy  segments   860 mean len  23.2s | edges removed: >0 69.6%  >=0.1s 60.6%  >=0.5s 32.6%  >=1s 15.3%  >=2s  0.0%  mean 0.42s  p90 1.30s
+redux sinr-clean  segments    36 mean len  23.1s | edges removed: >0 75.0%  >=0.1s 68.1%  >=0.5s 40.3%  >=1s 20.8%  >=2s  0.0%  mean 0.50s  p90 1.36s
+v3    talk        segments   276 mean len  26.8s | edges removed: >0 22.3%  >=0.1s 11.4%  >=0.5s  1.8%  >=1s  0.0%  >=2s  0.0%  mean 0.04s  p90 0.15s
+v3    sinr-noisy  segments   864 mean len  23.1s | edges removed: >0 63.8%  >=0.1s 59.3%  >=0.5s 35.8%  >=1s 22.3%  >=2s  0.3%  mean 0.52s  p90 1.51s
+v3    sinr-clean  segments    36 mean len  23.1s | edges removed: >0 63.9%  >=0.1s 59.7%  >=0.5s 34.7%  >=1s 20.8%  >=2s  0.0%  mean 0.49s  p90 1.42s

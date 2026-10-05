@@ -1,0 +1,33 @@
+ultra talk_GaryFlake-merged 0.3 segs 16 16 bounds_match True text_match True
+ultra talk_GaryFlake-merged 0.0 segs 16 16 bounds_match True text_match True
+ultra sn_heldout_pink0_L00s0 0.3 segs 3 3 bounds_match True text_match True
+ultra sn_heldout_pink0_L00s0 0.0 segs 3 3 bounds_match True text_match True
+ultra sn_heldout_white5_L03s1 0.3 segs 3 3 bounds_match True text_match True
+ultra sn_heldout_white5_L03s1 0.0 segs 3 3 bounds_match True text_match True
+ultra sn_tune_clean_L02s0 0.3 segs 3 3 bounds_match True text_match True
+ultra sn_tune_clean_L02s0 0.0 segs 3 3 bounds_match True text_match True
+ultra ins_GaryFlake-merged_pink-5 0.3 segs 6 6 bounds_match True text_match True
+ultra ins_GaryFlake-merged_pink-5 0.0 segs 6 6 bounds_match True text_match True
+redux talk_GaryFlake-merged 0.3 segs 16 16 bounds_match True text_match True
+redux talk_GaryFlake-merged 0.0 segs 16 16 bounds_match True text_match True
+redux sn_heldout_pink0_L00s0 0.3 segs 3 3 bounds_match True text_match True
+redux sn_heldout_pink0_L00s0 0.0 segs 3 3 bounds_match True text_match True
+redux sn_heldout_white5_L03s1 0.3 segs 3 3 bounds_match True text_match True
+redux sn_heldout_white5_L03s1 0.0 segs 3 3 bounds_match True text_match True
+redux sn_tune_clean_L02s0 0.3 segs 3 3 bounds_match True text_match True
+redux sn_tune_clean_L02s0 0.0 segs 3 3 bounds_match True text_match True
+redux ins_GaryFlake-merged_pink-5 0.3 segs 7 7 bounds_match True text_match True
+redux ins_GaryFlake-merged_pink-5 0.0 segs 7 7 bounds_match True text_match True
+v3 talk_GaryFlake-merged 0.3 segs 14 14 bounds_match True text_match True
+v3 talk_GaryFlake-merged 0.0 segs 14 14 bounds_match True text_match True
+v3 sn_heldout_pink0_L00s0 0.3 segs 3 3 bounds_match True text_match True
+v3 sn_heldout_pink0_L00s0 0.0 segs 3 3 bounds_match True text_match True
+v3 sn_heldout_white5_L03s1 0.3 segs 3 3 bounds_match True text_match True
+v3 sn_heldout_white5_L03s1 0.0 segs 3 3 bounds_match True text_match True
+v3 sn_tune_clean_L02s0 0.3 segs 3 3 bounds_match True text_match True
+v3 sn_tune_clean_L02s0 0.0 segs 3 3 bounds_match True text_match True
+v3 ins_GaryFlake-merged_pink-5 0.3 segs 5 5 bounds_match True text_match True
+v3 ins_GaryFlake-merged_pink-5 0.0 segs 5 5 bounds_match True text_match True
+segment mismatches 0 text mismatches 0 of 30
+
+[exited with code 0]
