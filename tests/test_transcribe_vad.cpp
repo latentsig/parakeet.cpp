@@ -72,6 +72,7 @@ int main() {
     {
         SegmenterOpts o;
         o.frame_sec = m->config().vad.frame_sec;
+        o.trim_sec = 0.0;  // the cuts themselves are contiguous; trimming is tested in test_vad_trim_filter
         const auto segs = segment_by_vad(m->vad_probabilities(clip.samples), total, o);
         std::printf("62 s clip (%.2f s): %zu segments:", total, segs.size());
         for (const auto& sg : segs) std::printf(" [%.2f-%.2f]", sg.start, sg.end);

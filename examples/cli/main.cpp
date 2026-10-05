@@ -373,8 +373,9 @@ static int cmd_transcribe_stream(const std::string& model, const std::string& in
 // Segmenter options the user set on the command line. A value left unset keeps
 // the default of the VAD in use (Ultra/Redux head or Silero).
 struct VadOverrides {
-    std::optional<double> threshold, min_pause, min_speech, max_seg, pad;
+    std::optional<double> threshold, min_pause, min_speech, max_seg, pad, trim;
     void apply(pk::SegmenterOpts& o) const {
+        if (trim) o.trim_sec = *trim;
         if (threshold) o.threshold = (float)*threshold;
         if (min_pause) o.min_pause_sec = *min_pause;
         if (min_speech) o.min_speech_sec = *min_speech;
@@ -386,7 +387,7 @@ struct VadOverrides {
 static int cmd_transcribe_vad(const std::string& model, const std::string& input, pk::Decoder dec,
                               const std::string& lang, bool timestamps, bool json,
                               const VadOverrides& ov, const std::string& vad_model,
-                              const std::string& vad_component) {
+                              const std::string& vad_component, const pk::WordFilter& wf) {
     pk::Audio audio;
     if (!load_audio_arg_16k_mono(input, audio)) {
         std::fprintf(stderr, "parakeet-cli: failed to load audio %s\n", input.c_str());
@@ -433,7 +434,7 @@ static int cmd_transcribe_vad(const std::string& model, const std::string& input
         const pk::Model::VadProbabilityFn* ext = silero ? &fn : nullptr;
         if (json || timestamps) {
             pk::Transcription tr =
-                m->transcribe_pcm_vad_with_timestamps(audio.samples, audio.sample_rate, dec, lang, opts, ext);
+                m->transcribe_pcm_vad_with_timestamps(audio.samples, audio.sample_rate, dec, lang, opts, ext, wf);
             if (json) {
                 std::printf("%s\n", pk::transcription_to_json(tr, model_frame_sec(*m)).c_str());
             } else {
@@ -441,7 +442,7 @@ static int cmd_transcribe_vad(const std::string& model, const std::string& input
                     std::printf("%.2f-%.2f  %s  (%.2f)\n", w.start, w.end, w.text.c_str(), w.conf);
             }
         } else {
-            std::printf("%s\n", m->transcribe_pcm_vad(audio.samples, audio.sample_rate, dec, lang, opts, ext).c_str());
+            std::printf("%s\n", m->transcribe_pcm_vad(audio.samples, audio.sample_rate, dec, lang, opts, ext, wf).c_str());
         }
     } catch (const std::exception& e) {
         std::fprintf(stderr, "parakeet-cli: transcribe failed: %s\n", e.what());
@@ -463,11 +464,17 @@ static int cmd_transcribe(int argc, char** argv) {
     bool vad = false;
     std::string vad_model, vad_component, component;
     VadOverrides vad_ov;
+    pk::WordFilter word_filter;
     double d = 0.0;
     auto parse_pos = [](const char* str, double& out) {
         char* end = nullptr;
         out = std::strtod(str, &end);
         return end != str && *end == '\0' && std::isfinite(out) && out > 0.0 && out <= 1e6;
+    };
+    auto parse_nonneg = [](const char* str, double& out) {
+        char* end = nullptr;
+        out = std::strtod(str, &end);
+        return end != str && *end == '\0' && std::isfinite(out) && out >= 0.0 && out <= 1e6;
     };
     bool score_norm = true;
     int beam_size = 0;
@@ -515,6 +522,17 @@ static int cmd_transcribe(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--vad-min-speech") == 0 && i + 1 < argc) {
             if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-min-speech must be > 0\n"); return 2; }
             vad_ov.min_speech = d;
+        } else if (std::strcmp(argv[i], "--vad-trim") == 0 && i + 1 < argc) {
+            if (!parse_nonneg(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-trim must be >= 0 (0 = keep the whole cuts)\n"); return 2; }
+            vad_ov.trim = d;
+        } else if (std::strcmp(argv[i], "--min-local-conf") == 0 && i + 1 < argc) {
+            if (!parse_nonneg(argv[++i], d) || d > 1.0) { std::fprintf(stderr, "parakeet-cli: --min-local-conf must be in [0,1] (0 = off)\n"); return 2; }
+            word_filter.min_local_conf = (float)d;
+        } else if (std::strcmp(argv[i], "--local-radius") == 0 && i + 1 < argc) {
+            if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --local-radius must be > 0\n"); return 2; }
+            word_filter.local_radius_sec = (float)d;
+        } else if (std::strcmp(argv[i], "--drop-punct-only") == 0) {
+            word_filter.drop_punct_only = true;
         } else if (std::strcmp(argv[i], "--vad-max-seg") == 0 && i + 1 < argc) {
             if (!parse_pos(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-max-seg must be > 0\n"); return 2; }
             vad_ov.max_seg = d;
@@ -527,7 +545,8 @@ static int cmd_transcribe(int argc, char** argv) {
             "[--threads N] [--json] "
             "[--component NAME] "
             "[--vad [--vad-model <silero.gguf>] [--vad-component NAME] [--vad-threshold F=0.5] [--vad-min-pause SEC] "
-            "[--vad-min-speech SEC] [--vad-max-seg SEC=30]] "
+            "[--vad-min-speech SEC] [--vad-max-seg SEC=30] [--vad-trim SEC=0.3]] "
+            "[--min-local-conf F [--local-radius SEC=5]] [--drop-punct-only] "
             "[--beam-size N [--nbest N] [--no-score-norm]]\n");
         return 2;
     }
@@ -538,6 +557,10 @@ static int cmd_transcribe(int argc, char** argv) {
     if (threads > 0) pk::set_num_threads(threads);
 
     if (stream) {
+        if (word_filter.active()) {
+            std::fprintf(stderr, "parakeet-cli: the word filter is offline only\n");
+            return 2;
+        }
         if (vad) {
             std::fprintf(stderr, "parakeet-cli: --vad is offline only\n");
             return 2;
@@ -581,7 +604,39 @@ static int cmd_transcribe(int argc, char** argv) {
             std::fprintf(stderr, "parakeet-cli: --vad works with greedy decoding only\n");
             return 2;
         }
-        return cmd_transcribe_vad(model, input, dec, lang, timestamps, json, vad_ov, vad_model, vad_component);
+        return cmd_transcribe_vad(model, input, dec, lang, timestamps, json, vad_ov, vad_model, vad_component, word_filter);
+    }
+    if (word_filter.active() && (beam_size != 0 || nbest != 0)) {
+        std::fprintf(stderr, "parakeet-cli: the word filter works with greedy decoding only\n");
+        return 2;
+    }
+    if (word_filter.active()) {
+        // Greedy decode with timestamps, then the word filter on the whole clip.
+        pk::Audio audio;
+        if (is_stdin_input(input) && !load_audio_arg_16k_mono(input, audio)) {
+            std::fprintf(stderr, "parakeet-cli: failed to load audio stdin\n");
+            return 1;
+        }
+        try {
+            std::unique_ptr<pk::Model> m = load_asr(model);
+            if (!m) { std::fprintf(stderr, "parakeet-cli: failed to load model %s\n", model.c_str()); return 1; }
+            pk::Transcription tr = is_stdin_input(input)
+                ? m->transcribe_with_timestamps(audio.samples, audio.sample_rate, dec, lang)
+                : m->transcribe_path_with_timestamps(input, dec, lang);
+            pk::apply_word_filter(tr, word_filter);
+            if (json) {
+                std::printf("%s\n", pk::transcription_to_json(tr, model_frame_sec(*m)).c_str());
+            } else if (timestamps) {
+                for (const pk::Word& w : tr.words)
+                    std::printf("%.2f-%.2f  %s  (%.2f)\n", w.start, w.end, w.text.c_str(), w.conf);
+            } else {
+                std::printf("%s\n", tr.text.c_str());
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "parakeet-cli: transcribe failed: %s\n", e.what());
+            return 1;
+        }
+        return 0;
     }
     if (nbest != 0 && beam_size == 0) {
         std::fprintf(stderr,
@@ -2245,6 +2300,9 @@ static int cmd_vad(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--max-segment") == 0 && i + 1 < argc) {
             if (!num(argv[++i], d, false)) return bad("--max-segment must be > 0");
             ov.max_seg = d;
+        } else if (std::strcmp(argv[i], "--trim") == 0 && i + 1 < argc) {
+            if (!num(argv[++i], d, true)) return bad("--trim must be >= 0");
+            ov.trim = d;
         } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             const char* v = argv[++i];
             if (std::strcmp(v, "speech") == 0) mode = pk::VadRequest::Mode::kSpeech;
@@ -2258,7 +2316,7 @@ static int cmd_vad(int argc, char** argv) {
         std::fprintf(stderr,
             "usage: parakeet-cli vad --model <asr-with-vad-head.gguf|silero.gguf|bundle.gguf> --input <wav|-> "
             "[--component NAME] [--threshold F=0.5] [--min-pause SEC] [--min-speech SEC] [--speech-pad SEC] "
-            "[--max-segment SEC=30] [--mode speech|segments] [--probabilities] [--threads N]\n");
+            "[--max-segment SEC=30] [--trim SEC=0.3] [--mode speech|segments] [--probabilities] [--threads N]\n");
         return 2;
     }
     if (threads > 0) pk::set_num_threads(threads);

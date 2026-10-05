@@ -180,6 +180,8 @@ parakeet-cli transcribe ... --beam-size 4 --nbest 4             # TDT N-best, se
 parakeet-cli transcribe ... --stream                            # cache-aware streaming (EOU and Nemotron models)
 parakeet-cli transcribe ... --lang <locale>                     # Nemotron 3.5 language, default auto
 parakeet-cli transcribe ... --vad [--vad-model silero.gguf]     # cut long audio at pauses (offline, greedy only)
+parakeet-cli transcribe ... --vad-trim SEC                      # trim each piece to its speech plus SEC (default 0.3, 0 = whole cuts)
+parakeet-cli transcribe ... --min-local-conf 0.5                # opt-in: drop words invented on noise (docs/vad.md)
 parakeet-cli vad --model M --input A.wav [--mode segments] [--probabilities]   # speech regions as JSON
 parakeet-cli scene --model ASR --diar DIAR --sound CED --input A.wav            # words + speakers + sounds
 parakeet-cli scene ... --speakers SPK.gguf --registry R         # name the speakers

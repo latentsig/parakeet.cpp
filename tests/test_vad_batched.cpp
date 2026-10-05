@@ -51,13 +51,16 @@ static void check_model(const char* path, const Audio& clip) {
         (double)cfg.hop_length * (double)cfg.subsampling_factor / (double)cfg.sample_rate;
     const double total = (double)clip.samples.size() / 16000.0;
 
+    // Trim 0.3 (the default) and 0 (the cuts as they were before trimming).
+    for (double trim : {0.3, 0.0})
     for (double max_seg : {3.0, 7.0}) {
         SegmenterOpts opts;
         opts.max_seg_sec = max_seg;
+        opts.trim_sec = trim;
         SegmenterOpts so = opts;
         so.frame_sec = cfg.vad.frame_sec;
         const std::vector<VadSegment> segs = segment_by_vad(m->vad_probabilities(clip.samples), total, so);
-        std::fprintf(stderr, "  max_seg %.0f s: %zu segments\n", max_seg, segs.size());
+        std::fprintf(stderr, "  trim %.1f max_seg %.0f s: %zu segments\n", trim, max_seg, segs.size());
         if (max_seg == 3.0) CHECK(segs.size() > 16);  // more than one group of 16
         CHECK(!segs.empty());
 

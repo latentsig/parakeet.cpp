@@ -651,6 +651,43 @@ extern "C" char* parakeet_capi_transcribe_path_json(parakeet_ctx* ctx,
     }
 }
 
+extern "C" char* parakeet_capi_transcribe_path_json_with(parakeet_ctx* ctx, const char* wav_path,
+                                                         int decoder, const char* options_json) {
+    if (!ctx) return nullptr;
+    if (!ctx->model) {
+        ctx->last_error = ctx->diar
+            ? "context holds a diarization model; use parakeet_capi_diarize_*"
+            : no_model_msg(ctx);
+        return nullptr;
+    }
+    if (!wav_path) { ctx->last_error = "wav_path is NULL"; return nullptr; }
+    try {
+        pk::WordFilter filter;
+        std::string err;
+        if (!pk::parse_filter_options(options_json, filter, err)) {
+            ctx->last_error = err;
+            return nullptr;
+        }
+        pk::Transcription tr =
+            ctx->model->transcribe_path_with_timestamps(wav_path, to_decoder(decoder));
+        pk::apply_word_filter(tr, filter);
+        const pk::ParakeetConfig& cfg = ctx->model->config();
+        const float frame_sec =
+            (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;
+        std::string json = pk::transcription_to_json(tr, frame_sec);
+        ctx->last_error.clear();
+        char* out = dup_to_c(json);
+        if (!out) { ctx->last_error = "out of memory"; return nullptr; }
+        return out;
+    } catch (const std::exception& e) {
+        ctx->last_error = e.what();
+        return nullptr;
+    } catch (...) {
+        ctx->last_error = "unknown error";
+        return nullptr;
+    }
+}
+
 extern "C" char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx,
                                                         const char* wav_path,
                                                         int decoder) {
@@ -773,7 +810,7 @@ extern "C" char* parakeet_capi_transcribe_path_json_vad_with(parakeet_ctx* ctx, 
         pk::VadRequest req;
         std::string err;
         if (!pk::parse_vad_options(options_json, req, err,
-                                   vad_ctx ? pk::VadKind::kSilero : pk::VadKind::kHead)) {
+                                   vad_ctx ? pk::VadKind::kSilero : pk::VadKind::kHead, /*allow_filter=*/true)) {
             ctx->last_error = err;
             return nullptr;
         }
@@ -793,7 +830,7 @@ extern "C" char* parakeet_capi_transcribe_path_json_vad_with(parakeet_ctx* ctx, 
         }
         pk::SegmenterOpts so = req.opts;
         pk::Transcription tr = ctx->model->transcribe_pcm_vad_with_timestamps(
-            audio.samples, audio.sample_rate, to_decoder(decoder), "", so, vad_ctx ? &fn : nullptr);
+            audio.samples, audio.sample_rate, to_decoder(decoder), "", so, vad_ctx ? &fn : nullptr, req.filter);
         const pk::ParakeetConfig& cfg = ctx->model->config();
         const float frame_sec =
             (float)cfg.hop_length * (float)cfg.subsampling_factor / (float)cfg.sample_rate;

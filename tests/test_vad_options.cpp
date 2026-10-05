@@ -64,6 +64,59 @@ int main() {
         }
     }
 
+    // "trim": default 0.3 for both kinds, 0 turns it off, negative is an error.
+    CHECK(parse(nullptr, VadKind::kHead, r, err) && near(r.opts.trim_sec, 0.3));
+    CHECK(parse(nullptr, VadKind::kSilero, r, err) && near(r.opts.trim_sec, 0.3));
+    CHECK(parse("{\"trim\":0}", VadKind::kHead, r, err) && r.opts.trim_sec == 0.0 && near(r.opts.max_seg_sec, 30.0));
+    CHECK(parse("{\"trim\":0.5,\"mode\":\"segments\"}", VadKind::kSilero, r, err) && near(r.opts.trim_sec, 0.5) &&
+          r.mode == VadRequest::Mode::kSegments && near(r.opts.pad_sec, 0.03));
+    for (VadKind k : {VadKind::kHead, VadKind::kSilero}) {
+        CHECK(!parse("{\"trim\":-0.1}", k, r, err) && err.find("trim") != std::string::npos);
+        CHECK(!parse("{\"trim\":\"x\"}", k, r, err) && err.find("trim") != std::string::npos);
+        CHECK(!parse("{\"trim\":1e9}", k, r, err) && err.find("trim") != std::string::npos);
+    }
+
+    // Word filter keys: only with allow_filter; off by default.
+    CHECK(parse(nullptr, VadKind::kHead, r, err) && !r.filter.active() && near(r.filter.local_radius_sec, 5.0));
+    CHECK(!parse_vad_options("{\"min_local_conf\":0.5}", r, err, VadKind::kHead, false) &&
+          err.find("min_local_conf") != std::string::npos);
+    CHECK(!parse_vad_options("{\"drop_punct_only\":true}", r, err, VadKind::kHead, false) &&
+          err.find("drop_punct_only") != std::string::npos);
+    CHECK(parse_vad_options("{\"min_local_conf\":0.5,\"local_radius\":3,\"drop_punct_only\":true,\"trim\":0.2,\"max_segment\":10}",
+                            r, err, VadKind::kSilero, true));
+    CHECK(r.filter.min_local_conf == 0.5f && r.filter.local_radius_sec == 3.0f && r.filter.drop_punct_only &&
+          r.filter.active() && near(r.opts.trim_sec, 0.2) && near(r.opts.max_seg_sec, 10.0));
+    CHECK(parse_vad_options("{\"min_local_conf\":0,\"drop_punct_only\":false}", r, err, VadKind::kHead, true) && !r.filter.active());
+    CHECK(parse_vad_options("{\"min_local_conf\":1}", r, err, VadKind::kHead, true) && r.filter.min_local_conf == 1.0f);
+    {
+        const struct { const char* json; const char* word; } badf[] = {
+            {"{\"min_local_conf\":1.01}", "min_local_conf"}, {"{\"min_local_conf\":-0.5}", "min_local_conf"},
+            {"{\"min_local_conf\":\"x\"}", "min_local_conf"}, {"{\"local_radius\":0}", "local_radius"},
+            {"{\"local_radius\":-1}", "local_radius"}, {"{\"local_radius\":1e9}", "local_radius"},
+            {"{\"drop_punct_only\":1}", "drop_punct_only"}, {"{\"drop_punct_only\":\"true\"}", "drop_punct_only"},
+        };
+        for (const auto& b : badf) {
+            CHECK(!parse_vad_options(b.json, r, err, VadKind::kHead, true));
+            CHECK(err.find(b.word) != std::string::npos);
+        }
+    }
+    // parse_filter_options: the filter keys alone.
+    {
+        WordFilter f;
+        CHECK(parse_filter_options(nullptr, f, err) && !f.active());
+        CHECK(parse_filter_options("", f, err) && !f.active());
+        CHECK(parse_filter_options("{}", f, err) && !f.active() && f.local_radius_sec == 5.0f);
+        CHECK(parse_filter_options("{\"min_local_conf\":0.5}", f, err) && f.min_local_conf == 0.5f && f.local_radius_sec == 5.0f &&
+              !f.drop_punct_only);
+        CHECK(parse_filter_options("{\"drop_punct_only\":true,\"local_radius\":2.5}", f, err) && f.drop_punct_only &&
+              f.min_local_conf == 0.0f && f.local_radius_sec == 2.5f);
+        const char* bad_only[] = {"{\"threshold\":0.5}", "{\"trim\":0.3}", "{\"mode\":\"speech\"}", "{\"max_segment\":5}",
+                                  "{\"nope\":1}", "[1]", "{\"min_local_conf\":", "{} x", "{\"min_local_conf\":2}"};
+        for (const char* j : bad_only) CHECK(!parse_filter_options(j, f, err) && !err.empty());
+        CHECK(!parse_filter_options("{\"threshold\":0.5}", f, err) && err.find("threshold") != std::string::npos &&
+              err.find("unknown") != std::string::npos);
+    }
+
     // C-API: NULL and wrong-kind contexts fail without a crash.
     CHECK(parakeet_capi_vad_pcm_json(nullptr, nullptr, 0, 16000, nullptr) == nullptr);
     CHECK(parakeet_capi_vad_path_json(nullptr, "x.wav", nullptr) == nullptr);
@@ -72,6 +125,7 @@ int main() {
     CHECK(parakeet_capi_vad_stream_reset(nullptr) != 0);
     parakeet_capi_vad_stream_free(nullptr);
     CHECK(parakeet_capi_transcribe_path_json_vad_with(nullptr, nullptr, "x.wav", 0, nullptr) == nullptr);
+    CHECK(parakeet_capi_transcribe_path_json_with(nullptr, "x.wav", 0, nullptr) == nullptr);
     CHECK(parakeet_capi_model_kind(nullptr) == PARAKEET_MODEL_KIND_NONE);
     CHECK(parakeet_capi_load("does-not-exist.gguf") == nullptr);
 

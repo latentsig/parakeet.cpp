@@ -162,17 +162,25 @@ public:
     // PCM to one speech probability per opts.frame_sec seconds, and opts.frame_sec
     // must then be set to that period. The segmenter, the 30 s cap and the decode
     // of each segment are the same as with the head.
+    //
+    // `filter` (optional, off by default, see WordFilter) removes words by their
+    // local confidence. It runs on each decode unit alone: the whole clip when it
+    // is at most opts.max_seg_sec, else each VAD segment. With a filter on, the
+    // text path also runs the timestamp decode, and the Transcription reports
+    // the words dropped in `dropped_words`.
     using VadProbabilityFn = std::function<std::vector<float>(const std::vector<float>&)>;
     std::string transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
                                    Decoder decoder = Decoder::kDefault,
                                    const std::string& target_lang = "",
                                    const SegmenterOpts& opts = SegmenterOpts(),
-                                   const VadProbabilityFn* external_vad = nullptr) const;
+                                   const VadProbabilityFn* external_vad = nullptr,
+                                   const WordFilter& filter = WordFilter()) const;
     Transcription transcribe_pcm_vad_with_timestamps(
         const std::vector<float>& pcm, int sample_rate,
         Decoder decoder = Decoder::kDefault, const std::string& target_lang = "",
         const SegmenterOpts& opts = SegmenterOpts(),
-        const VadProbabilityFn* external_vad = nullptr) const;
+        const VadProbabilityFn* external_vad = nullptr,
+        const WordFilter& filter = WordFilter()) const;
 
     // The underlying loaded GGUF. Exposed so the streaming C-API can build a
     // pk::StreamingSession (and a MelFrontend) over the same load-once model.

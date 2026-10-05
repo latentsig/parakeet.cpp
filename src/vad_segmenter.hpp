@@ -18,6 +18,11 @@ struct SegmenterOpts {
     double bridge_sec = 0.1;      // speech gaps shorter than this are bridged
     double min_speech_sec = 0.1;  // speech runs shorter than this are dropped
     double pad_sec = 0.0;         // speech_regions only: padding added on both sides of a region
+    // segment_by_vad only: a segment cut from long audio shrinks to its first
+    // and last speech frame plus this many seconds on each side. 0 keeps the
+    // whole cut (the behaviour before trimming existed). Audio of at most
+    // max_seg_sec is not affected.
+    double trim_sec = 0.3;
 };
 
 // Which model made the probabilities. The two kinds differ in frame period
@@ -53,11 +58,17 @@ SegmenterOpts default_segmenter_opts(VadKind kind);
 // 4. Segments that contain no speech are dropped, including the trailing
 //    remainder. The result is empty when no segment has speech. Kept segments
 //    are ordered and disjoint but need not touch.
+// 5. With trim_sec > 0 each kept segment is cut down to [first speech frame -
+//    trim_sec, end of last speech frame + trim_sec], limited to the segment
+//    itself. Speech is the smoothed mask of step 1. This keeps the quiet or
+//    noisy parts that a hard or pause cut leaves at the edges away from the
+//    decoder. A segment is never trimmed to nothing: it has speech, so it keeps
+//    at least that run. Trimmed edges are not on the frame grid.
 //
 // Degenerate options (frame_sec not finite or <= 0, max_seg_sec not finite or
-// <= 2 * frame_sec, threshold or any of the four durations not finite, any
-// duration above 1e6 seconds) return the single segment {0, total_sec}. Every
-// internal boundary is a whole number of frames.
+// <= 2 * frame_sec, threshold, trim_sec or any of the four durations not finite,
+// any duration above 1e6 seconds) return the single segment {0, total_sec}.
+// Every cut between two segments is a whole number of frames.
 std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total_sec,
                                        const SegmenterOpts& o);
 

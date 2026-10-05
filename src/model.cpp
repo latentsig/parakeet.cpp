@@ -462,7 +462,10 @@ std::vector<Slice> vad_slices(const Model& m, const std::vector<float>& pcm16k,
 std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_rate,
                                       Decoder decoder, const std::string& target_lang,
                                       const SegmenterOpts& opts,
-                                      const VadProbabilityFn* external_vad) const {
+                                      const VadProbabilityFn* external_vad,
+                                      const WordFilter& filter) const {
+    if (filter.active())
+        return transcribe_pcm_vad_with_timestamps(pcm, sample_rate, decoder, target_lang, opts, external_vad, filter).text;
     PoolLease lease(pool_snapshot());
     if (!external_vad && !loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
     const std::vector<float> pcm16k =
@@ -486,22 +489,28 @@ std::string Model::transcribe_pcm_vad(const std::vector<float>& pcm, int sample_
 Transcription Model::transcribe_pcm_vad_with_timestamps(const std::vector<float>& pcm, int sample_rate,
                                                         Decoder decoder, const std::string& target_lang,
                                                         const SegmenterOpts& opts,
-                                      const VadProbabilityFn* external_vad) const {
+                                                        const VadProbabilityFn* external_vad,
+                                                        const WordFilter& filter) const {
     PoolLease lease(pool_snapshot());
     if (!external_vad && !loader_.config().vad.present) throw std::runtime_error("model has no VAD head");
     const std::vector<float> pcm16k =
         sample_rate == 16000 ? pcm : resample_linear(pcm, sample_rate, 16000);
-    if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec)
-        return transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
+    if ((double)pcm16k.size() / 16000.0 <= opts.max_seg_sec) {
+        Transcription t = transcribe_with_timestamps(pcm16k, 16000, decoder, target_lang);
+        apply_word_filter(t, filter);
+        return t;
+    }
     const std::vector<Slice> slices = vad_slices(*this, pcm16k, opts, external_vad);
-    if (slices.empty()) return Transcription();  // no speech found
     Transcription all;
+    if (filter.active()) all.dropped_words = 0;
+    if (slices.empty()) return all;  // no speech found
     std::vector<const std::vector<float>*> pcms;
     for (const Slice& s : slices) pcms.push_back(&s.pcm);
     std::vector<Transcription> parts = transcribe_16k_grouped(pcms, decoder, target_lang, true);
     for (size_t i = 0; i < slices.size(); ++i) {
         const Slice& s = slices[i];
         Transcription& t = parts[i];
+        if (filter.active()) all.dropped_words += apply_word_filter(t, filter);
         for (Word& w : t.words) { w.start += (float)s.start_sec; w.end += (float)s.start_sec; }
         for (TokenInfo& k : t.tokens) k.frame += s.start_frame;
         if (!t.text.empty()) {
