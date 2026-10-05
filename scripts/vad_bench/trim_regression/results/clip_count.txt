@@ -1,0 +1,66 @@
+== ultra
+  talks       T0 words 21498
+     T0.1         cut correct   11  cut error    1 | touched correct  112 touched error    5
+     T0.2         cut correct    2  cut error    1 | touched correct   48 touched error    1
+     T0.3         cut correct    1  cut error    0 | touched correct   17 touched error    1
+     T0.5         cut correct    0  cut error    0 | touched correct    6 touched error    0
+     T1.0         cut correct    0  cut error    0 | touched correct    5 touched error    0
+     P0.5/0.3     cut correct    1  cut error    0 | touched correct   12 touched error    0
+  sinr noisy  T0 words 16133
+     T0.1         cut correct  103  cut error    3 | touched correct  298 touched error    9
+     T0.2         cut correct   31  cut error    3 | touched correct  239 touched error    6
+     T0.3         cut correct   14  cut error    2 | touched correct  161 touched error    5
+     T0.5         cut correct    1  cut error    2 | touched correct   24 touched error    2
+     T1.0         cut correct    0  cut error    1 | touched correct    0 touched error    2
+     P0.5/0.3     cut correct    4  cut error    2 | touched correct   73 touched error    4
+  sinr clean  T0 words 1736
+     T0.1         cut correct    5  cut error    0 | touched correct   27 touched error    1
+     T0.2         cut correct    1  cut error    0 | touched correct   18 touched error    1
+     T0.3         cut correct    0  cut error    0 | touched correct    6 touched error    0
+     T0.5         cut correct    0  cut error    0 | touched correct    0 touched error    0
+     T1.0         cut correct    0  cut error    0 | touched correct    0 touched error    0
+     P0.5/0.3     cut correct    0  cut error    0 | touched correct    1 touched error    0
+== redux
+  talks       T0 words 21459
+     T0.1         cut correct   16  cut error    2 | touched correct  107 touched error    6
+     T0.2         cut correct    1  cut error    1 | touched correct   37 touched error    2
+     T0.3         cut correct    0  cut error    1 | touched correct   14 touched error    1
+     T0.5         cut correct    0  cut error    0 | touched correct   10 touched error    0
+     T1.0         cut correct    0  cut error    0 | touched correct   10 touched error    0
+     P0.5/0.3     cut correct    0  cut error    0 | touched correct   11 touched error    0
+  sinr noisy  T0 words 47791
+     T0.1         cut correct  226  cut error    2 | touched correct  442 touched error   40
+     T0.2         cut correct   63  cut error    1 | touched correct  304 touched error   25
+     T0.3         cut correct   14  cut error    0 | touched correct  109 touched error    7
+     T0.5         cut correct    0  cut error    0 | touched correct   10 touched error    0
+     T1.0         cut correct    0  cut error    0 | touched correct    0 touched error    0
+     P0.5/0.3     cut correct    0  cut error    0 | touched correct   19 touched error    6
+  sinr clean  T0 words 1993
+     T0.1         cut correct   10  cut error    0 | touched correct   19 touched error    1
+     T0.2         cut correct    2  cut error    0 | touched correct   13 touched error    1
+     T0.3         cut correct    0  cut error    0 | touched correct    2 touched error    0
+     T0.5         cut correct    0  cut error    0 | touched correct    0 touched error    0
+     T1.0         cut correct    0  cut error    0 | touched correct    0 touched error    0
+     P0.5/0.3     cut correct    0  cut error    0 | touched correct    0 touched error    0
+== v3
+  talks       T0 words 21536
+     T0.1         cut correct   20  cut error    3 | touched correct   95 touched error   10
+     T0.2         cut correct    4  cut error    0 | touched correct   37 touched error    4
+     T0.3         cut correct    0  cut error    0 | touched correct   10 touched error    0
+     T0.5         cut correct    0  cut error    0 | touched correct    4 touched error    0
+     T1.0         cut correct    0  cut error    0 | touched correct    4 touched error    0
+     P0.5/0.3     cut correct    0  cut error    0 | touched correct    6 touched error    0
+  sinr noisy  T0 words 15506
+     T0.1         cut correct  152  cut error    4 | touched correct  324 touched error   15
+     T0.2         cut correct   61  cut error    3 | touched correct  245 touched error    6
+     T0.3         cut correct   19  cut error    3 | touched correct  175 touched error    5
+     T0.5         cut correct    4  cut error    2 | touched correct   17 touched error    2
+     T1.0         cut correct    1  cut error    0 | touched correct    2 touched error    0
+     P0.5/0.3     cut correct    7  cut error    3 | touched correct   58 touched error    5
+  sinr clean  T0 words 1686
+     T0.1         cut correct    9  cut error    0 | touched correct   32 touched error    0
+     T0.2         cut correct    2  cut error    0 | touched correct   21 touched error    0
+     T0.3         cut correct    1  cut error    0 | touched correct    6 touched error    0
+     T0.5         cut correct    0  cut error    0 | touched correct    0 touched error    0
+     T1.0         cut correct    0  cut error    0 | touched correct    0 touched error    0
+     P0.5/0.3     cut correct    0  cut error    0 | touched correct    1 touched error    0

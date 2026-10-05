@@ -1,0 +1,35 @@
+90 insert files (9 talks x white,pink,clicks,music @-20; white,music @-35; white,pink,clicks,music @-5)
+det   variant    sec/file
+ultra T0             37.2   clicks-20:28 clicks-5:56 music-20:21 music-35:27 music-5:23 pink-20:27 pink-5:60 white-20:45 white-35:26 white-5:60
+ultra T0.1           11.7   clicks-20:0 clicks-5:7 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:51 white-20:1 white-35:0 white-5:59
+ultra T0.3           12.1   clicks-20:0 clicks-5:8 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:51 white-20:1 white-35:0 white-5:59
+ultra T0.5           12.4   clicks-20:0 clicks-5:9 music-20:0 music-35:0 music-5:1 pink-20:0 pink-5:52 white-20:1 white-35:0 white-5:60
+ultra T1.0           13.3   clicks-20:1 clicks-5:11 music-20:1 music-35:1 music-5:1 pink-20:1 pink-5:54 white-20:3 white-35:1 white-5:60
+ultra P0.5/0.3       12.2   clicks-20:0 clicks-5:8 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:52 white-20:1 white-35:0 white-5:60
+ultra E0.5           12.2   clicks-20:0 clicks-5:8 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:52 white-20:1 white-35:0 white-5:60
+ultra E1.0           12.3   clicks-20:0 clicks-5:8 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:53 white-20:1 white-35:0 white-5:60
+ultra E0.5p0.5       12.5   clicks-20:0 clicks-5:9 music-20:0 music-35:0 music-5:1 pink-20:0 pink-5:52 white-20:1 white-35:0 white-5:60
+ultra L3             13.0   clicks-20:1 clicks-5:11 music-20:1 music-35:1 music-5:1 pink-20:1 pink-5:51 white-20:3 white-35:1 white-5:59
+ultra L6             14.4   clicks-20:2 clicks-5:16 music-20:1 music-35:2 music-5:2 pink-20:2 pink-5:52 white-20:7 white-35:2 white-5:59
+redux T0             33.2   clicks-20:26 clicks-5:26 music-20:28 music-35:37 music-5:22 pink-20:33 pink-5:60 white-20:29 white-35:26 white-5:46
+redux T0.1            4.4   clicks-20:0 clicks-5:0 music-20:7 music-35:9 music-5:0 pink-20:0 pink-5:17 white-20:0 white-35:0 white-5:11
+redux T0.3            4.6   clicks-20:0 clicks-5:0 music-20:7 music-35:9 music-5:0 pink-20:0 pink-5:18 white-20:0 white-35:0 white-5:12
+redux T0.5            4.9   clicks-20:0 clicks-5:0 music-20:7 music-35:9 music-5:0 pink-20:0 pink-5:18 white-20:0 white-35:0 white-5:12
+redux T1.0            5.7   clicks-20:1 clicks-5:1 music-20:8 music-35:10 music-5:1 pink-20:1 pink-5:20 white-20:1 white-35:1 white-5:13
+redux P0.5/0.3        4.7   clicks-20:0 clicks-5:0 music-20:7 music-35:9 music-5:0 pink-20:0 pink-5:18 white-20:0 white-35:0 white-5:12
+redux E0.5            4.6   clicks-20:0 clicks-5:0 music-20:7 music-35:9 music-5:0 pink-20:0 pink-5:18 white-20:0 white-35:0 white-5:12
+redux E1.0            4.7   clicks-20:0 clicks-5:0 music-20:7 music-35:9 music-5:0 pink-20:0 pink-5:18 white-20:0 white-35:0 white-5:12
+redux E0.5p0.5        4.9   clicks-20:0 clicks-5:0 music-20:7 music-35:9 music-5:0 pink-20:0 pink-5:18 white-20:0 white-35:0 white-5:12
+redux L3              5.3   clicks-20:0 clicks-5:0 music-20:8 music-35:9 music-5:0 pink-20:1 pink-5:20 white-20:1 white-35:1 white-5:13
+redux L6              6.7   clicks-20:1 clicks-5:1 music-20:9 music-35:11 music-5:1 pink-20:3 pink-5:23 white-20:2 white-35:1 white-5:15
+v3    T0             27.0   clicks-20:27 clicks-5:27 music-20:27 music-35:27 music-5:27 pink-20:27 pink-5:27 white-20:27 white-35:27 white-5:27
+v3    T0.1            0.0   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    T0.3            0.0   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    T0.5            0.2   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    T1.0            0.6   clicks-20:1 clicks-5:1 music-20:1 music-35:1 music-5:1 pink-20:1 pink-5:1 white-20:1 white-35:1 white-5:1
+v3    P0.5/0.3        0.0   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    E0.5            0.1   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    E1.0            0.1   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    E0.5p0.5        0.2   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    L3              0.5   clicks-20:0 clicks-5:0 music-20:0 music-35:0 music-5:0 pink-20:0 pink-5:0 white-20:0 white-35:0 white-5:0
+v3    L6              1.6   clicks-20:2 clicks-5:2 music-20:2 music-35:2 music-5:2 pink-20:2 pink-5:2 white-20:2 white-35:2 white-5:2

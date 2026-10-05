@@ -36,3 +36,9 @@ What the files are:
 `--vad-trim 0` gives the old output byte for byte, the WER with the old cuts, with trim 0.3 and with
 trim 0.3 plus `--min-local-conf 0.5`, the seconds of the noise block that the decoder gets, and the
 words it returns inside the block.
+
+Note on the trim results: `results/tables.txt` is the output of the first run, which has small
+sets. Its Redux rows (talks 4.39 to 4.51, pink noise 0 dB 12.35 to 13.29) read as a small loss for
+the Redux head. An enlarged measurement showed that this was noise (no interval excludes zero); the
+file is kept unchanged. See `results/trim_regression_followup.md` and
+[../trim_regression](../trim_regression/README.md).

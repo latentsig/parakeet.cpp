@@ -1,0 +1,27 @@
+== ultra
+  T0.1     segment starts: cut into the first utterance 64.2% (>=50ms 58.6%, >=100ms 54.1%, >=300ms 22.0%, max 641ms) | ends: cut into the last utterance 51.0% (>=100ms 40.1%, >=300ms 12.4%, max 665ms)   n=573
+  T0.2     segment starts: cut into the first utterance 54.1% (>=50ms 47.5%, >=100ms 42.4%, >=300ms  7.3%, max 541ms) | ends: cut into the last utterance 40.1% (>=100ms 22.3%, >=300ms  5.8%, max 565ms)   n=573
+  T0.3     segment starts: cut into the first utterance 42.4% (>=50ms 28.4%, >=100ms 22.0%, >=300ms  1.2%, max 441ms) | ends: cut into the last utterance 22.3% (>=100ms 12.4%, >=300ms  2.6%, max 465ms)   n=573
+  T0.4     segment starts: cut into the first utterance 22.0% (>=50ms 18.0%, >=100ms  7.3%, >=300ms  0.2%, max 341ms) | ends: cut into the last utterance 12.4% (>=100ms  5.8%, >=300ms  1.7%, max 365ms)   n=573
+  T0.5     segment starts: cut into the first utterance  7.3% (>=50ms  4.0%, >=100ms  1.2%, >=300ms  0.0%, max 241ms) | ends: cut into the last utterance  5.8% (>=100ms  2.6%, >=300ms  0.0%, max 265ms)   n=573
+  T1.0     segment starts: cut into the first utterance  0.0% (>=50ms  0.0%, >=100ms  0.0%, >=300ms  0.0%, max 0ms) | ends: cut into the last utterance  0.0% (>=100ms  0.0%, >=300ms  0.0%, max 0ms)   n=573
+  P0.5/0.3 segment starts: cut into the first utterance  7.3% (>=50ms  4.0%, >=100ms  1.2%, >=300ms  0.0%, max 241ms) | ends: cut into the last utterance 22.3% (>=100ms 12.4%, >=300ms  2.6%, max 465ms)   n=573
+  P0.5/0.4 segment starts: cut into the first utterance  7.3% (>=50ms  4.0%, >=100ms  1.2%, >=300ms  0.0%, max 241ms) | ends: cut into the last utterance 12.4% (>=100ms  5.8%, >=300ms  1.7%, max 365ms)   n=573
+== redux
+  T0.1     segment starts: cut into the first utterance 55.9% (>=50ms 55.2%, >=100ms 52.3%, >=300ms 18.0%, max 481ms) | ends: cut into the last utterance 40.4% (>=100ms 29.2%, >=300ms  4.7%, max 585ms)   n=596
+  T0.2     segment starts: cut into the first utterance 52.3% (>=50ms 42.6%, >=100ms 33.4%, >=300ms  4.0%, max 381ms) | ends: cut into the last utterance 29.2% (>=100ms  8.7%, >=300ms  2.0%, max 485ms)   n=596
+  T0.3     segment starts: cut into the first utterance 33.4% (>=50ms 21.5%, >=100ms 18.0%, >=300ms  0.0%, max 281ms) | ends: cut into the last utterance  8.7% (>=100ms  4.7%, >=300ms  0.5%, max 385ms)   n=596
+  T0.4     segment starts: cut into the first utterance 18.0% (>=50ms 12.2%, >=100ms  4.0%, >=300ms  0.0%, max 181ms) | ends: cut into the last utterance  4.7% (>=100ms  2.0%, >=300ms  0.0%, max 285ms)   n=596
+  T0.5     segment starts: cut into the first utterance  4.0% (>=50ms  2.2%, >=100ms  0.0%, >=300ms  0.0%, max 81ms) | ends: cut into the last utterance  2.0% (>=100ms  0.5%, >=300ms  0.0%, max 185ms)   n=596
+  T1.0     segment starts: cut into the first utterance  0.0% (>=50ms  0.0%, >=100ms  0.0%, >=300ms  0.0%, max 0ms) | ends: cut into the last utterance  0.0% (>=100ms  0.0%, >=300ms  0.0%, max 0ms)   n=596
+  P0.5/0.3 segment starts: cut into the first utterance  4.0% (>=50ms  2.2%, >=100ms  0.0%, >=300ms  0.0%, max 81ms) | ends: cut into the last utterance  8.7% (>=100ms  4.7%, >=300ms  0.5%, max 385ms)   n=596
+  P0.5/0.4 segment starts: cut into the first utterance  4.0% (>=50ms  2.2%, >=100ms  0.0%, >=300ms  0.0%, max 81ms) | ends: cut into the last utterance  4.7% (>=100ms  2.0%, >=300ms  0.0%, max 285ms)   n=596
+== v3
+  T0.1     segment starts: cut into the first utterance 66.1% (>=50ms 65.7%, >=100ms 65.5%, >=300ms 33.1%, max 1521ms) | ends: cut into the last utterance 55.1% (>=100ms 46.1%, >=300ms 12.2%, max 788ms)   n=499
+  T0.2     segment starts: cut into the first utterance 65.5% (>=50ms 52.9%, >=100ms 50.1%, >=300ms 15.0%, max 1421ms) | ends: cut into the last utterance 46.1% (>=100ms 30.1%, >=300ms  9.0%, max 688ms)   n=499
+  T0.3     segment starts: cut into the first utterance 50.1% (>=50ms 35.7%, >=100ms 33.1%, >=300ms  4.8%, max 1321ms) | ends: cut into the last utterance 30.1% (>=100ms 12.2%, >=300ms  2.4%, max 588ms)   n=499
+  T0.4     segment starts: cut into the first utterance 33.1% (>=50ms 26.1%, >=100ms 15.0%, >=300ms  1.0%, max 1221ms) | ends: cut into the last utterance 12.2% (>=100ms  9.0%, >=300ms  0.6%, max 488ms)   n=499
+  T0.5     segment starts: cut into the first utterance 15.0% (>=50ms 11.2%, >=100ms  4.8%, >=300ms  0.6%, max 1121ms) | ends: cut into the last utterance  9.0% (>=100ms  2.4%, >=300ms  0.4%, max 388ms)   n=499
+  T1.0     segment starts: cut into the first utterance  0.6% (>=50ms  0.6%, >=100ms  0.6%, >=300ms  0.6%, max 621ms) | ends: cut into the last utterance  0.0% (>=100ms  0.0%, >=300ms  0.0%, max 0ms)   n=499
+  P0.5/0.3 segment starts: cut into the first utterance 15.0% (>=50ms 11.2%, >=100ms  4.8%, >=300ms  0.6%, max 1121ms) | ends: cut into the last utterance 30.1% (>=100ms 12.2%, >=300ms  2.4%, max 588ms)   n=499
+  P0.5/0.4 segment starts: cut into the first utterance 15.0% (>=50ms 11.2%, >=100ms  4.8%, >=300ms  0.6%, max 1121ms) | ends: cut into the last utterance 12.2% (>=100ms  9.0%, >=300ms  0.6%, max 488ms)   n=499

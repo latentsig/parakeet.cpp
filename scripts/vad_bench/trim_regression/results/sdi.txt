@@ -1,0 +1,7 @@
+S/D/I counts (T0 -> T0.3)
+redux  talks (9)                      words  21540  WER 4.80 -> 4.87 (+0.08; -0.03..+0.20)  S 558->567  D 278->283  I 197->200
+redux  noisy sinr white5+pink5+pink0  words  17946  WER 7.83 -> 7.71 (-0.12; -0.57..+0.45)  S 1183->1154  D 132->133  I 90->97
+ultra  talks (9)                      words  21540  WER 4.10 -> 4.11 (+0.01; -0.06..+0.08)  S 450->452  D 238->239  I 196->195
+ultra  noisy sinr white5+pink5+pink0  words  15642  WER 6.29 -> 6.02 (-0.27; -0.57..+0.01)  S 801->758  D 128->125  I 55->58
+v3     talks (9)                      words  21540  WER 4.22 -> 4.23 (+0.01; -0.06..+0.10)  S 440->436  D 237->244  I 233->232
+v3     noisy sinr white5+pink5+pink0  words  15642  WER 6.89 -> 6.62 (-0.26; -0.57..+0.02)  S 815->796  D 199->177  I 63->63

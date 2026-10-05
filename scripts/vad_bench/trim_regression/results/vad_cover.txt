@@ -1,0 +1,12 @@
+ultra talks              correct words  20852 | outside the mask (any) 0.23%  start-side>0.1s 0.01%  >0.3s 0.00%  end-side>0.1s 0.01% >0.3s 0.00%
+ultra sinr clean         correct words   1692 | outside the mask (any) 0.35%  start-side>0.1s 0.06%  >0.3s 0.00%  end-side>0.1s 0.00% >0.3s 0.00%
+ultra sinr noisy         correct words  15265 | outside the mask (any) 1.32%  start-side>0.1s 0.20%  >0.3s 0.04%  end-side>0.1s 0.24% >0.3s 0.07%
+ultra sinr pink0+white0  correct words   4797 | outside the mask (any) 0.81%  start-side>0.1s 0.15%  >0.3s 0.02%  end-side>0.1s 0.10% >0.3s 0.00%
+redux talks              correct words  20704 | outside the mask (any) 0.49%  start-side>0.1s 0.03%  >0.3s 0.00%  end-side>0.1s 0.00% >0.3s 0.00%
+redux sinr clean         correct words   1948 | outside the mask (any) 1.13%  start-side>0.1s 0.21%  >0.3s 0.00%  end-side>0.1s 0.00% >0.3s 0.00%
+redux sinr noisy         correct words  44859 | outside the mask (any) 1.15%  start-side>0.1s 0.16%  >0.3s 0.03%  end-side>0.1s 0.00% >0.3s 0.00%
+redux sinr pink0+white0  correct words  10397 | outside the mask (any) 0.92%  start-side>0.1s 0.13%  >0.3s 0.02%  end-side>0.1s 0.02% >0.3s 0.00%
+v3    talks              correct words  20863 | outside the mask (any) 1.25%  start-side>0.1s 0.15%  >0.3s 0.00%  end-side>0.1s 0.05% >0.3s 0.00%
+v3    sinr clean         correct words   1643 | outside the mask (any) 1.83%  start-side>0.1s 0.18%  >0.3s 0.06%  end-side>0.1s 0.06% >0.3s 0.00%
+v3    sinr noisy         correct words  14628 | outside the mask (any) 4.03%  start-side>0.1s 0.87%  >0.3s 0.18%  end-side>0.1s 0.40% >0.3s 0.12%
+v3    sinr pink0+white0  correct words   4728 | outside the mask (any) 5.58%  start-side>0.1s 1.52%  >0.3s 0.34%  end-side>0.1s 0.95% >0.3s 0.32%

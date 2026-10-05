@@ -1,0 +1,14 @@
+redux talk  T0->T0.3: segments 296, text changed 46 (15.5%); of those errors up 18, down 14, equal 14; net +17; sign test p=0.60
+redux sinr  T0->T0.3: segments 860, text changed 439 (51.0%); of those errors up 139, down 194, equal 106; net -56; sign test p=0.00
+redux talk  T0.3->T0.5: segments 296, text changed 49 (16.6%); of those errors up 14, down 21, equal 14; net -22; sign test p=0.31
+redux sinr  T0.3->T0.5: segments 860, text changed 424 (49.3%); of those errors up 178, down 138, equal 108; net +85; sign test p=0.03
+ultra talk  T0->T0.3: segments 299, text changed 30 (10.0%); of those errors up 10, down 15, equal 5; net +1; sign test p=0.42
+ultra sinr  T0->T0.3: segments 291, text changed 149 (51.2%); of those errors up 43, down 68, equal 38; net -40; sign test p=0.02
+ultra talk  T0.3->T0.5: segments 299, text changed 29 (9.7%); of those errors up 15, down 11, equal 3; net +0; sign test p=0.56
+ultra sinr  T0.3->T0.5: segments 291, text changed 146 (50.2%); of those errors up 58, down 50, equal 38; net +19; sign test p=0.50
+v3    talk  T0->T0.3: segments 276, text changed 21 (7.6%); of those errors up 9, down 9, equal 3; net +2; sign test p=1.00
+v3    sinr  T0->T0.3: segments 279, text changed 151 (54.1%); of those errors up 43, down 66, equal 42; net -32; sign test p=0.03
+v3    talk  T0.3->T0.5: segments 276, text changed 20 (7.2%); of those errors up 8, down 9, equal 3; net -3; sign test p=1.00
+v3    sinr  T0.3->T0.5: segments 279, text changed 140 (50.2%); of those errors up 71, down 41, equal 28; net +48; sign test p=0.01
+redux talk  T0.3->T0.32: segments 296, text changed 40 (13.5%); of those errors up 11, down 18, equal 11; net -11; sign test p=0.26
+redux talk  T0.3->T0.35: segments 296, text changed 49 (16.6%); of those errors up 16, down 23, equal 10; net -19; sign test p=0.34

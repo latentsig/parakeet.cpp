@@ -1,0 +1,149 @@
+Lateness of the speech start (VAD smoothed mask start minus true utterance start) and earliness of the end (true end minus VAD end). Positive = the VAD cuts into the word.
+-- clean
+  ultra on_all   n= 180 miss= 0.0% median=   98ms p90=  468 p95=  509 >0.3s=28.9% >0.5s= 6.7%
+  ultra on_edge  n=  18 miss= 0.0% median=  129ms p90=  372 p95=  454 >0.3s=44.4% >0.5s= 0.0%
+  ultra off_all  n= 180 miss= 0.0% median=  -45ms p90=  356 p95=  383 >0.3s=18.9% >0.5s= 0.0%
+  ultra off_edge n=  22 miss= 0.0% median=  136ms p90=  350 p95=  365 >0.3s=18.2% >0.5s= 0.0%
+  redux on_all   n= 180 miss= 0.0% median=   88ms p90=  473 p95=  514 >0.3s=26.7% >0.5s= 7.8%
+  redux on_edge  n=  18 miss= 0.0% median=  209ms p90=  372 p95=  454 >0.3s=33.3% >0.5s= 0.0%
+  redux off_all  n= 180 miss= 0.0% median=  -47ms p90=  332 p95=  378 >0.3s=14.4% >0.5s= 0.0%
+  redux off_edge n=  24 miss= 0.0% median=   80ms p90=  350 p95=  364 >0.3s=16.7% >0.5s= 0.0%
+  v3    on_all   n= 180 miss= 0.0% median=  110ms p90=  549 p95=  578 >0.3s=30.0% >0.5s=15.6%
+  v3    on_edge  n=  10 miss= 0.0% median=   17ms p90=  336 p95=  336 >0.3s=20.0% >0.5s= 0.0%
+  v3    off_all  n= 180 miss= 0.0% median=   -5ms p90=  422 p95=  457 >0.3s=22.2% >0.5s= 1.1%
+  v3    off_edge n=  18 miss= 0.0% median=  108ms p90=  344 p95=  382 >0.3s=22.2% >0.5s= 0.0%
+-- white20
+  ultra on_all   n= 270 miss= 0.0% median=  166ms p90=  514 p95=  546 >0.3s=31.1% >0.5s=11.5%
+  ultra on_edge  n=  24 miss= 0.0% median=  230ms p90=  418 p95=  522 >0.3s=45.8% >0.5s= 8.3%
+  ultra off_all  n= 270 miss= 0.0% median=   34ms p90=  385 p95=  424 >0.3s=23.3% >0.5s= 0.4%
+  ultra off_edge n=  30 miss= 0.0% median=  116ms p90=  302 p95=  350 >0.3s=10.0% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=  110ms p90=  471 p95=  518 >0.3s=29.3% >0.5s= 8.5%
+  redux on_edge  n=  27 miss= 0.0% median=  209ms p90=  383 p95=  454 >0.3s=37.0% >0.5s= 0.0%
+  redux off_all  n= 270 miss= 0.0% median=    9ms p90=  354 p95=  379 >0.3s=17.8% >0.5s= 1.1%
+  redux off_edge n=  34 miss= 0.0% median=   28ms p90=  270 p95=  296 >0.3s= 0.0% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 0.0% median=  206ms p90=  549 p95=  569 >0.3s=36.7% >0.5s=15.6%
+  v3    on_edge  n=  15 miss= 0.0% median=   49ms p90=  336 p95=  336 >0.3s=40.0% >0.5s= 0.0%
+  v3    off_all  n= 270 miss= 0.0% median=   81ms p90=  457 p95=  466 >0.3s=25.6% >0.5s= 1.5%
+  v3    off_edge n=  27 miss= 0.0% median=  211ms p90=  350 p95=  382 >0.3s=14.8% >0.5s= 0.0%
+-- white10
+  ultra on_all   n= 270 miss= 0.0% median=  154ms p90=  510 p95=  560 >0.3s=32.6% >0.5s=11.1%
+  ultra on_edge  n=  22 miss= 0.0% median=  270ms p90=  441 p95=  454 >0.3s=36.4% >0.5s= 4.5%
+  ultra off_all  n= 270 miss= 0.0% median=  102ms p90=  428 p95=  480 >0.3s=27.4% >0.5s= 4.4%
+  ultra off_edge n=  31 miss= 0.0% median=  161ms p90=  350 p95=  350 >0.3s=12.9% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=   79ms p90=  461 p95=  514 >0.3s=26.3% >0.5s= 7.8%
+  redux on_edge  n=  28 miss= 0.0% median=   45ms p90=  349 p95=  454 >0.3s=17.9% >0.5s= 0.0%
+  redux off_all  n= 270 miss= 0.0% median=   21ms p90=  333 p95=  387 >0.3s=14.8% >0.5s= 0.0%
+  redux off_edge n=  36 miss= 0.0% median=   95ms p90=  296 p95=  296 >0.3s= 2.8% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 0.0% median=  211ms p90=  554 p95=  578 >0.3s=38.9% >0.5s=15.6%
+  v3    on_edge  n=  16 miss= 0.0% median=   81ms p90=  337 p95=  400 >0.3s=43.8% >0.5s= 6.2%
+  v3    off_all  n= 270 miss= 0.0% median=   89ms p90=  434 p95=  465 >0.3s=26.7% >0.5s= 1.9%
+  v3    off_edge n=  27 miss= 0.0% median=  241ms p90=  350 p95=  382 >0.3s=22.2% >0.5s= 0.0%
+-- white5
+  ultra on_all   n= 270 miss= 0.0% median=  131ms p90=  510 p95=  560 >0.3s=32.2% >0.5s=10.4%
+  ultra on_edge  n=  22 miss= 0.0% median=  238ms p90=  445 p95=  454 >0.3s=36.4% >0.5s= 4.5%
+  ultra off_all  n= 270 miss= 0.0% median=  116ms p90=  465 p95=  525 >0.3s=30.4% >0.5s= 6.7%
+  ultra off_edge n=  32 miss= 0.0% median=  182ms p90=  445 p95=  456 >0.3s=21.9% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=   17ms p90=  445 p95=  509 >0.3s=22.2% >0.5s= 5.6%
+  redux on_edge  n=  28 miss= 0.0% median=   45ms p90=  349 p95=  454 >0.3s=17.9% >0.5s= 3.6%
+  redux off_all  n= 270 miss= 0.0% median=    7ms p90=  332 p95=  386 >0.3s=13.0% >0.5s= 0.4%
+  redux off_edge n=  36 miss= 0.0% median=   95ms p90=  296 p95=  314 >0.3s= 5.6% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 0.0% median=  232ms p90=  569 p95=  590 >0.3s=40.4% >0.5s=16.7%
+  v3    on_edge  n=  17 miss= 0.0% median=   81ms p90=  438 p95=  591 >0.3s=47.1% >0.5s=11.8%
+  v3    off_all  n= 270 miss= 0.0% median=  108ms p90=  434 p95=  472 >0.3s=30.0% >0.5s= 4.1%
+  v3    off_edge n=  26 miss= 0.0% median=  226ms p90=  350 p95=  374 >0.3s=30.8% >0.5s= 0.0%
+-- white0
+  ultra on_all   n= 270 miss= 0.0% median=    4ms p90=  454 p95=  510 >0.3s=27.8% >0.5s= 5.9%
+  ultra on_edge  n=  27 miss= 0.0% median=   25ms p90=  403 p95=  454 >0.3s=37.0% >0.5s= 0.0%
+  ultra off_all  n= 270 miss= 0.0% median=   49ms p90=  465 p95=  523 >0.3s=26.3% >0.5s= 7.4%
+  ultra off_edge n=  32 miss= 0.0% median=  109ms p90=  374 p95=  456 >0.3s=18.8% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=  -51ms p90=  405 p95=  464 >0.3s=18.5% >0.5s= 3.7%
+  redux on_edge  n=  30 miss= 0.0% median=  -55ms p90=  348 p95=  452 >0.3s=16.7% >0.5s= 0.0%
+  redux off_all  n= 270 miss= 0.0% median=  -95ms p90=  355 p95=  389 >0.3s=14.4% >0.5s= 1.5%
+  redux off_edge n=  37 miss= 0.0% median=    7ms p90=  296 p95=  310 >0.3s= 5.4% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 1.5% median=  251ms p90=  586 p95=  642 >0.3s=44.4% >0.5s=18.0%
+  v3    on_edge  n=  15 miss= 0.0% median=   81ms p90=  497 p95=  525 >0.3s=46.7% >0.5s= 6.7%
+  v3    off_all  n= 270 miss= 1.5% median=  150ms p90=  470 p95=  530 >0.3s=33.5% >0.5s= 6.8%
+  v3    off_edge n=  24 miss= 0.0% median=  241ms p90=  392 p95=  392 >0.3s=37.5% >0.5s= 0.0%
+-- pink20
+  ultra on_all   n= 270 miss= 0.0% median=  154ms p90=  511 p95=  536 >0.3s=31.1% >0.5s=11.5%
+  ultra on_edge  n=  24 miss= 0.0% median=  256ms p90=  418 p95=  522 >0.3s=50.0% >0.5s= 8.3%
+  ultra off_all  n= 270 miss= 0.0% median=   30ms p90=  378 p95=  409 >0.3s=20.7% >0.5s= 0.4%
+  ultra off_edge n=  30 miss= 0.0% median=  104ms p90=  302 p95=  350 >0.3s=10.0% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=   98ms p90=  490 p95=  521 >0.3s=28.1% >0.5s= 9.3%
+  redux on_edge  n=  26 miss= 0.0% median=  209ms p90=  395 p95=  454 >0.3s=38.5% >0.5s= 0.0%
+  redux off_all  n= 270 miss= 0.0% median=  -24ms p90=  330 p95=  378 >0.3s=15.9% >0.5s= 1.1%
+  redux off_edge n=  35 miss= 0.0% median=   28ms p90=  296 p95=  317 >0.3s= 5.7% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 0.0% median=  185ms p90=  555 p95=  578 >0.3s=38.5% >0.5s=15.6%
+  v3    on_edge  n=  15 miss= 0.0% median=   25ms p90=  336 p95=  336 >0.3s=40.0% >0.5s= 0.0%
+  v3    off_all  n= 270 miss= 0.0% median=   82ms p90=  430 p95=  464 >0.3s=27.4% >0.5s= 2.2%
+  v3    off_edge n=  27 miss= 0.0% median=  200ms p90=  350 p95=  382 >0.3s=22.2% >0.5s= 0.0%
+-- pink10
+  ultra on_all   n= 270 miss= 0.0% median=  154ms p90=  514 p95=  543 >0.3s=30.7% >0.5s=11.9%
+  ultra on_edge  n=  23 miss= 0.0% median=  209ms p90=  429 p95=  526 >0.3s=34.8% >0.5s= 8.7%
+  ultra off_all  n= 270 miss= 0.0% median=   49ms p90=  408 p95=  470 >0.3s=24.4% >0.5s= 3.3%
+  ultra off_edge n=  32 miss= 0.0% median=  156ms p90=  296 p95=  350 >0.3s= 9.4% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=   55ms p90=  458 p95=  510 >0.3s=24.8% >0.5s= 7.0%
+  redux on_edge  n=  27 miss= 0.0% median=  252ms p90=  454 p95=  454 >0.3s=29.6% >0.5s= 3.7%
+  redux off_all  n= 270 miss= 0.0% median=  -35ms p90=  329 p95=  373 >0.3s=12.6% >0.5s= 0.0%
+  redux off_edge n=  35 miss= 0.0% median=   28ms p90=  286 p95=  296 >0.3s= 2.9% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 0.0% median=  206ms p90=  569 p95=  590 >0.3s=38.1% >0.5s=15.9%
+  v3    on_edge  n=  15 miss= 0.0% median=   81ms p90=  336 p95=  336 >0.3s=40.0% >0.5s= 0.0%
+  v3    off_all  n= 270 miss= 0.0% median=   94ms p90=  442 p95=  465 >0.3s=28.5% >0.5s= 2.6%
+  v3    off_edge n=  27 miss= 0.0% median=  241ms p90=  382 p95=  389 >0.3s=22.2% >0.5s= 0.0%
+-- pink5
+  ultra on_all   n= 270 miss= 0.0% median=  128ms p90=  510 p95=  541 >0.3s=31.1% >0.5s=10.7%
+  ultra on_edge  n=  23 miss= 0.0% median=  209ms p90=  429 p95=  526 >0.3s=34.8% >0.5s= 8.7%
+  ultra off_all  n= 270 miss= 0.0% median=   91ms p90=  409 p95=  466 >0.3s=25.2% >0.5s= 2.6%
+  ultra off_edge n=  32 miss= 0.0% median=  152ms p90=  296 p95=  320 >0.3s= 6.2% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=  -23ms p90=  453 p95=  510 >0.3s=21.9% >0.5s= 6.7%
+  redux on_edge  n=  24 miss= 0.0% median=  238ms p90=  418 p95=  518 >0.3s=25.0% >0.5s= 8.3%
+  redux off_all  n= 270 miss= 0.0% median=  -57ms p90=  330 p95=  373 >0.3s=12.6% >0.5s= 0.4%
+  redux off_edge n=  36 miss= 0.0% median=    7ms p90=  283 p95=  296 >0.3s= 2.8% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 0.0% median=  227ms p90=  586 p95=  610 >0.3s=40.4% >0.5s=16.3%
+  v3    on_edge  n=  15 miss= 0.0% median=   81ms p90=  337 p95=  337 >0.3s=40.0% >0.5s= 0.0%
+  v3    off_all  n= 270 miss= 0.0% median=  107ms p90=  434 p95=  468 >0.3s=27.0% >0.5s= 3.3%
+  v3    off_edge n=  25 miss= 0.0% median=  241ms p90=  388 p95=  392 >0.3s=24.0% >0.5s= 0.0%
+-- pink0
+  ultra on_all   n= 270 miss= 0.0% median=  -76ms p90=  391 p95=  456 >0.3s=18.5% >0.5s= 3.0%
+  ultra on_edge  n=  28 miss= 0.0% median=  -47ms p90=  372 p95=  454 >0.3s=25.0% >0.5s= 3.6%
+  ultra off_all  n= 270 miss= 0.0% median=  -42ms p90=  378 p95=  424 >0.3s=15.2% >0.5s= 1.1%
+  ultra off_edge n=  34 miss= 0.0% median=   72ms p90=  295 p95=  315 >0.3s= 5.9% >0.5s= 0.0%
+  redux on_all   n= 270 miss= 0.0% median=  -74ms p90=  356 p95=  453 >0.3s=14.8% >0.5s= 2.6%
+  redux on_edge  n=  25 miss= 0.0% median=  -64ms p90=  300 p95=  330 >0.3s=12.0% >0.5s= 0.0%
+  redux off_all  n= 270 miss= 0.0% median= -147ms p90=  303 p95=  379 >0.3s=10.4% >0.5s= 0.7%
+  redux off_edge n=  35 miss= 0.0% median= -168ms p90=  270 p95=  296 >0.3s= 2.9% >0.5s= 0.0%
+  v3    on_all   n= 270 miss= 0.0% median=  264ms p90=  588 p95=  672 >0.3s=45.6% >0.5s=18.9%
+  v3    on_edge  n=  15 miss= 0.0% median=   81ms p90=  337 p95=  337 >0.3s=40.0% >0.5s= 0.0%
+  v3    off_all  n= 270 miss= 0.0% median=  120ms p90=  490 p95=  583 >0.3s=31.9% >0.5s= 9.6%
+  v3    off_edge n=  24 miss= 0.0% median=  254ms p90=  392 p95=  392 >0.3s=29.2% >0.5s= 4.2%
+-- ALL-noisy
+  ultra on_all   n=2160 miss= 0.0% median=   79ms p90=  490 p95=  537 >0.3s=29.4% >0.5s= 9.5%
+  ultra on_edge  n= 193 miss= 0.0% median=  209ms p90=  454 p95=  531 >0.3s=37.3% >0.5s= 5.7%
+  ultra off_all  n=2160 miss= 0.0% median=   48ms p90=  409 p95=  469 >0.3s=24.1% >0.5s= 3.3%
+  ultra off_edge n= 253 miss= 0.0% median=  136ms p90=  350 p95=  350 >0.3s=11.9% >0.5s= 0.0%
+  redux on_all   n=2160 miss= 0.0% median=   -5ms p90=  454 p95=  510 >0.3s=23.2% >0.5s= 6.4%
+  redux on_edge  n= 215 miss= 0.0% median=   58ms p90=  418 p95=  454 >0.3s=24.2% >0.5s= 1.9%
+  redux off_all  n=2160 miss= 0.0% median=  -45ms p90=  331 p95=  383 >0.3s=13.9% >0.5s= 0.6%
+  redux off_edge n= 284 miss= 0.0% median=   28ms p90=  296 p95=  296 >0.3s= 3.5% >0.5s= 0.0%
+  v3    on_all   n=2160 miss= 0.2% median=  237ms p90=  569 p95=  590 >0.3s=40.4% >0.5s=16.6%
+  v3    on_edge  n= 123 miss= 0.0% median=   81ms p90=  337 p95=  366 >0.3s=42.3% >0.5s= 3.3%
+  v3    off_all  n=2160 miss= 0.2% median=  106ms p90=  442 p95=  482 >0.3s=28.8% >0.5s= 4.0%
+  v3    off_edge n= 207 miss= 0.0% median=  232ms p90=  382 p95=  392 >0.3s=25.1% >0.5s= 0.5%
+
+Fraction of true onsets (offsets) at which the RAW frame (p>=0.5) at time t relative to the true onset (end) is speech. t in s.
+-- clean onset   t=-0.48 -0.32 -0.16 +0.00 +0.16 +0.32 +0.48 +0.64 +0.80 +0.96
+  ultra          11     8     2    38    54    70    90    99    98    98
+  redux          10     8     0    40    53    71    90    99    98    99
+  v3             10     4     0     7    48    68    81    99    98    97
+-- clean offset   t=-0.48 -0.32 -0.16 +0.00 +0.16 +0.32 +0.48 +0.64 +0.80 +0.96
+  ultra         100    83    67    56    28     2     7    14    16    33
+  redux         100    84    67    49    21     3     8    14    17    35
+  v3             97    77    58    47     1     0     6    10    16    26
+-- ALL-noisy onset   t=-0.48 -0.32 -0.16 +0.00 +0.16 +0.32 +0.48 +0.64 +0.80 +0.96
+  ultra          11     7     3    36    49    71    87    97    98    98
+  redux          15    10     5    41    52    74    91    99    98    99
+  v3              9     4     0     5    41    60    78    95    97    94
+-- ALL-noisy offset   t=-0.48 -0.32 -0.16 +0.00 +0.16 +0.32 +0.48 +0.64 +0.80 +0.96
+  ultra          94    74    58    34    11     5     8    14    19    34
+  redux          99    85    65    45    19     8    11    18    22    38
+  v3             92    72    55    33     1     0     3     9    15    25
