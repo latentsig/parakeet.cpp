@@ -182,8 +182,9 @@ parakeet-cli transcribe ... --stream                            # cache-aware st
 parakeet-cli transcribe ... --lang <locale>                     # Nemotron 3.5 language, default auto
 parakeet-cli transcribe ... --vad [--vad-model silero.gguf]     # cut long audio at pauses (offline, greedy only)
 parakeet-cli transcribe ... --vad-trim SEC                      # trim each piece to its speech plus SEC (default 0.3, 0 = whole cuts)
+parakeet-cli transcribe ... --vad-run-gate 0.92                  # opt-in, for the Ultra/Redux head: drop speech runs with a low median probability (docs/vad.md)
 parakeet-cli transcribe ... --min-local-conf 0.5                # opt-in: drop words invented on noise (docs/vad.md)
-parakeet-cli vad --model M --input A.wav [--mode segments] [--probabilities]   # speech regions as JSON
+parakeet-cli vad --model M --input A.wav [--mode segments] [--probabilities] [--run-gate P]   # speech regions as JSON
 parakeet-cli scene --model ASR --diar DIAR --sound CED --input A.wav            # words + speakers + sounds
 parakeet-cli scene ... --speakers SPK.gguf --registry R         # name the speakers
 parakeet-cli enroll --model SPK.gguf --name Ada --input ada.wav --registry R
@@ -319,7 +320,7 @@ VAD accuracy, speed and size, Silero against the Parakeet head against whisper.c
 
 - **Redux** runs on CPU only and offline only. SIMD kernels exist for x86-64 (AVX2, AVX-512 VNNI) and aarch64 with dotprod; other targets use a slow scalar kernel. See [ternary.md](docs/ternary.md).
 - **Ultra and Redux** are not NeMo-validated. Their parity is transcript-level against our own v3 path.
-- **The VAD head** in Ultra and Redux gives false alarms on audio without speech. Use Silero as an always-on gate. See [vad.md](docs/vad.md).
+- **The VAD head** in Ultra and Redux gives false alarms on audio without speech. Use Silero as an always-on gate. See [vad.md](docs/vad.md). The opt-in run gate (`--run-gate`, `--vad-run-gate`) removes most of the noise false alarms of the Redux head, not music.
 - **`transcribe --vad`** is offline and greedy decoding only. VAD-only files cannot transcribe.
 - **Bundles:** `bench` and the streaming ASR modes do not take a bundle. No bundle was run on a GPU. See [bundle.md](docs/bundle.md).
 - **Speaker identification** was measured on one two-voice fixture. See [speaker.md](docs/speaker.md).

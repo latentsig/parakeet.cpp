@@ -242,6 +242,14 @@ int main() {
         CHECK(std::strlen(parakeet_capi_last_error(ctx)) > 0);
         CHECK(parakeet_capi_vad_stream_begin(ctx, 16000, "{\"mode\":\"segments\"}") == nullptr);
         CHECK(parakeet_capi_vad_stream_begin(ctx, 16000, "{\"bogus\":1}") == nullptr);
+        // run_gate is offline only: a stream refuses it, and run_gate 0 is fine.
+        CHECK(parakeet_capi_vad_stream_begin(ctx, 16000, "{\"run_gate\":0.9}") == nullptr);
+        CHECK(std::string(parakeet_capi_last_error(ctx)).find("run_gate") != std::string::npos);
+        {
+            parakeet_vad_stream* z = parakeet_capi_vad_stream_begin(ctx, 16000, "{\"run_gate\":0}");
+            CHECK(z != nullptr);
+            parakeet_capi_vad_stream_free(z);
+        }
 
         auto run = [&](parakeet_vad_stream* st, unsigned seed, std::vector<double>* probs,
                        std::vector<std::pair<bool, double>>* ev) {

@@ -25,7 +25,9 @@ struct VadRequest {
 // Parses an options document: a flat JSON object, or NULL / "" for the
 // defaults. Keys: "threshold" (0 < x <= 1), "min_pause", "min_speech",
 // "max_segment" (seconds, > 0), "trim" (seconds >= 0, "segments" mode and the
-// transcribe functions; 0 = no trimming), "mode" ("speech" or "segments"),
+// transcribe functions; 0 = no trimming), "run_gate" (0 <= x < 1, default 0 =
+// off; a speech run whose median probability is below it is dropped, in both
+// modes and in the transcribe functions; not for streams), "mode" ("speech" or "segments"),
 // "probabilities" (bool), "speech_pad" (seconds >= 0, "speech" mode). With
 // `allow_filter` the word filter keys of parse_filter_options are accepted too
 // and stored in `req.filter`. Unknown keys and bad values are errors. The

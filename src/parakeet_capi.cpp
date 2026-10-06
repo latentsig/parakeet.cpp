@@ -870,6 +870,7 @@ extern "C" parakeet_vad_stream* parakeet_capi_vad_stream_begin(parakeet_ctx* vad
         std::string err;
         if (!pk::parse_vad_options(options_json, req, err, pk::VadKind::kSilero)) { vad->last_error = err; return nullptr; }
         if (req.mode != pk::VadRequest::Mode::kSpeech) { vad->last_error = "VAD streams support mode \"speech\" only"; return nullptr; }
+        if (req.opts.run_gate > 0.0f) { vad->last_error = "VAD option run_gate is offline only: a stream has no run median"; return nullptr; }
         req.opts.frame_sec = pk::kSileroFrameSec;
         auto* s = new (std::nothrow) parakeet_vad_stream();
         if (!s) { vad->last_error = "out of memory"; return nullptr; }

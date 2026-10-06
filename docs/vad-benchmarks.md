@@ -768,8 +768,10 @@ In plain language:
 - The median-logit run gate is the best cheap option. It drops almost all false alarms
   and costs nothing for Redux on clean speech (95.4) and 0.5 F1 points for Ultra (3.3 on the
   noisy set). With the run threshold at 3.5 (not in the table) Redux clean F1 is 94.9 and
-  Ultra 93.6. It is not validated on WER and is not
-  implemented. On the 1168 s talk it removed 0.2 to 0.3 percent of the head's speech
+  Ultra 93.6. It is now implemented as the opt-in [run gate](vad.md#run-gate-opt-in) (a
+  median probability of 0.92 is a median logit of 2.5) and was measured on real recordings, see
+  [Real recordings](#real-recordings): it removes most noise false alarms of the Redux head, not music.
+  On the 1168 s talk it removed 0.2 to 0.3 percent of the head's speech
   frames at 2.5 (`res_E2_talk.txt`). In the inserted block test at most 18 percent of the
   block frames remained, and 0 in 21 of 24 files (`res_D_mit.md`).
 - The two-stage rule needs Silero. It removes the false alarms and keeps the F1 of the head.
@@ -806,6 +808,12 @@ asked whether combining them beats each alone. **Fusion is not implemented in
 parakeet.cpp.** It is an offline experiment: the rules run in a Python port of the
 segmenter (`scripts/vad_bench/fusion/`), on probabilities saved from Silero and from the
 heads. No C++ code, API or option changed.
+
+**Update: the gain did not hold on real recordings.** The +0.75 (Ultra) and +1.13 (Redux) F1 points
+below come from synthetic clips. On 59 real recordings, against the best single detector tuned the same way, the
+tuned fusion gained +0.10 points (Ultra) and +0.46 points (Redux), and it gave no word error rate gain. Fusion
+was therefore not built. Keep this section as an experiment note and read
+[Real recordings](#real-recordings) for the current conclusion.
 
 ### Setup
 
@@ -1078,6 +1086,250 @@ At 0.9 it costs real words, most on v3. Hence 0.5 is the suggested value.
 - The trim changes transcripts of long audio through the VAD paths slightly; the numbers above are
   from three talks and 12 clips per condition.
 
+## Real recordings
+
+The earlier sections use synthetic clips and a few talks. This one repeats the main questions on real
+recordings with human labels: is a head better than Silero, is fusing them worth it, what do the false
+alarms cost, and does the choice of detector change the word error rate. It also measures the **run gate**
+(see [vad.md](vad.md#run-gate-opt-in)), the one change that came out of it.
+
+Scripts, the recording list and the result tables are in
+[`scripts/vad_bench/real_recordings/`](../scripts/vad_bench/real_recordings/README.md).
+
+In plain language:
+
+- On speech-dominant audio the choice of detector does not change the word error rate. All systems are
+  within 0.17 points on clean TED talks.
+- The Redux head has the best default frame F1 (92.8) and loses the least speech. Silero is the most precise
+  and the only one that stays quiet on music, noise and environmental sounds.
+- The heads call most of an hour of music or noise speech. The run gate removes most of the noise false alarms of
+  the Redux head and recovers about 80 percent of the word error rate lost on recordings with inserted music and
+  noise. It does not remove music.
+- Fusing Silero and a head, the best idea of the synthetic study, gained 0.10 (Ultra) and 0.46 (Redux) F1 points
+  over the best single detector and nothing in word error rate. It was not built.
+
+### Setup
+
+| Part | Data | Size |
+| --- | --- | --- |
+| Speech | VoxConverse dev and test (36 recordings), AMI far-field `sdm` (9 meetings), AVA-Speech film clips with human labels (14 clips) | 12.1 h of audio, 9.5 h of labelled speech |
+| No speech | MUSAN music (16 files), MUSAN noise (6), ESC-50 environmental sounds (5) | 2.6 h |
+| Word error rate | Five TED-LIUM long-form talks, and three of them with non-speech clips inserted at pauses (the composite) | 0.8 h |
+
+- Splits are by recording. VoxConverse dev and AMI validation tune. VoxConverse test and AMI test are held out.
+  AVA and the non-speech files split by the parity of an MD5 of the id. Held out: 20 speech recordings, 3 of them
+  AMI meetings.
+- Detectors: Silero F16, the Ultra head and the Redux head, from `parakeet-cli vad --probabilities`. Systems are
+  scored on a 10 ms grid. Frame precision, recall and F1 are pooled over the speech recordings. Intervals are 95
+  percent bootstrap intervals over recordings. A Python replica of the segmenter was checked against the CLI.
+- "Untuned" means no parameter was fitted: each detector with its own defaults. "Tuned" means chosen on the
+  tuning split and scored on the held-out split.
+- The non-speech files have no speech by construction, so every frame called speech there is a false alarm.
+
+### Frame F1, untuned
+
+All recordings, percent.
+
+| System | VoxConverse | AMI | AVA | Pooled F1 | P | R |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Silero, own defaults | 96.4 | 86.7 | 84.7 | 90.6 [88.4, 92.3] | 97.8 | 84.4 |
+| Ultra head | 96.4 | 89.7 | 82.7 | 90.8 [89.3, 92.0] | 91.3 | 90.4 |
+| Redux head | 97.3 | 92.2 | 85.4 | 92.8 [91.6, 93.7] | 92.8 | 92.7 |
+| Fusion (two-stage rule), Ultra, defaults | 97.4 | 89.2 | 87.2 | 92.4 [90.5, 93.8] | 96.9 | 88.2 |
+| Fusion (two-stage rule), Redux, defaults | 97.6 | 90.4 | 87.5 | 92.9 [91.1, 94.3] | 96.8 | 89.3 |
+| Ultra head, run gate 0.92 | 96.4 | 85.4 | 85.4 | 90.2 [88.4, 91.7] | 96.5 | 84.7 |
+| Redux head, run gate 0.92 | 96.9 | 90.8 | 86.2 | 92.5 [91.0, 93.7] | 97.0 | 88.3 |
+
+Reading it: Silero is precise (97.8) and misses speech (recall 84.4). The Redux head has the best F1 at its
+defaults. The Ultra head is not clearly different from Silero (pooled difference 0.26 points, interval [-0.72,
+1.36]). The heads have the higher recall and the lower precision. The gate moves a head toward Silero's
+precision. Its pooled cost at 0.92 is 0.6 points for Ultra and 0.3 for Redux (paired differences -0.61 [-1.55,
+0.39] and -0.32 [-0.98, 0.31], so neither is clearly different from zero). Per domain the gate costs 4.3 (Ultra)
+and 1.4 (Redux) points on AMI, nothing on VoxConverse for Ultra and 0.4 for Redux, and gains 2.7 and 0.8 points
+on AVA.
+
+### Tuned, held out
+
+Parameters (threshold, `min_speech`, `min_pause`, padding, and for the other rules their own) were chosen on the
+tuning recordings and scored on the held-out ones. Pooled held-out F1, with the parameters chosen:
+
+| System | Held-out F1 [95% CI] | Chosen |
+| --- | ---: | --- |
+| Silero, tuned | 93.4 [91.2, 94.9] | threshold 0.1, `min_speech` 0.25, `min_pause` 0.5, pad 0.1 |
+| Ultra head, tuned | 91.5 [89.4, 93.2] | threshold 0.8, `min_speech` 0.25, `min_pause` 0.5, pad 0.2 |
+| Redux head, tuned | 93.3 [91.5, 94.7] | threshold 0.6, `min_speech` 0.5, `min_pause` 0.5, pad 0.1 |
+| Fusion, Ultra, tuned | 93.5 [91.4, 95.0] | |
+| Fusion, Redux, tuned | 93.8 [91.8, 95.3] | |
+| Redux head with run gate 0.8, tuned | 93.9 [92.2, 95.2] | threshold 0.5 (gate 0.8), `min_speech` 0.25, `min_pause` 0.5, pad 0.03 |
+
+Untuned on the same held-out recordings the scores are 89.1 (Silero), 89.3 (Ultra) and 91.4 (Redux), so tuning
+adds 4.3, 2.2 and 1.9 points. Paired against the best single detector tuned the same way (Silero, for both), the
+tuned fusion gains **0.10 points [-0.03, 0.26] with Ultra and 0.46 points [0.30, 0.66] with Redux**. That is less
+than the +0.75 and +1.13 of the [synthetic experiment](#fusing-silero-and-the-head-offline-experiment). By
+domain (VoxConverse / AMI / AVA) the gain is -0.07 / -0.29 / +0.58 with Ultra and +0.15 / +0.65 / +0.71 with
+Redux.
+
+### Fusion: not worth a flag
+
+The fusion rule needs both detectors to run. It gains 0.10 points (Ultra) and 0.46 points (Redux) over the best
+tuned single detector, and it gave **no word error rate gain** (see below). **Fusion is not implemented and there is
+no flag for it.** The synthetic section above stays as an experiment note.
+
+### The reference is noisy
+
+Part of what tuning gains comes from how the references are written, not from the detectors:
+
+- In VoxConverse and AMI the frames Silero "misses" are mostly pauses inside annotated turns. The annotators mark
+  a whole turn and the metric counts the pauses in it as speech. Tuning therefore pushes `min_pause` to 0.5 s
+  (bridge the pauses) and the padding to 0.1 s. That says something about the labelling convention and little
+  about the detector.
+- With a collar of 0.1 s around every reference boundary (cells within 0.1 s of a change are ignored), every F1
+  rises by about 0.7 to 0.9 points and the ranking does not change:
+
+| System | F1, no collar | F1, collar 0.1 s | F1, collar 0.25 s |
+| --- | ---: | ---: | ---: |
+| Silero, own defaults | 90.6 | 91.3 | 91.7 |
+| Ultra head | 90.8 | 91.5 | 91.9 |
+| Redux head | 92.8 | 93.5 | 93.9 |
+| Fusion, Ultra, defaults | 92.4 | 93.1 | 93.6 |
+| Fusion, Redux, defaults | 92.9 | 93.7 | 94.2 |
+| Redux head, run gate 0.92 | 92.5 | 93.2 | 93.8 |
+
+Read an F1 difference of a point or less as within the reference noise.
+
+### False alarms on audio without speech
+
+Seconds called speech per hour of audio, with 95 percent intervals over files where given. Music by MUSAN source
+is in `results/extras.md`.
+
+| System | Music | Noise | ESC-50 | Pooled s/h | Pooled regions/h |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Silero, own defaults | 135 | 1 | 1 | 48 [0, 136] | 27 |
+| Ultra head | 2823 | 1979 | 1605 | 2174 [1882, 2524] | 794 |
+| Ultra head, run gate 0.92 | 1625 | 398 | 395 | 826 [523, 1229] | 158 |
+| Redux head | 2123 | 1599 | 1236 | 1685 [1435, 1987] | 1013 |
+| Redux head, run gate 0.92 | 644 | 23 | 131 | 269 [122, 482] | 85 |
+| Fusion, Ultra, defaults | 165 | 2 | 5 | 60 | 24 |
+| Fusion, Redux, defaults | 164 | 2 | 5 | 59 | 23 |
+
+The Silero music figure comes from one MUSAN source (Jamendo, 294 s/h); the other four sources give 0 to 5.
+
+The run gate (keep a run of `p >= 0.5` only when the median of its frames is at least the gate) trades speech
+for false alarms along one curve. F1 is the pooled F1 of the head at threshold 0.5 with bridge 0.1 s,
+`min_speech` 0.1 s, `min_pause` 0.2 s and no padding:
+
+| Head | Gate | Pooled F1 | Music s/h | Noise s/h | ESC-50 s/h |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Redux | off | 92.8 | 2123 | 1599 | 1236 |
+| Redux | 0.8 | 93.5 | 1305 | 639 | 377 |
+| Redux | 0.9 | 92.8 | 762 | 79 | 167 |
+| Redux | 0.92 | 92.5 | 644 | 23 | 131 |
+| Redux | 0.96 | 91.0 | 265 | 4 | 34 |
+| Redux | 0.98 | 88.6 | 107 | 1 | 15 |
+| Ultra | off | 90.8 | 2823 | 1979 | 1605 |
+| Ultra | 0.8 | 91.2 | 2389 | 1226 | 959 |
+| Ultra | 0.9 | 90.7 | 1831 | 576 | 488 |
+| Ultra | 0.92 | 90.2 | 1625 | 398 | 395 |
+| Ultra | 0.96 | 87.7 | 761 | 31 | 178 |
+| Ultra | 0.98 | 83.4 | 339 | 9 | 80 |
+
+Redux at 0.98 reaches 107 / 1 / 15 s/h but costs 4.2 F1 points. Ultra at 0.98 costs 7.4 points and music is
+still at 339 s/h. The gate is not a music rejector: music runs have a high median like speech. A lower gate
+costs less speech and removes less: Redux at 0.8 gains 0.7 F1 points and removes 39 to 70 percent of the false
+alarms, Ultra at 0.8 removes 15 to 40 percent.
+
+### What the decoder receives
+
+`transcribe --vad` hands the decoder the segments from `segment_by_vad` with the trim at 0.3 s (the default).
+Seconds of reference non-speech inside the decoded segments, per hour of audio:
+
+| System | VoxConverse | AMI | AVA |
+| --- | ---: | ---: | ---: |
+| Silero | 273 | 355 | 885 |
+| Ultra head | 317 | 598 | 1348 |
+| Redux head | 296 | 620 | 1328 |
+| Ultra head, run gate 0.92 | 258 | 412 | 927 |
+| Redux head, run gate 0.92 | 238 | 426 | 832 |
+| Oracle (reference speech mask) | 230 | 375 | 833 |
+
+Speech lost (labelled speech outside the segments, percent, VoxConverse / AMI / AVA): Silero 0.2 / 5.3 / 6.3,
+Ultra head 0.0 / 0.6 / 0.3, Redux head 0.1 / 0.3 / 0.2, Ultra head with the gate 0.9 / 3.9 / 5.1, Redux head with
+the gate 0.9 / 2.1 / 7.8. The heads lose the least speech.
+
+Of one hour of non-speech audio, the share the decoder receives (trim 0.3), in percent:
+
+| System | Music | Noise | ESC-50 |
+| --- | ---: | ---: | ---: |
+| Silero | 6 | 0.03 | 0.03 |
+| Ultra head | 95 | 84 | 94 |
+| Redux head | 91 | 82 | 94 |
+| Ultra head, run gate 0.92 | 53 | 14 | 27 |
+| Redux head, run gate 0.92 | 27 | 1.1 | 5.6 |
+
+A head hands the decoder most of an hour of music or noise. The gate cuts that share by half or more for Redux,
+and it stays far above Silero.
+
+### Word error rate
+
+The ASR models are the ones of the heads (Ultra Q8_0 and the packed Redux), decoding the segments each system
+gives.
+
+**Clean TED talks** (5 talks, about 2880 s decoded). The detector does not matter on speech-dominant audio. WER in
+percent:
+
+| ASR model | Head | Silero | Fusion, defaults | Fusion, tuned | Run gate 0.92 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Ultra | 4.07 | 4.18 | 4.18 | 4.21 | 4.24 |
+| Redux | 5.02 | 5.02 | 5.02 | 4.97 | 4.97 |
+
+All systems are within 0.17 points (Ultra) and 0.05 points (Redux) of each other, and every paired interval
+includes zero.
+
+**Composite recordings.** Three of the talks with 40 s of music, 30 s of noise and 40 s of vocal music inserted at
+pauses. The reference is the talk, so every word decoded over the inserted audio is an insertion. It is synthetic
+by construction and has three talks. WER in percent:
+
+| ASR model | Head | Silero | Fusion, defaults | Run gate 0.92 |
+| --- | ---: | ---: | ---: | ---: |
+| Ultra | 5.91 [3.66, 8.75] | 3.87 [2.91, 4.90] | 4.16 | 4.24 [2.97, 5.79] |
+| Redux | 6.94 [4.76, 9.55] | 4.76 [3.85, 5.71] | 5.02 | 5.22 [4.25, 6.24] |
+
+The gate recovers about 80 percent of the head's penalty against Silero (Ultra: 1.67 of 2.04 points; Redux: 1.72
+of 2.18). Silero is still the best on this audio. The decoded seconds are 1137 (Silero), 1377 and 1367 (Ultra and
+Redux head) and 1160 and 1143 (gate).
+
+### The 30 s hard cut
+
+The segmenter cuts at the last pause of a 30 s window, and when there is none it cuts at 30 s inside speech. The
+heads hard-cut more often than Silero on VoxConverse: 9.7 hard cuts per hour for Silero, 32.0 for Ultra and 35.1
+for Redux (0.5 to 7.7 per hour on AMI and AVA).
+
+The measured cost of a forced cut is small. On the five TED talks, cutting Silero's speech mask every 20 s
+regardless of pauses (142 hard cuts in 0.8 h, against 2 for cutting at pauses) adds 26 word errors with the Ultra
+model and 28 with the Redux model, which is **about 0.18 to 0.2 word errors per forced cut**. At 35 cuts per hour
+that is about 7 word errors per hour, or 0.06 points of WER on talks of about 11 000 words per hour. After the
+trim, the hard cut is not the main cost.
+
+What the decoder still gets that is not speech is inside the pieces. Edge margins are 44 to 75 s/h. The rest are
+pauses that stay inside a segment: for the Redux head, pauses under 1 s, from 1 to 5 s and of 5 s or more add up to
+140 / 86 / 35 s/h on VoxConverse, 297 / 358 / 102 on AMI and 370 / 535 / 172 on AVA. Cutting at every pause of 2 s
+or more (instead of only at the last pause of a window) lowers the decoded non-speech by 22 to 59 percent but
+loses more speech: with the Redux head, speech lost goes from 0.1 / 0.3 / 0.2 to 0.1 / 0.8 / 1.3 percent, and with
+Silero from 0.2 / 5.3 / 6.3 to 0.5 / 9.0 / 11.1 (VoxConverse / AMI / AVA). Lost speech is a worse error than a
+decoded pause, so the cut rule is unchanged.
+
+### Limits
+
+- DIHARD, CallHome and the MUSAN speech files were not used: their speech labels were not usable for frame scoring.
+- WER was measured on TED talks only. The meetings and film clips have no word-level reference here.
+- The composite recordings are synthetic (three talks, clips inserted at pauses). They show the effect of long
+  non-speech stretches, not an average over real audio.
+- The cut policies were measured by non-speech seconds and lost speech, not by WER.
+- The Silero ONNX model was not run in this study. The Silero numbers are from the parakeet.cpp GGUF.
+- Held out: 20 recordings, and only 3 AMI meetings, so the held-out intervals are wide.
+- The reference noise described above applies to VoxConverse and AMI. Differences of about a point between
+  systems are within it.
+
 ## When to use which
 
 This is limited to what the numbers above support.
@@ -1088,7 +1340,21 @@ This is limited to what the numbers above support.
   synthetic data and 91.8 to 92.1 on the TED talks.
 - **Always-on gate, or audio with long stretches without speech.** Silero. The heads give
   false alarms on noise-only audio, and the effect depends on the noise type and level (see
-  [the head on noise-only audio](#the-head-on-noise-only-audio)); Silero gave none.
+  [the head on noise-only audio](#the-head-on-noise-only-audio)); Silero gave none. On real
+  recordings Silero called 48 s of an hour of music, noise and environmental sounds speech, the Ultra head 2174 s and
+  the Redux head 1685 s. Use Silero with its own defaults. Lowering its threshold to 0.2 or 0.3 raises the pooled F1 on
+  real speech from 90.6 to 92.4 or 91.8 and keeps music at or below 199 s/h (noise and ESC-50 at 5 s/h or less); see
+  [Real recordings](#real-recordings).
+- **The Redux head, for long recordings that are mostly speech** (talks, meetings, interviews). On 59 real
+  recordings it had the best default F1 (92.8 against 90.6 for Silero and 90.8 for the Ultra head), lost the least
+  speech (0.1, 0.3 and 0.2 percent on VoxConverse, AMI and AVA, against 0.2, 5.3 and 6.3 for Silero), and gave the same
+  word error rate as Silero on clean TED talks.
+- **Recordings with long stretches of music or noise.** Silero. Behind a head the decoder receives most of an
+  hour of music or noise, and the word error rate on the composite recordings was 6.94 percent (Redux head) against 4.76 (Silero).
+- **The run gate, opt-in, for a head.** It drops a speech run whose median probability is below the gate. At 0.92 it
+  cut the Redux head's false alarms from 1685 to 269 s/h and recovered about 80 percent of the word error rate lost
+  on the composite recordings, at a pooled cost of 0.3 F1 points (0.6 for Ultra, which gains less). It does not
+  remove music and it is not a noise rejector. See [vad.md](vad.md#run-gate-opt-in).
 - **The Parakeet head when Ultra or Redux is already loaded, on audio that is mostly
   speech** (for example recorded talks before transcription). The head costs no extra
   model and its scores are close to Silero in the same tests: within about 1.5 F1 points
@@ -1109,12 +1375,14 @@ This is limited to what the numbers above support.
   probabilities of parakeet.cpp match onnxruntime more closely (mean abs diff 0.00002,
   2 flipped frames) than those of whisper.cpp do (0.00224, 309 flipped frames), but this
   did not change the segment scores.
-- **Both together.** In an offline experiment, Silero deciding and the head only moving
+- **Both together.** In an offline experiment on synthetic clips, Silero deciding and the head only moving
   the edges (the two-stage rule) gave 0.75 to 1.13 more F1 points than the best single
-  detector and no false alarms on noise. It is not implemented in parakeet.cpp. See
-  [the fusion experiment](#fusing-silero-and-the-head-offline-experiment).
-- **Not supported by these numbers:** any claim about GPUs, ARM, other languages,
-  music or non speech noise beyond the synthetic signals of [the noise study](#root-cause-study), streaming latency, or the effect of the VAD on WER.
+  detector and no false alarms on noise. On real recordings the gain was 0.10 (Ultra) and 0.46 (Redux)
+  points and there was no word error rate gain, so it is not implemented in parakeet.cpp. See
+  [the fusion experiment](#fusing-silero-and-the-head-offline-experiment) and
+  [Real recordings](#real-recordings).
+- **Not supported by these numbers:** any claim about GPUs, ARM, other languages, streaming latency, or the effect of
+  the VAD on WER beyond the TED talks and the composite recordings of [Real recordings](#real-recordings).
 
 ## How to reproduce
 
@@ -1131,6 +1399,7 @@ are committed. In short:
 5. Long talks: `longform_b1.sh`.
 6. Noise root-cause study: [`noise_dive/`](../scripts/vad_bench/noise_dive/README.md).
 7. Segment trim and word filter: [`decoder_guards/`](../scripts/vad_bench/decoder_guards/README.md).
+8. Real recordings and the run gate: [`real_recordings/`](../scripts/vad_bench/real_recordings/README.md).
 
 Small result files of the runs on this page (tables, per run timings and load logs)
 are in `scripts/vad_bench/results/`. The raw per clip predictions are not committed;
