@@ -76,6 +76,30 @@ int main() {
         CHECK(!parse("{\"trim\":1e9}", k, r, err) && err.find("trim") != std::string::npos);
     }
 
+    // "run_gate": off (0) by default for both kinds, a number in [0, 1), else an error.
+    CHECK(parse(nullptr, VadKind::kHead, r, err) && r.opts.run_gate == 0.0f);
+    CHECK(parse(nullptr, VadKind::kSilero, r, err) && r.opts.run_gate == 0.0f);
+    CHECK(parse("{\"run_gate\":0.92}", VadKind::kHead, r, err) && std::fabs(r.opts.run_gate - 0.92f) < 1e-6 &&
+          near(r.opts.trim_sec, 0.3) && near(r.opts.min_pause_sec, 0.2));
+    CHECK(parse("{\"run_gate\":0.5,\"mode\":\"segments\"}", VadKind::kSilero, r, err) && r.opts.run_gate == 0.5f &&
+          r.mode == VadRequest::Mode::kSegments);
+    CHECK(parse("{\"run_gate\":0}", VadKind::kHead, r, err) && r.opts.run_gate == 0.0f);
+    CHECK(parse("{\"run_gate\":0.9999}", VadKind::kHead, r, err) && r.opts.run_gate < 1.0f);
+    for (VadKind k : {VadKind::kHead, VadKind::kSilero}) {
+        for (const char* j : {"{\"run_gate\":-0.1}", "{\"run_gate\":1}", "{\"run_gate\":1.5}", "{\"run_gate\":\"x\"}",
+                              "{\"run_gate\":true}", "{\"run_gate\":1e400}", "{\"run_gate\":}"}) {
+            CHECK(!parse(j, k, r, err) && err.find("run_gate") != std::string::npos);
+        }
+    }
+    CHECK(!parse("{\"run_gates\":0.5}", VadKind::kHead, r, err) && err.find("unknown") != std::string::npos);
+    // The word filter keys parser takes no run_gate; the transcribe parser with the filter does.
+    CHECK(parse_vad_options("{\"run_gate\":0.9,\"min_local_conf\":0.5}", r, err, VadKind::kHead, true) &&
+          std::fabs(r.opts.run_gate - 0.9f) < 1e-6 && r.filter.active());
+    {
+        WordFilter f;
+        CHECK(!parse_filter_options("{\"run_gate\":0.9}", f, err) && err.find("run_gate") != std::string::npos);
+    }
+
     // Word filter keys: only with allow_filter; off by default.
     CHECK(parse(nullptr, VadKind::kHead, r, err) && !r.filter.active() && near(r.filter.local_radius_sec, 5.0));
     CHECK(!parse_vad_options("{\"min_local_conf\":0.5}", r, err, VadKind::kHead, false) &&

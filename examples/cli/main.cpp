@@ -373,9 +373,10 @@ static int cmd_transcribe_stream(const std::string& model, const std::string& in
 // Segmenter options the user set on the command line. A value left unset keeps
 // the default of the VAD in use (Ultra/Redux head or Silero).
 struct VadOverrides {
-    std::optional<double> threshold, min_pause, min_speech, max_seg, pad, trim;
+    std::optional<double> threshold, min_pause, min_speech, max_seg, pad, trim, run_gate;
     void apply(pk::SegmenterOpts& o) const {
         if (trim) o.trim_sec = *trim;
+        if (run_gate) o.run_gate = (float)*run_gate;
         if (threshold) o.threshold = (float)*threshold;
         if (min_pause) o.min_pause_sec = *min_pause;
         if (min_speech) o.min_speech_sec = *min_speech;
@@ -525,6 +526,9 @@ static int cmd_transcribe(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--vad-trim") == 0 && i + 1 < argc) {
             if (!parse_nonneg(argv[++i], d)) { std::fprintf(stderr, "parakeet-cli: --vad-trim must be >= 0 (0 = keep the whole cuts)\n"); return 2; }
             vad_ov.trim = d;
+        } else if (std::strcmp(argv[i], "--vad-run-gate") == 0 && i + 1 < argc) {
+            if (!parse_nonneg(argv[++i], d) || d >= 1.0) { std::fprintf(stderr, "parakeet-cli: --vad-run-gate must be in [0,1) (0 = off)\n"); return 2; }
+            vad_ov.run_gate = d;
         } else if (std::strcmp(argv[i], "--min-local-conf") == 0 && i + 1 < argc) {
             if (!parse_nonneg(argv[++i], d) || d > 1.0) { std::fprintf(stderr, "parakeet-cli: --min-local-conf must be in [0,1] (0 = off)\n"); return 2; }
             word_filter.min_local_conf = (float)d;
@@ -545,7 +549,7 @@ static int cmd_transcribe(int argc, char** argv) {
             "[--threads N] [--json] "
             "[--component NAME] "
             "[--vad [--vad-model <silero.gguf>] [--vad-component NAME] [--vad-threshold F=0.5] [--vad-min-pause SEC] "
-            "[--vad-min-speech SEC] [--vad-max-seg SEC=30] [--vad-trim SEC=0.3]] "
+            "[--vad-min-speech SEC] [--vad-max-seg SEC=30] [--vad-trim SEC=0.3] [--vad-run-gate P=0]] "
             "[--min-local-conf F [--local-radius SEC=5]] [--drop-punct-only] "
             "[--beam-size N [--nbest N] [--no-score-norm]]\n");
         return 2;
@@ -2303,6 +2307,9 @@ static int cmd_vad(int argc, char** argv) {
         } else if (std::strcmp(argv[i], "--trim") == 0 && i + 1 < argc) {
             if (!num(argv[++i], d, true)) return bad("--trim must be >= 0");
             ov.trim = d;
+        } else if (std::strcmp(argv[i], "--run-gate") == 0 && i + 1 < argc) {
+            if (!num(argv[++i], d, true) || d >= 1.0) return bad("--run-gate must be in [0,1) (0 = off)");
+            ov.run_gate = d;
         } else if (std::strcmp(argv[i], "--mode") == 0 && i + 1 < argc) {
             const char* v = argv[++i];
             if (std::strcmp(v, "speech") == 0) mode = pk::VadRequest::Mode::kSpeech;
@@ -2316,7 +2323,7 @@ static int cmd_vad(int argc, char** argv) {
         std::fprintf(stderr,
             "usage: parakeet-cli vad --model <asr-with-vad-head.gguf|silero.gguf|bundle.gguf> --input <wav|-> "
             "[--component NAME] [--threshold F=0.5] [--min-pause SEC] [--min-speech SEC] [--speech-pad SEC] "
-            "[--max-segment SEC=30] [--trim SEC=0.3] [--mode speech|segments] [--probabilities] [--threads N]\n");
+            "[--max-segment SEC=30] [--trim SEC=0.3] [--run-gate P=0] [--mode speech|segments] [--probabilities] [--threads N]\n");
         return 2;
     }
     if (threads > 0) pk::set_num_threads(threads);

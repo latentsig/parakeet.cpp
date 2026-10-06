@@ -73,7 +73,7 @@ bool parse_options(const char* json, VadRequest& req, std::string& err, bool vad
         c.ws();
         const std::string opt = std::string(what) + " " + key;
         const bool is_seg_num = key == "threshold" || key == "min_pause" || key == "min_speech" ||
-                                key == "max_segment" || key == "speech_pad" || key == "trim";
+                                key == "max_segment" || key == "speech_pad" || key == "trim" || key == "run_gate";
         if (vad_keys && key == "mode") {
             std::string v;
             if (!parse_string(c, v)) { err = "invalid " + opt + ": expected a string"; return false; }
@@ -93,6 +93,9 @@ bool parse_options(const char* json, VadRequest& req, std::string& err, bool vad
             if (key == "threshold") {
                 if (!(v > 0.0 && v <= 1.0)) { err = "invalid " + opt + ": must be in (0, 1]"; return false; }
                 req.opts.threshold = (float)v;
+            } else if (key == "run_gate") {
+                if (!(v >= 0.0 && v < 1.0)) { err = "invalid " + opt + ": must be in [0, 1) (0 = off)"; return false; }
+                req.opts.run_gate = (float)v;
             } else if (key == "min_local_conf") {
                 if (!(v >= 0.0 && v <= 1.0)) { err = "invalid " + opt + ": must be in [0, 1] (0 = off)"; return false; }
                 req.filter.min_local_conf = (float)v;
