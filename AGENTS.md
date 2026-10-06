@@ -158,6 +158,8 @@ tests/               ctest targets
                        test_vad_head.cpp       , VAD head probabilities (PARAKEET_TEST_GGUF_ULTRA)
                        test_vad_segmenter.cpp  , segmenter cut rules, 32 ms grid, Silero defaults, event tracker (model-independent)
                        test_vad_options.cpp    , VAD option parser, NULL and bad-file C-API paths (model-independent)
+                       test_vad_run_gate.cpp   , run gate (SegmenterOpts::run_gate) on synthetic probability streams (model-independent)
+                       test_vad_run_gate_model.cpp, run gate on a clip with a noise stretch (PARAKEET_TEST_VAD_ONLY_REDUX_GGUF, _GGUF_ULTRA, _REDUX_KEEP, _REDUX_DEQ, PARAKEET_TEST_SILERO_GGUF)
                        test_vad_only.cpp       , VAD-only slice: C-API VAD equals the parent, other calls refuse it (PARAKEET_TEST_VAD_ONLY_GGUF, PARAKEET_TEST_GGUF_ULTRA)
                        test_capi_vad_silero.cpp, Silero via the C-API: JSON, options, threads, stream (PARAKEET_TEST_SILERO_GGUF)
                        test_transcribe_vad_silero.cpp, transcribe with Silero segments on a model without a head (PARAKEET_TEST_SILERO_GGUF, PARAKEET_TEST_GGUF)
