@@ -16,8 +16,10 @@ inline float env_float(const char* name, float fallback) {
     const float f = std::strtof(v, &end);
     return end != v ? f : fallback;
 }
-inline float rnnt_blank_penalty() { static const float p = env_float("PARAKEET_BLANK_PENALTY", 0.0f); return p; }
-inline float ctc_blank_penalty() { static const float p = env_float("PARAKEET_CTC_BLANK_PENALTY", 0.0f); return p; }
+// Read on every call (a getenv is ~microseconds; decoding runs a few hundred steps a second),
+// so an app can change them between sessions without reloading the library.
+inline float rnnt_blank_penalty() { return env_float("PARAKEET_BLANK_PENALTY", 0.0f); }
+inline float ctc_blank_penalty() { return env_float("PARAKEET_CTC_BLANK_PENALTY", 0.0f); }
 
 inline int decode_argmax(const float* a, int n) {
     int best = 0; float bv = a[0];
