@@ -587,6 +587,16 @@ const char* parakeet_capi_last_error(parakeet_ctx* ctx);
 // returning NULL (or non-zero) on failure.
 int parakeet_capi_set_concurrency(parakeet_ctx* ctx, int backends, int threads_each);
 
+// RT Captions patch: process-wide decoding options (latentsig/parakeet.cpp, branch rt-captions).
+// `stream_decoder`: "ctc" makes streaming sessions of hybrid *_ctc models decode with the CTC head
+// (other models are unaffected); anything else (or NULL) keeps RNN-T. The penalties are subtracted
+// from the blank score before each greedy decision (RNN-T logit / CTC log-prob); > 0 counters
+// dropped words. Applies to streams begun afterwards (decoder) and to every later decoding step
+// (penalties). Once called, the PARAKEET_STREAM_DECODER / PARAKEET_BLANK_PENALTY /
+// PARAKEET_CTC_BLANK_PENALTY environment fallbacks are ignored.
+void parakeet_capi_set_decode_options(const char* stream_decoder, float rnnt_blank_penalty,
+                                      float ctc_blank_penalty);
+
 // ---------------------------------------------------------------------------
 // Speaker diarization (nvidia/Nemotron-3-Diarization and compatible Sortformer
 // models), ABI v7.

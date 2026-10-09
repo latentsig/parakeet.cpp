@@ -51,10 +51,9 @@ StreamingSession::StreamingSession(const ModelLoader& ml, const std::string& tar
     frame_sec_f_ = (float)frame_sec_;
 
     // RT Captions patch: use the CTC head of a hybrid *_ctc model when asked to.
-    const char* dec = std::getenv("PARAKEET_STREAM_DECODER");
     const std::string& arch = cfg.arch;
     const bool hybrid_ctc = arch.size() > 4 && arch.compare(arch.size() - 4, 4, "_ctc") == 0;
-    if (dec && std::string(dec) == "ctc" && hybrid_ctc) ctc_ = std::make_unique<CTCDecoder>(ml);
+    if (hybrid_ctc && stream_decoder_is_ctc()) ctc_ = std::make_unique<CTCDecoder>(ml);
 
     reset();
 }

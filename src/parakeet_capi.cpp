@@ -1,3 +1,4 @@
+#include "decode_common.hpp"
 #include "parakeet_capi.h"
 #include "parakeet.h"     // pk::Decoder
 #include "model.hpp"      // pk::Model
@@ -248,6 +249,15 @@ const char* no_model_msg(const parakeet_ctx* c) {
                         : "context has no loaded model";
 }
 }  // namespace
+
+extern "C" void parakeet_capi_set_decode_options(const char* stream_decoder, float rnnt_blank_penalty,
+                                                 float ctc_blank_penalty) {
+    pk::DecodeOptions& o = pk::decode_options();
+    o.stream_ctc = stream_decoder && std::string(stream_decoder) == "ctc";
+    o.rnnt_blank_penalty = rnnt_blank_penalty;
+    o.ctc_blank_penalty = ctc_blank_penalty;
+    o.set = true;
+}
 
 extern "C" int parakeet_capi_abi_version(void) {
     return PARAKEET_CAPI_ABI_VERSION;

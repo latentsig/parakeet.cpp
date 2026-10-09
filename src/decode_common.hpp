@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdlib>
 #include <cmath>
 namespace pk {
@@ -18,8 +19,27 @@ inline float env_float(const char* name, float fallback) {
 }
 // Read on every call (a getenv is ~microseconds; decoding runs a few hundred steps a second),
 // so an app can change them between sessions without reloading the library.
-inline float rnnt_blank_penalty() { return env_float("PARAKEET_BLANK_PENALTY", 0.0f); }
-inline float ctc_blank_penalty() { return env_float("PARAKEET_CTC_BLANK_PENALTY", 0.0f); }
+struct DecodeOptions {
+    std::atomic<bool> set{false};      // true once a host called parakeet_capi_set_decode_options
+    std::atomic<bool> stream_ctc{false};
+    std::atomic<float> rnnt_blank_penalty{0.0f};
+    std::atomic<float> ctc_blank_penalty{0.0f};
+};
+inline DecodeOptions& decode_options() { static DecodeOptions o; return o; }
+inline float rnnt_blank_penalty() {
+    const DecodeOptions& o = decode_options();
+    return o.set ? o.rnnt_blank_penalty.load() : env_float("PARAKEET_BLANK_PENALTY", 0.0f);
+}
+inline float ctc_blank_penalty() {
+    const DecodeOptions& o = decode_options();
+    return o.set ? o.ctc_blank_penalty.load() : env_float("PARAKEET_CTC_BLANK_PENALTY", 0.0f);
+}
+inline bool stream_decoder_is_ctc() {
+    const DecodeOptions& o = decode_options();
+    if (o.set) return o.stream_ctc.load();
+    const char* v = std::getenv("PARAKEET_STREAM_DECODER");
+    return v && v[0] == 'c' && v[1] == 't' && v[2] == 'c' && v[3] == 0;
+}
 
 inline int decode_argmax(const float* a, int n) {
     int best = 0; float bv = a[0];
