@@ -1,3 +1,4 @@
+#include "decode_common.hpp"
 #include "streaming_encoder.hpp"
 #include "subsampling.hpp"
 #include "pos_enc.hpp"
@@ -56,6 +57,16 @@ StreamingEncoder::StreamingEncoder(const ModelLoader& ml) : ml_(ml) {
     valid_out_len_     = s.valid_out_len;
     att_left_  = c.att_context_left;
     att_right_ = c.att_context_right;
+    // RT Captions patch: run a different look-ahead than the GGUF's default. A multi-lookahead
+    // model (trained on several att_context_right values) can run any of them from one file.
+    // Chunk geometry follows NeMo's chunked_limited setup: a chunk is R+1 encoder frames.
+    if (const int R = stream_lookahead_frames(); R >= 0) {
+        const int sub = c.subsampling_factor ? (int)c.subsampling_factor : 8;
+        att_right_     = R;
+        chunk_first_   = 1 + R * sub;
+        chunk_main_    = (R + 1) * sub;
+        valid_out_len_ = R + 1;
+    }
     assert(c.causal_downsampling && "streaming model expects causal subsampling");
     assert(c.conv_causal && "streaming model expects causal depthwise conv");
     assert(c.att_context_style == "chunked_limited");

@@ -24,6 +24,7 @@ struct DecodeOptions {
     std::atomic<bool> stream_ctc{false};
     std::atomic<float> rnnt_blank_penalty{0.0f};
     std::atomic<float> ctc_blank_penalty{0.0f};
+    std::atomic<int> lookahead_frames{-2};   // -2 = never set (use env), -1 = model default
 };
 inline DecodeOptions& decode_options() { static DecodeOptions o; return o; }
 inline float rnnt_blank_penalty() {
@@ -34,6 +35,14 @@ inline float ctc_blank_penalty() {
     const DecodeOptions& o = decode_options();
     return o.set ? o.ctc_blank_penalty.load() : env_float("PARAKEET_CTC_BLANK_PENALTY", 0.0f);
 }
+// Streaming look-ahead override in encoder frames (att_context_right); -1 = the model's own.
+inline int stream_lookahead_frames() {
+    const int v = decode_options().lookahead_frames.load();
+    if (v != -2) return v;
+    const char* e = std::getenv("PARAKEET_LOOKAHEAD_FRAMES");
+    return (e && *e) ? std::atoi(e) : -1;
+}
+
 inline bool stream_decoder_is_ctc() {
     const DecodeOptions& o = decode_options();
     if (o.set) return o.stream_ctc.load();

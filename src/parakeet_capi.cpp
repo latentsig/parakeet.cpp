@@ -259,6 +259,10 @@ extern "C" void parakeet_capi_set_decode_options(const char* stream_decoder, flo
     o.set = true;
 }
 
+extern "C" void parakeet_capi_set_stream_lookahead(int frames) {
+    pk::decode_options().lookahead_frames = frames < 0 ? -1 : frames;
+}
+
 extern "C" int parakeet_capi_abi_version(void) {
     return PARAKEET_CAPI_ABI_VERSION;
 }

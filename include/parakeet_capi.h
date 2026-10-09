@@ -597,6 +597,12 @@ int parakeet_capi_set_concurrency(parakeet_ctx* ctx, int backends, int threads_e
 void parakeet_capi_set_decode_options(const char* stream_decoder, float rnnt_blank_penalty,
                                       float ctc_blank_penalty);
 
+// RT Captions patch: streaming look-ahead override for sessions begun afterwards, in encoder
+// frames (80 ms each for FastConformer): att_context_right = frames, chunk = frames+1 frames.
+// -1 restores each model's own default. Meant for multi-lookahead models; values the model was
+// not trained on may lose accuracy. Env fallback until called: PARAKEET_LOOKAHEAD_FRAMES.
+void parakeet_capi_set_stream_lookahead(int frames);
+
 // ---------------------------------------------------------------------------
 // Speaker diarization (nvidia/Nemotron-3-Diarization and compatible Sortformer
 // models), ABI v7.
