@@ -1,5 +1,6 @@
 #pragma once
 #include "model_loader.hpp"
+#include "ctc_decoder.hpp"
 #include "streaming_encoder.hpp"
 #include "prediction.hpp"
 #include "joint.hpp"
@@ -144,6 +145,15 @@ private:
     int blank_id_;
     int max_symbols_;
     RnntDecodeState state_;
+
+    // RT Captions patch: optional CTC decoding of a hybrid model's CTC head
+    // (PARAKEET_STREAM_DECODER=ctc). Greedy per frame; repeats collapse across
+    // chunk boundaries via the last frame's id; blank dropped.
+    std::unique_ptr<CTCDecoder> ctc_;
+    int ctc_prev_id_ = -1;
+    std::vector<int32_t> ctc_decode_frames(const std::vector<float>& enc_frames, int n_valid,
+                                           std::vector<int32_t>& local_frames,
+                                           std::vector<TokenInfo>& chunk_tokens);
 
     // EOU/EOB token ids (resolved from the tokenizer pieces; -1 if absent).
     int eou_id_ = -1;

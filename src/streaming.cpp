@@ -1,8 +1,12 @@
 #include "streaming.hpp"
+#include "decode_common.hpp"
 #include "tokenizer.hpp"
 #include "mel.hpp"
 #include <algorithm>
 #include <cassert>
+#include <string>
+#include <cstdlib>
+#include <cmath>
 
 namespace pk {
 
@@ -46,6 +50,12 @@ StreamingSession::StreamingSession(const ModelLoader& ml, const std::string& tar
     frame_sec_   = (hop * sub) / sr;
     frame_sec_f_ = (float)frame_sec_;
 
+    // RT Captions patch: use the CTC head of a hybrid *_ctc model when asked to.
+    const char* dec = std::getenv("PARAKEET_STREAM_DECODER");
+    const std::string& arch = cfg.arch;
+    const bool hybrid_ctc = arch.size() > 4 && arch.compare(arch.size() - 4, 4, "_ctc") == 0;
+    if (dec && std::string(dec) == "ctc" && hybrid_ctc) ctc_ = std::make_unique<CTCDecoder>(ml);
+
     reset();
 }
 
@@ -63,6 +73,38 @@ void StreamingSession::reset() {
     words_.clear();
     words_finalized_ = 0;
     words_taken_ = 0;
+    ctc_prev_id_ = -1;
+}
+
+std::vector<int32_t> StreamingSession::ctc_decode_frames(const std::vector<float>& enc_frames, int n_valid,
+                                                         std::vector<int32_t>& local_frames,
+                                                         std::vector<TokenInfo>& chunk_tokens) {
+    // CTCDecoder wants channels-first [d_model, T]; the encoder gives time-major [T, d_model].
+    std::vector<float> enc_cf((size_t)d_model_ * n_valid);
+    for (int t = 0; t < n_valid; ++t)
+        for (int c = 0; c < d_model_; ++c)
+            enc_cf[(size_t)c * n_valid + t] = enc_frames[(size_t)t * d_model_ + c];
+    std::vector<float> logp;  // [T, V+1], log-softmaxed
+    int v1 = 0;
+    ctc_->forward(enc_cf, d_model_, n_valid, logp, v1);
+    const int blank = v1 - 1;  // hybrid CTC head: blank is the last class
+    const float pen = ctc_blank_penalty();
+    std::vector<int32_t> emitted;
+    for (int t = 0; t < n_valid; ++t) {
+        float* row = logp.data() + (size_t)t * v1;
+        if (pen != 0.0f) row[blank] -= pen;
+        const int k = decode_argmax(row, v1);
+        // The same id as the previous frame (also across the chunk boundary) continues
+        // one token; a blank between two equal ids makes them two tokens.
+        if (k != blank && k != ctc_prev_id_) {
+            emitted.push_back(k);
+            local_frames.push_back(t);
+            chunk_tokens.push_back(TokenInfo{k, t, std::exp(row[k]), 1});
+        }
+        ctc_prev_id_ = k;
+    }
+    state_.hyp.insert(state_.hyp.end(), emitted.begin(), emitted.end());
+    return emitted;
 }
 
 void StreamingSession::process_emitted(const std::vector<int32_t>& emitted) {
@@ -130,10 +172,11 @@ std::vector<int32_t> StreamingSession::feed_mel_chunk(const std::vector<float>& 
     const int base_frame = enc_frame_;
     std::vector<int32_t> local_frames;
     std::vector<TokenInfo> chunk_tokens;
-    std::vector<int32_t> emitted =
-        rnnt_decode_frames(pred_, joint_, enc_frames, n_valid, d_model_,
-                           state_, blank_id_, max_symbols_, &local_frames,
-                           &chunk_tokens);
+    std::vector<int32_t> emitted = ctc_
+        ? ctc_decode_frames(enc_frames, n_valid, local_frames, chunk_tokens)
+        : rnnt_decode_frames(pred_, joint_, enc_frames, n_valid, d_model_,
+                             state_, blank_id_, max_symbols_, &local_frames,
+                             &chunk_tokens);
     enc_frame_ += n_valid;
 
     // 3. Update text + EOU events; refine each new event's absolute frame index
