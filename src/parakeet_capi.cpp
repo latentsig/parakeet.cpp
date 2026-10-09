@@ -259,6 +259,11 @@ extern "C" void parakeet_capi_set_decode_options(const char* stream_decoder, flo
     o.set = true;
 }
 
+extern "C" void parakeet_capi_set_suppressed_tokens(const int* ids, int n) {
+    auto& v = pk::decode_options().suppressed;
+    v.assign(ids, ids + (ids && n > 0 ? n : 0));
+}
+
 extern "C" void parakeet_capi_set_stream_lookahead(int frames) {
     pk::decode_options().lookahead_frames = frames < 0 ? -1 : frames;
 }

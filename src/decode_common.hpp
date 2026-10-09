@@ -1,5 +1,7 @@
 #pragma once
 #include <atomic>
+#include <cmath>
+#include <vector>
 #include <cstdlib>
 #include <cmath>
 namespace pk {
@@ -25,7 +27,16 @@ struct DecodeOptions {
     std::atomic<float> rnnt_blank_penalty{0.0f};
     std::atomic<float> ctc_blank_penalty{0.0f};
     std::atomic<int> lookahead_frames{-2};   // -2 = never set (use env), -1 = model default
+    // Token ids the greedy decoders may never pick (e.g. a script lock: no Devanagari in
+    // English mode). Set between sessions from the host's thread; read while decoding.
+    std::vector<int32_t> suppressed;
 };
+
+// Forbid the suppressed ids in one decision's scores (logits or log-probs).
+inline void apply_suppression(float* scores, int n) {
+    for (int32_t id : decode_options().suppressed)
+        if (id >= 0 && id < n) scores[id] = -INFINITY;
+}
 inline DecodeOptions& decode_options() { static DecodeOptions o; return o; }
 inline float rnnt_blank_penalty() {
     const DecodeOptions& o = decode_options();

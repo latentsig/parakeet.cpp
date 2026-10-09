@@ -77,6 +77,7 @@ std::vector<int32_t> rnnt_decode_frames(const PredictionNet& pred, const Joint& 
                               g.data(), (int)g.size(), logits);
 
             if (const float pen = rnnt_blank_penalty(); pen != 0.0f) logits[blank_id] -= pen;
+            apply_suppression(logits.data(), token_count);
             const int k = decode_argmax(logits.data(), token_count);
 
             // Blank -> stop emitting at this frame and advance time.

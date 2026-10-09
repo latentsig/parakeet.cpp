@@ -92,6 +92,7 @@ std::vector<int32_t> StreamingSession::ctc_decode_frames(const std::vector<float
     for (int t = 0; t < n_valid; ++t) {
         float* row = logp.data() + (size_t)t * v1;
         if (pen != 0.0f) row[blank] -= pen;
+        apply_suppression(row, v1);
         const int k = decode_argmax(row, v1);
         // The same id as the previous frame (also across the chunk boundary) continues
         // one token; a blank between two equal ids makes them two tokens.

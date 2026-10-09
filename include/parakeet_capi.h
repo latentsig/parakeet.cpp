@@ -603,6 +603,11 @@ void parakeet_capi_set_decode_options(const char* stream_decoder, float rnnt_bla
 // not trained on may lose accuracy. Env fallback until called: PARAKEET_LOOKAHEAD_FRAMES.
 void parakeet_capi_set_stream_lookahead(int frames);
 
+// RT Captions patch: token ids the greedy decoders (RNN-T and streaming CTC) may never emit,
+// e.g. every Devanagari piece to lock an English/Hindi model to Latin script. n = 0 clears.
+// Call between sessions (not while another thread is decoding).
+void parakeet_capi_set_suppressed_tokens(const int* ids, int n);
+
 // ---------------------------------------------------------------------------
 // Speaker diarization (nvidia/Nemotron-3-Diarization and compatible Sortformer
 // models), ABI v7.
