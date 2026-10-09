@@ -32,12 +32,12 @@ struct DecodeOptions {
     std::vector<int32_t> suppressed;
 };
 
+inline DecodeOptions& decode_options() { static DecodeOptions o; return o; }
 // Forbid the suppressed ids in one decision's scores (logits or log-probs).
 inline void apply_suppression(float* scores, int n) {
     for (int32_t id : decode_options().suppressed)
         if (id >= 0 && id < n) scores[id] = -INFINITY;
 }
-inline DecodeOptions& decode_options() { static DecodeOptions o; return o; }
 inline float rnnt_blank_penalty() {
     const DecodeOptions& o = decode_options();
     return o.set ? o.rnnt_blank_penalty.load() : env_float("PARAKEET_BLANK_PENALTY", 0.0f);
