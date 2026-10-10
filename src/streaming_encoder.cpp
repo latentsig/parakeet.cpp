@@ -8,11 +8,8 @@
 #include "ggml.h"
 #include <cassert>
 #include <cmath>
-#include <cstdlib>
 #include <cstring>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -105,62 +102,21 @@ struct StreamLayerCapture {
 //   * The NEXT caches are emitted as captured outputs (cap->next_channel/_time):
 //       next_channel = cat([cache_channel[Tc:], attn_in[:Tc]])  (keep last cache_len)
 //       next_time    = last LP cols of [cache_time(LP) ; glu(Tc)]
-// `xt` is the chunk input [D, Tc]; `pe` is the pos-emb [D, pos_len] for
+// `xt` is the chunk input [D, Tc]; `pos_heads` is this layer's linear_pos(pos_emb)
+// split into heads, host [dk, pos_len, H] from StreamingEncoder::pos_heads, for
 // pos_len = 2*(Tc+cache_len)-1. `cache_ch_t` is the K/V cache input [D, cache_len];
 // `cache_t_t` is the conv cache input [D, LP]. Returns the layer output [D, Tc].
 //
 // This MIRRORS the proven (bit-equivalent, max|d| ~7e-6) per-stage layer_step op
 // sequence exactly — same ggml ops in the same order — only fused into one graph
 // with the cache reads/updates moved in-graph, so the numerics are preserved.
-// RT Captions patch: the relative-position projection linear_pos(pos_emb) depends only on the
-// attention window length (cache_len + Tc), never on the audio, yet NeMo's streaming forward
-// recomputes it in every layer for every chunk: on Nemotron (D=1024, 24 layers, ~145 positions)
-// that is ~7 GFLOP per chunk, more than the chunk's real work. Compute it once per (model,
-// window length), already split into heads ([dk, pos_len, H] per layer), and feed it to the
-// chunk graph as an input. Same ggml ops on the same inputs, so the results are unchanged.
-// PARAKEET_POS_CACHE=0 restores the per-chunk computation (for A/B checks).
-static bool pos_cache_enabled() {
-    static const bool on = [] { const char* e = std::getenv("PARAKEET_POS_CACHE"); return !(e && e[0] == '0'); }();
-    return on;
-}
-
-static const std::vector<std::vector<float>>& cached_pos_heads(const ModelLoader& ml, int n_layers,
-                                                               int D, int H, int Pn) {
-    static std::mutex mu;
-    static std::map<std::pair<const ModelLoader*, int>, std::vector<std::vector<float>>> cache;
-    std::lock_guard<std::mutex> lock(mu);
-    auto key = std::make_pair(&ml, Pn);
-    auto it = cache.find(key);
-    if (it != cache.end()) return it->second;
-
-    const int pos_len = 2 * Pn - 1;
-    const int dk = D / H;
-    std::vector<float> pe_host;
-    rel_pos_encoding(Pn, D, pe_host); // row-major [pos_len, D]
-    std::vector<std::vector<float>> heads(n_layers);
-    for (int i = 0; i < n_layers; ++i) {
-        const std::string w = "encoder.layers." + std::to_string(i) + ".self_attn.linear_pos.weight";
-        bool ok = pk::run_graph(/*mem_bytes*/0, /*n_threads*/0, [&](ggml_context* ctx) -> ggml_tensor* {
-            int64_t pe_ne[2] = {D, pos_len};
-            ggml_tensor* pe = pk::graph_input_tensor(ctx, GGML_TYPE_F32, 2, pe_ne, pe_host.data(),
-                                                     pe_host.size() * sizeof(float));
-            ggml_tensor* p = ggml_mul_mat(ctx, clone_weight(ctx, ml, w), pe);   // [D, P]
-            p = ggml_reshape_3d(ctx, p, dk, H, pos_len);
-            return ggml_cont(ctx, ggml_permute(ctx, p, 0, 2, 1, 3));          // [dk, P, H]
-        }, heads[i]);
-        if (!ok || (int)heads[i].size() != dk * pos_len * H)
-            throw std::runtime_error("streaming encoder: linear_pos precompute failed");
-    }
-    return cache.emplace(key, std::move(heads)).first->second;
-}
-
 static ggml_tensor* build_stream_layer(
         ggml_context* ctx, const ModelLoader& ml, int layer_idx,
-        ggml_tensor* xt, int Tc, ggml_tensor* pe, int pos_len,
+        ggml_tensor* xt, int Tc, const float* pos_heads, int pos_len,
         int cache_len, int clc_len, int n_heads, int d_model, int conv_kernel,
         int att_left, int att_right, const std::string& conv_norm_type,
         ggml_tensor* cache_ch_t, ggml_tensor* cache_t_t,
-        GraphInputPool& pool, StreamLayerCapture* cap, const float* pos_heads = nullptr) {
+        GraphInputPool& pool, StreamLayerCapture* cap) {
     const int D  = d_model;
     const int H  = n_heads;
     const int dk = D / H;
@@ -225,14 +181,10 @@ static ggml_tensor* build_stream_layer(
         };
         ggml_tensor* qh = to_heads(q, Tc);
         ggml_tensor* kh = to_heads(k, Tk);
-        ggml_tensor* ph;                                                   // [dk, P, H]
-        if (pos_heads) {
-            int64_t ph_ne[3] = {dk, pos_len, H};
-            ph = pk::graph_input_tensor(ctx, GGML_TYPE_F32, 3, ph_ne, pos_heads,
-                                        (size_t)dk * pos_len * H * sizeof(float));
-        } else {
-            ph = to_heads(lin("linear_pos.weight", nullptr, pe), pos_len);
-        }
+        // linear_pos(pos_emb) split into heads, precomputed per window length.
+        int64_t ph_ne[3] = {dk, pos_len, H};
+        ggml_tensor* ph = pk::graph_input_tensor(ctx, GGML_TYPE_F32, 3, ph_ne, pos_heads,
+                                                 (size_t)dk * pos_len * H * sizeof(float)); // [dk, P, H]
 
         ggml_tensor* bu = clone_weight(ctx, ml, ap + "pos_bias_u");
         ggml_tensor* bv = clone_weight(ctx, ml, ap + "pos_bias_v");
@@ -402,6 +354,37 @@ static ggml_tensor* build_stream_layer(
     return r; // [D, Tc]
 }
 
+// The relative-position projection linear_pos(pos_emb) depends only on the attention
+// window length (cache_len + Tc), never on the audio, yet the streaming forward used to
+// recompute it in every layer for every chunk: on a 24-layer, D=1024 model with ~145
+// positions that is ~7 GFLOP per chunk. It is computed once per window length for the
+// session, already split into heads, and fed to the chunk graph as an input. Same ggml
+// ops on the same inputs, so the outputs are unchanged.
+const std::vector<std::vector<float>>& StreamingEncoder::pos_heads(int window) {
+    auto it = pos_heads_.find(window);
+    if (it != pos_heads_.end()) return it->second;
+
+    const int D = d_model_, H = n_heads_, dk = D / H;
+    const int pos_len = 2 * window - 1;
+    std::vector<float> pe_host;
+    rel_pos_encoding(window, D, pe_host); // row-major [pos_len, D]
+    std::vector<std::vector<float>> heads(n_layers_);
+    for (int i = 0; i < n_layers_; ++i) {
+        const std::string w = "encoder.layers." + std::to_string(i) + ".self_attn.linear_pos.weight";
+        bool ok = pk::run_graph(/*mem_bytes*/0, /*n_threads*/0, [&](ggml_context* ctx) -> ggml_tensor* {
+            int64_t pe_ne[2] = {D, pos_len};
+            ggml_tensor* pe = pk::graph_input_tensor(ctx, GGML_TYPE_F32, 2, pe_ne, pe_host.data(),
+                                                     pe_host.size() * sizeof(float));
+            ggml_tensor* p = ggml_mul_mat(ctx, clone_weight(ctx, ml_, w), pe); // [D, P]
+            p = ggml_reshape_3d(ctx, p, dk, H, pos_len);
+            return ggml_cont(ctx, ggml_permute(ctx, p, 0, 2, 1, 3));         // [dk, P, H]
+        }, heads[i]);
+        if (!ok || (int)heads[i].size() != dk * pos_len * H)
+            throw std::runtime_error("streaming encoder: linear_pos precompute failed");
+    }
+    return pos_heads_.emplace(window, std::move(heads)).first->second;
+}
+
 std::vector<float> StreamingEncoder::step(const std::vector<float>& mel_chunk_frames,
                                           int n_mel_frames, bool is_last,
                                           int& n_valid_out) {
@@ -440,8 +423,7 @@ std::vector<float> StreamingEncoder::step(const std::vector<float>& mel_chunk_fr
     const int clc_len_now = clc_len_;   // snapshot for the in-graph mask
 
     const std::string cnt = ml_.config().conv_norm_type;
-    const std::vector<std::vector<float>>* pos_heads =
-        pos_cache_enabled() ? &cached_pos_heads(ml_, n_layers_, D, n_heads_, Pn) : nullptr;
+    const std::vector<std::vector<float>>& pos_heads = this->pos_heads(Pn);
     StreamLayerCapture caps[/*max layers*/64];
     assert(n_layers_ <= 64);
 
@@ -478,17 +460,6 @@ std::vector<float> StreamingEncoder::step(const std::vector<float>& mel_chunk_fr
                 x = ggml_scale(ctx, x, std::sqrt((float)D));
             }
 
-            // pos_emb [D, pos_len] fed as a graph input (only when not using the
-            // cached per-layer projection).
-            ggml_tensor* pe = nullptr;
-            if (!pos_heads) {
-                std::vector<float>& pe_host = pool.alloc_f32();
-                rel_pos_encoding(Pn, D, pe_host); // row-major [pos_len, D]
-                int64_t pe_ne[2] = {D, pos_len};
-                pe = pk::graph_input_tensor(ctx, GGML_TYPE_F32, 2, pe_ne,
-                                  pe_host.data(), pe_host.size() * sizeof(float));
-            }
-
             // Conformer layer stack (conv + attention caches threaded in-graph).
             const int LP = left_pad_;
             for (int i = 0; i < n_layers_; ++i) {
@@ -503,11 +474,10 @@ std::vector<float> StreamingEncoder::step(const std::vector<float>& mel_chunk_fr
                         GGML_TYPE_F32, 2, t_ne, cache_time_[i].data(),
                         cache_time_[i].size() * sizeof(float));
 
-                x = build_stream_layer(ctx, ml_, i, x, Tc, pe, pos_len,
+                x = build_stream_layer(ctx, ml_, i, x, Tc, pos_heads[i].data(), pos_len,
                                        cache_len, clc_len_now, n_heads_, D,
                                        conv_kernel_, att_left_, att_right_, cnt,
-                                       cache_ch_t, cache_t_t, pool, &caps[i],
-                                       pos_heads ? (*pos_heads)[i].data() : nullptr);
+                                       cache_ch_t, cache_t_t, pool, &caps[i]);
             }
             return x; // [D, Tc] -> row-major [Tc, D]
         }, out_full);
