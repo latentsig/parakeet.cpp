@@ -7,6 +7,7 @@
 #include <string>
 #include <cstdlib>
 #include <cmath>
+#include <cstdio>
 
 namespace pk {
 
@@ -103,6 +104,18 @@ std::vector<int32_t> StreamingSession::ctc_decode_frames(const std::vector<float
         }
         ctc_prev_id_ = k;
     }
+    // Eval aid: PARAKEET_CTC_DUMP=<file> appends each chunk's final scores (after blank penalty and
+    // suppression) as int32 n_valid, int32 classes, then n_valid*classes float32, for offline decoders.
+    if (const char* dump = std::getenv("PARAKEET_CTC_DUMP"); dump && *dump) {
+        if (FILE* f = std::fopen(dump, "ab")) {
+            const int32_t hdr[2] = {n_valid, v1};
+            std::fwrite(hdr, sizeof(int32_t), 2, f);
+            std::fwrite(logp.data(), sizeof(float), (size_t)n_valid * v1, f);
+            std::fclose(f);
+        }
+    }
+    ctc_rows.insert(ctc_rows.end(), logp.begin(), logp.begin() + (size_t)n_valid * v1);
+    ctc_classes = v1;
     state_.hyp.insert(state_.hyp.end(), emitted.begin(), emitted.end());
     return emitted;
 }

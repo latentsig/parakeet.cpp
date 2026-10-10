@@ -123,6 +123,12 @@ public:
     // surface via drain_events()). Drains the returned-words queue.
     std::vector<Word> drain_words();
 
+    // RT Captions patch: CTC scores (log-probs after blank penalty and suppression, [frames, classes])
+    // of the chunks decoded since the last clear, for a host-side decoder (beam search, hotwords).
+    // Filled only while the stream decodes with the CTC head.
+    std::vector<float> ctc_rows;
+    int ctc_classes = 0;
+
     // Streaming chunk schedule (delegated from the encoder), so the caller can
     // window the mel exactly like test_streaming_encoder.
     int chunk_size_first() const { return enc_.chunk_size_first(); }

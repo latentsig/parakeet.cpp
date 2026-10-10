@@ -259,6 +259,15 @@ extern "C" void parakeet_capi_set_decode_options(const char* stream_decoder, flo
     o.set = true;
 }
 
+extern "C" const float* parakeet_capi_stream_ctc_rows(parakeet_stream* s, int* frames, int* classes) {
+    if (frames) *frames = 0;
+    if (classes) *classes = 0;
+    if (!s || !s->sess || s->sess->ctc_classes <= 0) return nullptr;
+    if (frames) *frames = (int)(s->sess->ctc_rows.size() / s->sess->ctc_classes);
+    if (classes) *classes = s->sess->ctc_classes;
+    return s->sess->ctc_rows.data();
+}
+
 extern "C" void parakeet_capi_set_suppressed_tokens(const int* ids, int n) {
     auto& v = pk::decode_options().suppressed;
     v.assign(ids, ids + (ids && n > 0 ? n : 0));
@@ -1390,6 +1399,7 @@ extern "C" char* parakeet_capi_stream_feed_json(parakeet_stream* s,
                                                 const float* pcm, int n_samples) {
     if (!s) return nullptr;
     if (!s->ctx || !s->ctx->model) return nullptr;
+    if (s->sess) s->sess->ctc_rows.clear();
     if (n_samples < 0 || (!pcm && n_samples > 0)) {
         s->ctx->last_error = "invalid PCM buffer";
         return nullptr;
@@ -1421,6 +1431,7 @@ extern "C" char* parakeet_capi_stream_feed_json(parakeet_stream* s,
 extern "C" char* parakeet_capi_stream_finalize_json(parakeet_stream* s) {
     if (!s) return nullptr;
     if (!s->ctx || !s->ctx->model) return nullptr;
+    if (s->sess) s->sess->ctc_rows.clear();
     try {
         if (s->mel) {
             int n_tail = 0;

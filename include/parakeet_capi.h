@@ -608,6 +608,12 @@ void parakeet_capi_set_stream_lookahead(int frames);
 // Call between sessions (not while another thread is decoding).
 void parakeet_capi_set_suppressed_tokens(const int* ids, int n);
 
+// RT Captions patch: the CTC log-probs ([*frames x *classes], blank = last class; blank penalty
+// and suppression applied) of the chunks decoded by the last stream_feed_json / finalize_json
+// call, for a host-side decoder. Valid until the next feed/finalize/free on this stream.
+// NULL / 0 frames when the stream does not decode with a CTC head.
+const float* parakeet_capi_stream_ctc_rows(parakeet_stream* s, int* frames, int* classes);
+
 // ---------------------------------------------------------------------------
 // Speaker diarization (nvidia/Nemotron-3-Diarization and compatible Sortformer
 // models), ABI v7.
