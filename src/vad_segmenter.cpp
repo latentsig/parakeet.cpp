@@ -10,6 +10,28 @@ namespace pk {
 namespace {
 // Above this many seconds a frame count could overflow int64.
 constexpr double kMaxSec = 1e6;
+
+// Run gate: every run of sp == 1 (a maximal run of frames with p >= threshold)
+// whose median probability is below `gate` becomes silence. The median is over
+// p[a, b) of the run; for an even count it is the mean of the two middle values,
+// computed in float (as numpy does for float32). A run is kept when median >= gate. No-op for gate <= 0.
+void apply_run_gate(std::vector<char>& sp, const std::vector<float>& p, int64_t n, float gate) {
+    if (!(gate > 0.0f)) return;
+    std::vector<float> v;
+    int64_t f = 0;
+    while (f < n) {
+        if (!sp[(size_t)f]) { ++f; continue; }
+        int64_t e = f;
+        while (e < n && sp[(size_t)e]) ++e;
+        v.assign(p.begin() + f, p.begin() + e);  // sp is only set where f < p.size()
+        const size_t m = v.size() / 2;
+        std::nth_element(v.begin(), v.begin() + m, v.end());
+        float med = v[m];
+        if (v.size() % 2 == 0) med = (*std::max_element(v.begin(), v.begin() + m) + med) * 0.5f;
+        if (med < gate) std::fill(sp.begin() + f, sp.begin() + e, 0);
+        f = e;
+    }
+}
 }
 
 std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total_sec,
@@ -20,7 +42,7 @@ std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total
         !(o.max_seg_sec > 2.0 * o.frame_sec) || !std::isfinite(total_sec) ||
         !std::isfinite(o.threshold) || !std::isfinite(o.min_seg_sec) ||
         !std::isfinite(o.min_pause_sec) || !std::isfinite(o.bridge_sec) ||
-        !std::isfinite(o.min_speech_sec) || !std::isfinite(o.trim_sec) || o.max_seg_sec > kMaxSec || o.min_seg_sec > kMaxSec ||
+        !std::isfinite(o.min_speech_sec) || !std::isfinite(o.trim_sec) || !std::isfinite(o.run_gate) || o.max_seg_sec > kMaxSec || o.min_seg_sec > kMaxSec ||
         o.min_pause_sec > kMaxSec || o.bridge_sec > kMaxSec || o.min_speech_sec > kMaxSec) {
         out.push_back({0.0, total_sec});
         return out;
@@ -38,6 +60,7 @@ std::vector<VadSegment> segment_by_vad(const std::vector<float>& p, double total
     // Step 1: speech mask over n frames (frames without a probability are silent).
     std::vector<char> sp((size_t)n, 0);
     for (int64_t f = 0; f < n && f < (int64_t)p.size(); ++f) sp[(size_t)f] = p[(size_t)f] >= o.threshold;
+    apply_run_gate(sp, p, n, o.run_gate);
     // Runs of equal value as [begin, end) frame ranges.
     auto for_runs = [&](bool value, auto&& fn) {
         int64_t f = 0;
@@ -106,7 +129,7 @@ std::vector<VadSegment> speech_regions(const std::vector<float>& p, double total
     if (!(o.frame_sec > 0.0) || !std::isfinite(o.frame_sec) || !std::isfinite(total_sec) ||
         !std::isfinite(o.threshold) || !std::isfinite(o.min_pause_sec) ||
         !std::isfinite(o.bridge_sec) || !std::isfinite(o.min_speech_sec) ||
-        !std::isfinite(o.pad_sec) || o.pad_sec < 0.0 || o.pad_sec > kMaxSec ||
+        !std::isfinite(o.pad_sec) || o.pad_sec < 0.0 || o.pad_sec > kMaxSec || !std::isfinite(o.run_gate) ||
         o.min_pause_sec > kMaxSec || o.bridge_sec > kMaxSec || o.min_speech_sec > kMaxSec) {
         out.push_back({0.0, total_sec});
         return out;
@@ -116,6 +139,7 @@ std::vector<VadSegment> speech_regions(const std::vector<float>& p, double total
     const int64_t pause_f = std::max<int64_t>(1, (int64_t)std::ceil(o.min_pause_sec / fs - 1e-9));
     std::vector<char> sp((size_t)n, 0);
     for (int64_t f = 0; f < n && f < (int64_t)p.size(); ++f) sp[(size_t)f] = p[(size_t)f] >= o.threshold;
+    apply_run_gate(sp, p, n, o.run_gate);
     auto for_runs = [&](bool value, auto&& fn) {
         int64_t f = 0;
         while (f < n) {

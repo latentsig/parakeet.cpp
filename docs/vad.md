@@ -47,13 +47,41 @@ that do and do not trigger it, and the mitigations we tested are in
 For `transcribe --vad` the user-visible cost is small: some wasted decoding, and rarely a
 hallucinated phrase. The 30 s hard cut of the segmenter can also keep a large part of a
 long noise gap, even where the head called none of it speech. This is a segmenter
-behaviour, not a head false alarm, and it has not been fixed.
+behaviour, not a head false alarm. On real recordings it is not the main cost after the
+trim (see [the benchmark page](vad-benchmarks.md#the-30-s-hard-cut)).
+
+**On real recordings** (36 VoxConverse recordings, 9 AMI far-field meetings and 14 AVA film
+clips, 12.1 h with 9.5 h of labelled speech, and 2.6 h of music, noise and ESC-50 clips) the
+picture is the same, with numbers:
+
+- Frame F1 on speech, at the defaults: Silero 90.6, Ultra head 90.8, Redux head 92.8. The
+  Redux head has the best default score and loses the least speech.
+- On audio without speech, seconds called speech per hour: Silero 48, Ultra head 2174,
+  Redux head 1685. The head calls most of a music or noise hour speech.
+- On clean TED talks the choice of detector does not change the word error rate: all systems
+  are within 0.17 percentage points. With 40 s of music, 30 s of noise and 40 s of vocal music
+  inserted into each talk, the word error rate is 3.87 percent (Ultra) and 4.76 percent (Redux)
+  when Silero cuts the audio, and 5.91 and 6.94 percent when the head does.
+
+So the advice is:
+
+- **Silero with its own defaults is the always-on gate.** Lowering its `threshold` to 0.2 to
+  0.3 gives more recall (pooled F1 92.4 and 91.8 against 90.6) and at most 199 s of false
+  alarm per hour on music (noise and ESC-50: 5 s/h or less).
+- **The Redux head for long recordings that are mostly speech** (talks, meetings, interviews):
+  the best default F1, the least speech lost, and the same word error rate as Silero.
+- **Silero for recordings with long stretches of music or noise.**
+- **The [run gate](#run-gate-opt-in) is an opt-in option for the heads** (0.92 to 0.96 for
+  Redux; Ultra gains less). It removes most of the noise false alarms. It does not remove music
+  and it is not a noise rejector.
 
 An offline experiment also combined the two: Silero decides what is speech, and the head
-only moves the edges. It scored 0.75 to 1.13 F1 points above the best single detector on
-the synthetic clips and gave no false alarms on noise. It is not implemented in
-parakeet.cpp. See
-[Fusing Silero and the head](vad-benchmarks.md#fusing-silero-and-the-head-offline-experiment).
+only moves the edges. On synthetic clips it scored 0.75 to 1.13 F1 points above the best
+single detector. That did not hold on real recordings: against the best single detector, tuned
+the same way, the gain was 0.10 points for Ultra and 0.46 for Redux, with no change in word error
+rate. It is not implemented in parakeet.cpp and there are no plans to add it. See
+[Fusing Silero and the head](vad-benchmarks.md#fusing-silero-and-the-head-offline-experiment)
+and [Real recordings](vad-benchmarks.md#real-recordings).
 
 ## Standalone VAD API
 
@@ -68,7 +96,7 @@ char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_path, const
 
 parakeet-cli vad --model <asr-with-vad-head.gguf | silero.gguf> --input audio.wav \
     [--mode speech|segments] [--probabilities] [--threshold F] [--min-pause SEC] \
-    [--min-speech SEC] [--speech-pad SEC] [--max-segment SEC] [--threads N]
+    [--min-speech SEC] [--speech-pad SEC] [--max-segment SEC] [--trim SEC] [--run-gate P] [--threads N]
 ```
 
 Both return NULL on error with the message in `parakeet_capi_last_error`, and the
@@ -99,6 +127,7 @@ the same keys). Unknown keys and out of range values are errors.
 | `speech_pad` | seconds >= 0, `speech` mode: widen each region on both sides | 0 | 0.03 |
 | `max_segment` | seconds; cap in `segments` mode | 30 | 30 |
 | `trim` | seconds >= 0; `segments` mode and the transcribe functions: shrink each cut to its speech plus this much on each side, 0 = keep the whole cut | 0.3 | 0.3 |
+| `run_gate` | probability in [0, 1); drop a speech run whose median frame probability is below it, 0 = off (see [Run gate](#run-gate-opt-in)) | 0 | 0 |
 | `mode` | `speech` or `segments` | `speech` | `speech` |
 | `probabilities` | add the per frame probabilities | false | false |
 
@@ -132,6 +161,100 @@ long noisy stretches the decoder sees much less noise, and with Silero the trim
 stops whole sentences from being dropped on clean speech. Numbers:
 [vad-benchmarks.md](vad-benchmarks.md#trimming-segments-and-the-word-filter).
 
+## Run gate (opt-in)
+
+The head calls steady noise and music speech, and the gate is a cheap check on that. A speech
+run is a stretch of consecutive frames with `p >= threshold`. With `run_gate` set, a run is
+dropped when the **median** of the probabilities of its frames is below the gate. Speech frames
+sit at a logit of +5 to +12 (probability 0.99 and above). A steady noise run sits on a plateau
+at a logit of +1.5 to +2 (0.8 to 0.9), with some higher peaks, so its median is lower than its
+peak. Off by default (`run_gate` 0):
+the output is then byte for byte what it was before the option existed.
+
+```
+parakeet-cli vad --model redux-vad.gguf --input a.wav --run-gate 0.92 [--mode segments]
+parakeet-cli transcribe --model redux.gguf --input long.wav --vad --vad-run-gate 0.92
+{"run_gate":0.92}     # in the options JSON of the vad and transcribe C functions
+```
+
+Definition (the same for every detector and both frame sizes):
+
+- A run is a maximal stretch of frames with `p >= threshold`, found before any bridging. A gap that
+  the segmenter later bridges is never inside a run, so a run does not borrow the probability of its
+  neighbour.
+- The median is over the probabilities of the frames of the run. For an even number of frames it is
+  the mean of the two middle values. A run of one frame has its own probability as median.
+- The run is kept when `median >= run_gate` and dropped when it is below. A median equal to the gate
+  keeps the run.
+- The gate acts first. The frames of a dropped run count as silence for bridging, `min_speech`, the
+  pauses, the cuts and the trim. It applies to both modes (`speech` and `segments`), to every
+  detector, and to the transcribe functions that take the VAD options.
+- The value must be a number in [0, 1). Other values, and non-numbers, are errors, like every
+  other key.
+
+The gate is **offline only**. The streaming event tracker (`parakeet_capi_vad_stream_*`) decides frame
+by frame and has no run median, so `parakeet_capi_vad_stream_begin` refuses a non-zero `run_gate`.
+Audio of at most `max_segment` seconds is returned whole in `segments` mode without running the
+segmenter, so the gate has no effect there (as for the trim).
+
+Which value: **0.92 to 0.96 for the Redux head.** For Ultra the gate is weaker (see below). Silero
+accepts the option, but its noise runs are rare, and the gate is meant for the heads.
+
+What it does on real recordings (the full study is in
+[vad-benchmarks.md](vad-benchmarks.md#real-recordings)). Frame F1 on speech, untuned, in percent:
+
+| System | VoxConverse | AMI | AVA | Pooled |
+| --- | ---: | ---: | ---: | ---: |
+| Ultra head | 96.4 | 89.7 | 82.7 | 90.8 |
+| Ultra head, gate 0.92 | 96.4 | 85.4 | 85.4 | 90.2 |
+| Redux head | 97.3 | 92.2 | 85.4 | 92.8 |
+| Redux head, gate 0.92 | 96.9 | 90.8 | 86.2 | 92.5 |
+| Silero, own defaults | 96.4 | 86.7 | 84.7 | 90.6 |
+
+The pooled cost of the gate at 0.92 is 0.6 points for Ultra and 0.3 for Redux. Both intervals
+include zero. Seconds called speech per hour of audio without speech:
+
+| System | Music | Noise | ESC-50 | Pooled |
+| --- | ---: | ---: | ---: | ---: |
+| Silero | 135 | 1 | 1 | 48 |
+| Ultra head | 2823 | 1979 | 1605 | 2174 |
+| Ultra head, gate 0.92 | 1625 | 398 | 395 | 826 |
+| Redux head | 2123 | 1599 | 1236 | 1685 |
+| Redux head, gate 0.92 | 644 | 23 | 131 | 269 |
+
+The gate trades recall for false alarms. For the Redux head at 0.98 the music figure falls to 107
+s/h, noise to 1 and ESC-50 to 15, but F1 on speech falls by 4.2 points. For the Ultra head at 0.98
+the cost is 7.4 points and music is still 339 s/h. In `transcribe --vad` the effect is on the
+decoded audio. Of one hour of non-speech with the trim at 0.3, the decoder gets this share:
+
+| System (percent of the hour) | Music | Noise | ESC-50 |
+| --- | ---: | ---: | ---: |
+| Silero | 6 | 0.03 | 0.03 |
+| Ultra head | 95 | 84 | 94 |
+| Ultra head, gate 0.92 | 53 | 14 | 27 |
+| Redux head | 91 | 82 | 94 |
+| Redux head, gate 0.92 | 27 | 1.1 | 5.6 |
+
+Word error rate: on clean TED talks every system is within 0.17 points, gate or not. On the three
+talks with 40 s of music, 30 s of noise and 40 s of vocal music inserted, the gate recovers about
+80 percent of the head's penalty against Silero: Ultra 5.91 (head), 4.24 (gate), 3.87 (Silero);
+Redux 6.94, 5.22, 4.76.
+
+What the gate does **not** do:
+
+- **Music still triggers the head.** At 0.92 the Redux head still calls 644 s of an hour of music
+  speech, and the Ultra head 1625 s. Music has a high median like speech does.
+- **It is not a noise rejector.** It lowers the false alarms of the head on noise, but some remain:
+  with the Redux head 23 s/h of noise and 131 s/h of ESC-50, with the Ultra head 398 and 395 s/h,
+  against about 1 s/h for Silero. Use Silero where false alarms cost something.
+- **It costs speech.** On AMI the F1 falls by 1.4 (Redux) and 4.3 (Ultra) points, and in `segments`
+  mode on AVA the Redux gate loses 7.8 percent of the labelled speech (the head alone loses 0.2).
+  It raises F1 on AVA, where the head over-detects, so the pooled cost is small.
+
+Cross-check: the C++ gate gives the same regions as the Python gate of the study on 688
+combinations of recording, detector and gate value, and the same speech seconds removed
+(`scripts/vad_bench/real_recordings/verify_gate.py`).
+
 ## Word filter (opt-in)
 
 A confidence filter can remove the words a model invents on noise. It is
@@ -161,7 +284,7 @@ char* parakeet_capi_transcribe_path_json_with(parakeet_ctx* ctx, const char* wav
 
 The options JSON of `parakeet_capi_transcribe_path_json_with` takes the three
 keys above. `parakeet_capi_transcribe_path_json_vad_with` takes them too, next to
-the VAD keys (`trim` included). With a filter on, the JSON document gets one more
+the VAD keys (`trim` and `run_gate` included). With a filter on, the JSON document gets one more
 member, `"guard":{"dropped_words":N}` (N is 0 when nothing was dropped), and the
 dropped words are also removed from `text`, `words` and `tokens`.
 
@@ -359,6 +482,11 @@ machine, not a benchmark. For benchmarks, see [vad-benchmarks.md](vad-benchmarks
 - `test_vad_segmenter` (no model) covers the 32 ms grid, the Silero defaults, the
   padding and the streaming event tracker. `test_vad_options` (no model) covers the
   option parser and the NULL and bad file paths of the C-API.
+- `test_vad_run_gate` (no model) covers the run gate on synthetic probability streams at 80 ms and
+  32 ms frames: runs above and below the gate, a low median with a high peak, bridged gaps, a
+  one frame run, the boundary (a median equal to the gate keeps the run), the trim, and that gate 0 does not change
+  the output. `test_vad_run_gate_model` (label `model`, the VAD-only slice, Ultra, Redux and Silero
+  files) runs the gate on a clip with a noise stretch.
 - `test_capi_vad_silero` (label `model`, `PARAKEET_TEST_SILERO_GGUF`) covers the C-API
   document at both rates, options, errors, threads and the stream.
 - `test_transcribe_vad_silero` (label `model`, `PARAKEET_TEST_SILERO_GGUF` and

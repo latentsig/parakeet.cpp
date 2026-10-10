@@ -11,6 +11,16 @@
 #include <vector>
 #include <utility>
 #include <stdexcept>
+
+// fseeko/ftello are POSIX; MSVC spells the 64-bit versions _fseeki64/_ftelli64.
+#ifdef _WIN32
+static int     pk_fseek64(FILE* f, uint64_t off, int whence){ return _fseeki64(f, (__int64)off, whence); }
+static int64_t pk_ftell64(FILE* f){ return _ftelli64(f); }
+#else
+static int     pk_fseek64(FILE* f, uint64_t off, int whence){ return fseeko(f, (off_t)off, whence); }
+static int64_t pk_ftell64(FILE* f){ return (int64_t)ftello(f); }
+#endif
+
 namespace pk {
 
 int PromptCfg::resolve_index_or_throw(const std::string& target_lang) const {
@@ -184,8 +194,8 @@ bool ModelLoader::load_component(const std::string& path, const std::string& com
     FILE* f = ctx_ ? fopen(path.c_str(), "rb") : nullptr;
     if(!f){ ggml_free(meta); return false; }
     // Size of the file, to refuse a truncated bundle before reading any tensor.
-    fseeko(f, 0, SEEK_END);
-    const uint64_t file_size = (uint64_t)ftello(f);
+    pk_fseek64(f, 0, SEEK_END);
+    const uint64_t file_size = (uint64_t)pk_ftell64(f);
     bool ok = true;
     for(int64_t i=0;i<nt && ok;++i){
         const char* nm = gguf_get_tensor_name(gguf_,i);
@@ -198,7 +208,7 @@ bool ModelLoader::load_component(const std::string& path, const std::string& com
         if(off + ggml_nbytes(t) > file_size){
             PK_LOG("bundle %s is truncated (tensor %s)", path.c_str(), nm); ok = false; break;
         }
-        if(fseeko(f, (off_t)off, SEEK_SET)!=0 || fread(t->data, 1, ggml_nbytes(t), f)!=ggml_nbytes(t)) ok = false;
+        if(pk_fseek64(f, off, SEEK_SET)!=0 || fread(t->data, 1, ggml_nbytes(t), f)!=ggml_nbytes(t)) ok = false;
     }
     fclose(f);
     ggml_free(meta);

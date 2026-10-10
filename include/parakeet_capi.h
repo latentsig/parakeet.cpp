@@ -269,6 +269,12 @@ char* parakeet_capi_transcribe_path_json_vad(parakeet_ctx* ctx, const char* wav_
 //   "trim"          seconds >= 0; "segments" mode: each segment shrinks to its
 //                   first and last speech frame plus this much; default 0.3;
 //                   0 keeps the whole cuts
+//   "run_gate"      probability in [0, 1); both modes: a speech run (frames
+//                   with p >= threshold, before bridging) whose median frame
+//                   probability is below this is dropped; a median equal to it
+//                   keeps the run; default 0 = off. Meant for the Ultra and
+//                   Redux heads (docs/vad.md). Offline only: a VAD stream
+//                   (parakeet_capi_vad_stream_begin) refuses a non-zero value
 //   "mode"          "speech" (default) or "segments"
 //   "probabilities" true to add the per-frame probabilities; default false
 // Unknown keys and out-of-range values are errors. The Silero defaults are the
@@ -309,7 +315,7 @@ char* parakeet_capi_vad_path_json(parakeet_ctx* ctx, const char* wav_path,
 // Silero context, or NULL to use the ASR model's own head (then the result is
 // as parakeet_capi_transcribe_path_json_vad, with the options below). Options
 // are the JSON object of parakeet_capi_vad_pcm_json; only "threshold",
-// "min_pause", "min_speech", "max_segment" and "trim" are used here (the other
+// "min_pause", "min_speech", "max_segment", "trim" and "run_gate" are used here (the other
 // keys of that object are accepted and ignored), plus the word filter keys of
 // parakeet_capi_transcribe_path_json_with, which apply to each segment on its
 // own (and to the whole file when it is at most max_segment seconds). NULL or
@@ -329,7 +335,7 @@ typedef struct parakeet_vad_stream parakeet_vad_stream;
 
 // `vad` is a Silero context; `sample_rate` is 16000 or 8000 (no resampling in a
 // stream). `options_json` as in parakeet_capi_vad_pcm_json, but "mode" must be
-// "speech" (the default). NULL on error (see vad's last error).
+// "speech" (the default) and "run_gate" must be 0 (a stream has no run median). NULL on error (see vad's last error).
 parakeet_vad_stream* parakeet_capi_vad_stream_begin(parakeet_ctx* vad, int sample_rate,
                                                     const char* options_json);
 
